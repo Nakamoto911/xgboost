@@ -210,15 +210,15 @@ elif hasattr(st, 'pills'):
 else:
     col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 5])
     with col1:
-        st.button("1 Year", on_click=set_period, args=(12,), use_container_width=True)
+        st.button("1 Year", on_click=set_period, args=(12,), width='stretch')
     with col2:
-        st.button("3 Years", on_click=set_period, args=(36,), use_container_width=True)
+        st.button("3 Years", on_click=set_period, args=(36,), width='stretch')
     with col3:
-        st.button("5 Years", on_click=set_period, args=(60,), use_container_width=True)
+        st.button("5 Years", on_click=set_period, args=(60,), width='stretch')
     with col4:
-        st.button("10 Years", on_click=set_period, args=(120,), use_container_width=True)
+        st.button("10 Years", on_click=set_period, args=(120,), width='stretch')
     with col5:
-        st.button("Max", on_click=set_period, args=(None,), use_container_width=True)
+        st.button("Max", on_click=set_period, args=(None,), width='stretch')
 
 selected_dates = st.slider(
     "Select Date Range",
@@ -380,7 +380,7 @@ for name, returns in strategies.items():
     )
 
 apply_bear_shading(fig_wealth)
-st.plotly_chart(fig_wealth, use_container_width=True)
+st.plotly_chart(fig_wealth, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 2: Drawdown Profile
@@ -408,7 +408,7 @@ for name, returns in sorted(strategies.items(), key=lambda x: 1 if x[0] == 'JM-X
     ))
 
 apply_bear_shading(fig_dd)
-st.plotly_chart(fig_dd, use_container_width=True)
+st.plotly_chart(fig_dd, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 3: Regime Probability vs Benchmark Price
@@ -446,7 +446,7 @@ fig_prob.update_yaxes(title_text="Benchmark Price", secondary_y=False)
 fig_prob.update_yaxes(title_text="Bear Probability", tickformat=".0%", range=[0, 1], secondary_y=True)
 
 apply_bear_shading(fig_prob)
-st.plotly_chart(fig_prob, use_container_width=True)
+st.plotly_chart(fig_prob, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 4: Rolling 1-Year Sharpe Ratio
@@ -471,7 +471,7 @@ for name, returns in strategies.items():
 
 fig_sharpe.add_hline(y=0, line_dash="solid", line_color="black", line_width=1)
 apply_bear_shading(fig_sharpe)
-st.plotly_chart(fig_sharpe, use_container_width=True)
+st.plotly_chart(fig_sharpe, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 5: Time-Series Feature Contribution (Local SHAP)
@@ -498,7 +498,7 @@ if shap_cols and not jm_xgb_df[shap_cols].empty:
             ))
             
     fig_shap_ts.update_layout(barmode='relative')
-    st.plotly_chart(fig_shap_ts, use_container_width=True)
+    st.plotly_chart(fig_shap_ts, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 6: Transactions & Lambda
@@ -551,7 +551,7 @@ fig_trades.update_yaxes(title_text="Transactions", secondary_y=False)
 fig_trades.update_yaxes(title_text="Lambda Penalty", secondary_y=True)
 
 apply_bear_shading(fig_trades)
-st.plotly_chart(fig_trades, use_container_width=True)
+st.plotly_chart(fig_trades, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 7: Periodic Returns
@@ -573,7 +573,7 @@ for name, returns in strategies.items():
     ))
 
 apply_bear_shading(fig_ret)
-st.plotly_chart(fig_ret, use_container_width=True)
+st.plotly_chart(fig_ret, width='stretch')
 
 # --------------------------------------------------------------------------
 # Chart 8: Periodic Volatility
@@ -595,7 +595,7 @@ for name, returns in strategies.items():
     ))
 
 apply_bear_shading(fig_vol)
-st.plotly_chart(fig_vol, use_container_width=True)
+st.plotly_chart(fig_vol, width='stretch')
 
 
 # --------------------------------------------------------------------------
@@ -621,7 +621,7 @@ if shap_cols and not jm_xgb_df[shap_cols].empty:
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_title="Mean Absolute SHAP Value (Impact on prediction)"
     )
-    st.plotly_chart(fig_shap_summary, use_container_width=True)
+    st.plotly_chart(fig_shap_summary, width='stretch')
 
 # --------------------------------------------------------------------------
 # Export Actions (JSON & PDF) inside the Top Container
