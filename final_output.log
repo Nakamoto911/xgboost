@@ -1,0 +1,64 @@
+/Users/user2/Documents/Code/xgboost/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Loading data from local cache...
+
+--- Starting Out-of-Sample Backtest (2004-01-01 to 2026-01-01) ---
+
+Evaluating period: 2004-01-01 to 2004-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.15)
+
+Evaluating period: 2004-07-01 to 2005-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.03)
+
+Evaluating period: 2005-01-01 to 2005-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: -0.15)
+
+Evaluating period: 2005-07-01 to 2006-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.06)
+
+Evaluating period: 2006-01-01 to 2006-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.13)
+
+Evaluating period: 2006-07-01 to 2007-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.28)
+
+Evaluating period: 2007-01-01 to 2007-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.35)
+
+Evaluating period: 2007-07-01 to 2008-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.31)
+
+Evaluating period: 2008-01-01 to 2008-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.35)
+
+Evaluating period: 2008-07-01 to 2009-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.13)
+
+Evaluating period: 2009-01-01 to 2009-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: -0.17)
+
+Evaluating period: 2009-07-01 to 2010-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.01)
+
+Evaluating period: 2010-01-01 to 2010-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.42)
+
+Evaluating period: 2010-07-01 to 2011-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.36)
+
+Evaluating period: 2011-01-01 to 2011-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.56)
+
+Evaluating period: 2011-07-01 to 2012-01-01
+Traceback (most recent call last):
+  File "/Users/user2/Documents/Code/xgboost/main.py", line 514, in <module>
+    main()
+  File "/Users/user2/Documents/Code/xgboost/main.py", line 381, in main
+    val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
+  File "/Users/user2/Documents/Code/xgboost/main.py", line 313, in simulate_strategy
+    res = run_period_forecast(df, current_date, lambda_penalty, include_xgboost)
+  File "/Users/user2/Documents/Code/xgboost/main.py", line 244, in run_period_forecast
+    identified_states = jm.fit_predict(X_train_jm.values)
+  File "/Users/user2/Documents/Code/xgboost/main.py", line 109, in fit_predict
+    self.means[k] = np.mean(X_arr[mask], axis=0)
+KeyboardInterrupt

@@ -1,0 +1,139 @@
+/Users/user2/Documents/Code/xgboost/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Loading data from local cache...
+
+--- Starting Out-of-Sample Backtest (2004-01-01 to 2026-01-01) ---
+
+Evaluating period: 2004-01-01 to 2004-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.16)
+
+Evaluating period: 2004-07-01 to 2005-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.04)
+
+Evaluating period: 2005-01-01 to 2005-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: -0.14)
+
+Evaluating period: 2005-07-01 to 2006-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: -0.01)
+
+Evaluating period: 2006-01-01 to 2006-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: -0.00)
+
+Evaluating period: 2006-07-01 to 2007-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.25)
+
+Evaluating period: 2007-01-01 to 2007-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.35)
+
+Evaluating period: 2007-07-01 to 2008-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.29)
+
+Evaluating period: 2008-01-01 to 2008-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.38)
+
+Evaluating period: 2008-07-01 to 2009-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.12)
+
+Evaluating period: 2009-01-01 to 2009-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: -0.18)
+
+Evaluating period: 2009-07-01 to 2010-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.00)
+
+Evaluating period: 2010-01-01 to 2010-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.38)
+
+Evaluating period: 2010-07-01 to 2011-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.33)
+
+Evaluating period: 2011-01-01 to 2011-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.52)
+
+Evaluating period: 2011-07-01 to 2012-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.61)
+
+Evaluating period: 2012-01-01 to 2012-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.18)
+
+Evaluating period: 2012-07-01 to 2013-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.27)
+
+Evaluating period: 2013-01-01 to 2013-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.36)
+
+Evaluating period: 2013-07-01 to 2014-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.63)
+
+Evaluating period: 2014-01-01 to 2014-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.84)
+
+Evaluating period: 2014-07-01 to 2015-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.80)
+
+Evaluating period: 2015-01-01 to 2015-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.62)
+
+Evaluating period: 2015-07-01 to 2016-01-01
+Optimal Lambda selected for JM-XGB: 100.0 (Val Sharpe: 0.66)
+
+Evaluating period: 2016-01-01 to 2016-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.40)
+
+Evaluating period: 2016-07-01 to 2017-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.41)
+
+Evaluating period: 2017-01-01 to 2017-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.72)
+
+Evaluating period: 2017-07-01 to 2018-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.87)
+
+Evaluating period: 2018-01-01 to 2018-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 1.05)
+
+Evaluating period: 2018-07-01 to 2019-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.74)
+
+Evaluating period: 2019-01-01 to 2019-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.56)
+
+Evaluating period: 2019-07-01 to 2020-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.69)
+
+Evaluating period: 2020-01-01 to 2020-07-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.72)
+
+Evaluating period: 2020-07-01 to 2021-01-01
+Optimal Lambda selected for JM-XGB: 1.0 (Val Sharpe: 0.59)
+
+Evaluating period: 2021-01-01 to 2021-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.88)
+
+Evaluating period: 2021-07-01 to 2022-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 1.09)
+
+Evaluating period: 2022-01-01 to 2022-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 1.13)
+
+Evaluating period: 2022-07-01 to 2023-01-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.77)
+
+Evaluating period: 2023-01-01 to 2023-07-01
+Optimal Lambda selected for JM-XGB: 10.0 (Val Sharpe: 0.44)
+
+Evaluating period: 2023-07-01 to 2024-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.51)
+
+Evaluating period: 2024-01-01 to 2024-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.55)
+
+Evaluating period: 2024-07-01 to 2025-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.61)
+
+Evaluating period: 2025-01-01 to 2025-07-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.56)
+
+Evaluating period: 2025-07-01 to 2026-01-01
+Optimal Lambda selected for JM-XGB: 50.0 (Val Sharpe: 0.74)
+
+Performance metrics and chart saved to performance_report_20260220_180331.pdf
