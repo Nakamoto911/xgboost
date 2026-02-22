@@ -49,7 +49,12 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 
 ## Environment Setup
 1. Standard Python environment (minimum 3.8+ recommended).
-2. Install the necessary packages via `pip`. (Assuming a `requirements.txt` environment exists containing `numpy`, `pandas`, `yfinance`, `xgboost`, `matplotlib`, `pandas-datareader`, and `streamlit`).
+```markdown
+2. Install the necessary packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+```
 3. Running the backcast framework:
    ```bash
    python main.py

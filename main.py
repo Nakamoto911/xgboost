@@ -1,3 +1,36 @@
+import sys
+import types
+
+# Compatibility shim for distutils.version which was removed in Python 3.12+
+# Required by pandas-datareader
+try:
+    import distutils
+    import distutils.version
+except ImportError:
+    d = types.ModuleType('distutils')
+    dv = types.ModuleType('distutils.version')
+    class LooseVersion:
+        def __init__(self, vstring=None):
+            self.vstring = vstring
+        def __str__(self):
+            return self.vstring
+        def __repr__(self):
+            return f"LooseVersion('{self.vstring}')"
+        def __lt__(self, other):
+            return self.vstring < (other.vstring if hasattr(other, 'vstring') else other)
+        def __le__(self, other):
+            return self.vstring <= (other.vstring if hasattr(other, 'vstring') else other)
+        def __gt__(self, other):
+            return self.vstring > (other.vstring if hasattr(other, 'vstring') else other)
+        def __ge__(self, other):
+            return self.vstring >= (other.vstring if hasattr(other, 'vstring') else other)
+        def __eq__(self, other):
+            return self.vstring == (other.vstring if hasattr(other, 'vstring') else other)
+    dv.LooseVersion = LooseVersion
+    d.version = dv
+    sys.modules['distutils'] = d
+    sys.modules['distutils.version'] = dv
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
