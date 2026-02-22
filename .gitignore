@@ -1,0 +1,31 @@
+# Environments
+.venv/
+venv/
+env/
+.env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Data and Logs
+*.pkl
+*.log
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Temporary and backups
+*_backup.py
+patch_app.py
+patch.py
