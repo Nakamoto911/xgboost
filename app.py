@@ -5,12 +5,15 @@ import matplotlib.pyplot as plt
 import os
 import io
 import pickle
-
+import json
+import tempfile
+from datetime import datetime
 import main as backend
 
 st.set_page_config(page_title="XGBoost Strategy Portal", layout="wide")
 
 st.title("XGBoost Strategy Backtest Portal")
+export_container = st.container()
 
 st.sidebar.header("Configuration")
 target_ticker = st.sidebar.text_input("Target Ticker", backend.TARGET_TICKER)
@@ -312,6 +315,8 @@ for name, returns in strategies.items():
 
 st.subheader("Performance Metrics")
 st.dataframe(pd.DataFrame(metrics_data))
+
+# Export UI logic has been moved to the end of the file to capture generated charts.
 
 # We no longer use Matplotlib for the main display, we will just rely entirely on Plotly 
 # for a much better interactive experience with these dense charts.
@@ -616,5 +621,194 @@ if shap_cols and not jm_xgb_df[shap_cols].empty:
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_title="Mean Absolute SHAP Value (Impact on prediction)"
     )
-    
     st.plotly_chart(fig_shap_summary, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Export Actions (JSON & PDF) inside the Top Container
+# --------------------------------------------------------------------------
+with export_container:
+    col_exp1, col_exp2 = st.columns(2)
+    
+    dialog_func = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
+    
+    def generate_export_dict():
+        df_no_shap = jm_xgb_df.drop(columns=[c for c in jm_xgb_df.columns if c.startswith('SHAP_')])
+        features = [c for c in df_no_shap.columns if c not in ["Target_Return", "RF_Rate", "Forecast_State", "Strat_Return", "Trades", "State_Prob"]]
+        
+        last_record = df_no_shap.tail(1).copy()
+        last_record.index = last_record.index.astype(str)
+        last_record_dict = last_record.reset_index().to_dict('records')
+        
+        return {
+            "params": {
+                "tgt": backend.TARGET_TICKER, 
+                "bnd": backend.BOND_TICKER, 
+                "rf": backend.RISK_FREE_TICKER,
+                "vix": backend.VIX_TICKER,
+                "cost": backend.TRANSACTION_COST, 
+                "oos": f"{filter_start} to {filter_end}",
+                "lambda_sel": lambda_history[-1] if lambda_history else "N/A"
+            },
+            "data": {
+                "rows": jm_xgb_df.shape[0], 
+                "feats": features,
+                "has_shap": any(c.startswith('SHAP_') for c in jm_xgb_df.columns)
+            },
+            "latest_row": last_record_dict[0] if len(last_record_dict) > 0 else {},
+            "outputs": [
+                {
+                    "strat": m["Strategy"][:15], "ret": m["Ann. Ret"], "vol": m["Ann. Vol"], 
+                    "sr": m["Sharpe"], "dd": m["Max DD"], "trd": m["Total Trades"]
+                } for m in metrics_data
+            ]
+        }
+
+    def generate_pdf_report():
+        try:
+            from fpdf import FPDF
+            import kaleido
+        except ImportError:
+            return None
+
+        export_dict = generate_export_dict()
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        
+        # Title & Subtitle
+        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(200, 10, txt="XGBoost Strategy Backtest Report", ln=True, align='C')
+        pdf.set_font("Arial", 'I', 10)
+        pdf.cell(200, 10, txt=f"Generated on: {current_time_str}", ln=True, align='C')
+        pdf.ln(5)
+        
+        # Configuration / Parameters
+        param_labels = {
+            "tgt": "Target Ticker",
+            "bnd": "Bond Ticker",
+            "rf": "Risk-Free Ticker",
+            "vix": "VIX Ticker",
+            "cost": "Transaction Cost",
+            "oos": "Out-of-Sample Period",
+            "lambda_sel": "Final Lambda Penalty"
+        }
+        
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 10, txt="Configuration Parameters:", ln=True)
+        pdf.set_font("Arial", size=10)
+        for k, v in export_dict["params"].items():
+            label = param_labels.get(k, k)
+            pdf.cell(200, 6, txt=f"- {label}: {v}", ln=True)
+        pdf.ln(5)
+
+        # Data Properties
+        data_labels = {
+            "rows": "Total Observations (Rows)",
+            "has_shap": "SHAP Values Available"
+        }
+        
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 10, txt="Data Properties:", ln=True)
+        pdf.set_font("Arial", size=10)
+        for k, v in export_dict["data"].items():
+            if k != "feats":
+                label = data_labels.get(k, k)
+                pdf.cell(200, 6, txt=f"- {label}: {v}", ln=True)
+        pdf.ln(5)
+        
+        # Performance Metrics
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 10, txt="Performance Metrics:", ln=True)
+        pdf.set_font("Arial", size=10)
+        
+        headers = ['Strategy', 'Ann. Ret', 'Ann. Vol', 'Sharpe', 'Max DD', 'Total Trades']
+        col_widths = [45, 25, 25, 25, 25, 25]
+        
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 8, header, border=1, align='C')
+        pdf.ln()
+        
+        for m in metrics_data:
+            pdf.cell(col_widths[0], 8, m['Strategy'][:20], border=1)
+            pdf.cell(col_widths[1], 8, m['Ann. Ret'], border=1, align='C')
+            pdf.cell(col_widths[2], 8, m['Ann. Vol'], border=1, align='C')
+            pdf.cell(col_widths[3], 8, m['Sharpe'], border=1, align='C')
+            pdf.cell(col_widths[4], 8, m['Max DD'], border=1, align='C')
+            pdf.cell(col_widths[5], 8, m['Total Trades'], border=1, align='C')
+            pdf.ln()
+        pdf.ln(5)
+        
+        # Charts
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(200, 10, txt="Charts:", ln=True)
+        
+        figs = {
+            "Cumulative Wealth": fig_wealth,
+            "Drawdown Profile": fig_dd,
+            "Regime Probability vs Market": fig_prob,
+            "Rolling 1-Year Sharpe": fig_sharpe,
+            "Transactions & Lambda": fig_trades,
+            "Periodic Returns": fig_ret,
+            "Periodic Volatility": fig_vol,
+        }
+        
+        if 'fig_shap_ts' in locals() or 'fig_shap_ts' in globals():
+            f = globals().get('fig_shap_ts') or locals().get('fig_shap_ts')
+            if f: figs["SHAP Time-Series"] = f
+            
+        if 'fig_shap_summary' in locals() or 'fig_shap_summary' in globals():
+            f = globals().get('fig_shap_summary') or locals().get('fig_shap_summary')
+            if f: figs["SHAP Summary"] = f
+            
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, fig in figs.items():
+                if fig is not None:
+                    img_path = os.path.join(tmpdir, f"{name.replace(' ', '_')}.png")
+                    fig_copy = go.Figure(fig)
+                    fig_copy.update_layout(template="plotly_white", paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)', font=dict(color='black'))
+                    try:
+                        fig_copy.write_image(img_path, width=800, height=450, scale=2)
+                        
+                        pdf.add_page()
+                        pdf.set_font("Arial", 'B', 12)
+                        pdf.cell(200, 10, txt=name, ln=True)
+                        pdf.image(img_path, x=10, w=190)
+                    except Exception as e:
+                        pdf.set_font("Arial", size=10)
+                        pdf.cell(200, 10, txt=f"Could not render {name}: {str(e)}", ln=True)
+                        continue
+                    
+        return bytes(pdf.output())
+
+    with col_exp1:
+        if st.button("📄 Export to PDF"):
+            with st.spinner("Generating PDF Report... This may take a few moments."):
+                pdf_bytes = generate_pdf_report()
+            
+            if pdf_bytes is None:
+                st.error("Missing dependencies. Please run `pip install fpdf2 kaleido` in your terminal and restart Streamlit.")
+            else:
+                current_time_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.download_button(
+                    label="✅ Click to Save PDF",
+                    data=pdf_bytes,
+                    file_name=f"xgb_{current_time_file}.pdf",
+                    mime="application/pdf"
+                )
+
+    with col_exp2:
+        if dialog_func:
+            @dialog_func("LLM Audit Export")
+            def show_export_dialog():
+                st.markdown("Copy the JSON below and share it with your LLM for auditing context.")
+                export_dict = generate_export_dict()
+                st.code(json.dumps(export_dict, separators=(',', ':')), language="json")
+                
+            if st.button("🤖 Export to LLM"):
+                show_export_dialog()
+        else:
+            with st.expander("🤖 Export JSON"):
+                st.markdown("Copy the JSON below and share it with your LLM for auditing context.")
+                export_dict = generate_export_dict()
+                st.code(json.dumps(export_dict, separators=(',', ':')), language="json")

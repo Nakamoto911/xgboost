@@ -29,3 +29,6 @@ __pycache__/
 *_backup.py
 patch_app.py
 patch.py
+
+# Vendor
+vendor/
