@@ -329,10 +329,36 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     # Apply exponential smoothing (halflife 8 days) to probabilities
     smoothed_probs = pd.Series(oos_probs).ewm(halflife=8).mean().values
     
+    # Calculate SHAP values
+    import shap
+    explainer = shap.TreeExplainer(xgb)
+    shap_values = explainer.shap_values(X_oos_xgb)
+    
     # Threshold at 0.5
     oos_df['Forecast_State'] = (smoothed_probs > 0.5).astype(int)
+    oos_df['State_Prob'] = smoothed_probs
     
-    result = oos_df[['Target_Return', 'RF_Rate', 'Forecast_State']]
+    # Add SHAP values to dataframe
+    base_value = explainer.expected_value
+    if isinstance(base_value, (np.ndarray, list)):
+        # For Binary Classification, sometimes SHAP returns [logodds_0, logodds_1]
+        base_value = base_value[-1] if len(base_value) > 1 else base_value[0]
+        
+    oos_df['SHAP_Base_Value'] = base_value
+    for i, col in enumerate(all_features):
+        feature_shap_vals = shap_values[:, i]
+        # if shap_values is a list (e.g., class 0 and class 1), use the class 1 values
+        if isinstance(shap_values, list):
+             feature_shap_vals = shap_values[1][:, i]
+        oos_df[f'SHAP_{col}'] = feature_shap_vals
+    
+    # Keep the feature values as well for scatter/dependence plots later if needed
+    for col in all_features:
+        oos_df[f'Feature_{col}'] = oos_df[col]
+        
+    cols_to_keep = ['Target_Return', 'RF_Rate', 'Forecast_State', 'State_Prob', 'SHAP_Base_Value'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
+    
+    result = oos_df[cols_to_keep]
     _forecast_cache[cache_key] = result
     return result
 

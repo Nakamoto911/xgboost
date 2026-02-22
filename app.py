@@ -170,17 +170,52 @@ def set_period(months):
         st.session_state.period_slider = (new_start, max_date)
 
 # Quick selection buttons
-col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 5])
-with col1:
-    st.button("1 Year", on_click=set_period, args=(12,))
-with col2:
-    st.button("3 Years", on_click=set_period, args=(36,))
-with col3:
-    st.button("5 Years", on_click=set_period, args=(60,))
-with col4:
-    st.button("10 Years", on_click=set_period, args=(120,))
-with col5:
-    st.button("Max", on_click=set_period, args=(None,))
+if hasattr(st, 'segmented_control'):
+    def update_from_segment():
+        sel = st.session_state.period_selector
+        if sel == "1 Year": set_period(12)
+        elif sel == "3 Years": set_period(36)
+        elif sel == "5 Years": set_period(60)
+        elif sel == "10 Years": set_period(120)
+        elif sel == "Max": set_period(None)
+        
+    st.segmented_control(
+        "Period Selection", 
+        ["1 Year", "3 Years", "5 Years", "10 Years", "Max"],
+        key="period_selector", 
+        on_change=update_from_segment,
+        selection_mode="single",
+        label_visibility="collapsed"
+    )
+elif hasattr(st, 'pills'):
+    def update_from_pills():
+        sel = st.session_state.period_selector
+        if sel == "1 Year": set_period(12)
+        elif sel == "3 Years": set_period(36)
+        elif sel == "5 Years": set_period(60)
+        elif sel == "10 Years": set_period(120)
+        elif sel == "Max": set_period(None)
+        
+    st.pills(
+        "Period Selection", 
+        ["1 Year", "3 Years", "5 Years", "10 Years", "Max"],
+        key="period_selector", 
+        on_change=update_from_pills,
+        selection_mode="single",
+        label_visibility="collapsed"
+    )
+else:
+    col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 5])
+    with col1:
+        st.button("1 Year", on_click=set_period, args=(12,), use_container_width=True)
+    with col2:
+        st.button("3 Years", on_click=set_period, args=(36,), use_container_width=True)
+    with col3:
+        st.button("5 Years", on_click=set_period, args=(60,), use_container_width=True)
+    with col4:
+        st.button("10 Years", on_click=set_period, args=(120,), use_container_width=True)
+    with col5:
+        st.button("Max", on_click=set_period, args=(None,), use_container_width=True)
 
 selected_dates = st.slider(
     "Select Date Range",
@@ -250,6 +285,11 @@ for name, returns in strategies.items():
     else:
         trades = int(simple_jm_df['Trades'].sum())
         
+    # Calculate Drawdown for the current period
+    cum_wealth = (1 + returns).cumprod()
+    peak = cum_wealth.cummax()
+    drawdowns = (cum_wealth - peak) / peak
+    
     cell_text.append([
         name,
         f"{ret*100:.2f}%", 
@@ -273,36 +313,192 @@ for name, returns in strategies.items():
 st.subheader("Performance Metrics")
 st.dataframe(pd.DataFrame(metrics_data))
 
-st.subheader("Results Chart")
+# We no longer use Matplotlib for the main display, we will just rely entirely on Plotly 
+# for a much better interactive experience with these dense charts.
 
-# Generate Matplotlib Figure
-fig = plt.figure(figsize=(12, 25))
-gs = fig.add_gridspec(6, 1, height_ratios=[1, 4, 1.5, 1.5, 1.5, 1.5])
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-ax_table = fig.add_subplot(gs[0])
-ax_table.axis('off')
-table = ax_table.table(cellText=cell_text, colLabels=columns, loc='center', cellLoc='center')
-table.auto_set_font_size(False)
-table.set_fontsize(12)
-table.scale(1, 1.8)
-ax_table.set_title("Out-of-Sample Performance Metrics", fontweight='bold', fontsize=14)
+# We need the benchmark wealth for the Probability chart
+bh_wealth = (1 + bh_returns).cumprod()
+jm_xgb_wealth = (1 + jm_xgb_df['Strat_Return']).cumprod()
 
-ax_plot = fig.add_subplot(gs[1])
+# Overlay Actual Bear Regimes as background color (from thresholded state)
+bear_series = jm_xgb_df['Forecast_State'] == 1
+starts = bear_series.index[(bear_series) & (~bear_series.shift(1).fillna(False))]
+ends = bear_series.index[(bear_series) & (~bear_series.shift(-1).fillna(False))]
+
+def create_base_fig(title, y_title, height=500):
+    fig = go.Figure()
+    fig.update_layout(
+        title=title,
+        yaxis_title=y_title,
+        height=height,
+        template="plotly_dark",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+    )
+    return fig
+
+def apply_bear_shading(fig):
+    for s, e in zip(starts, ends):
+        fig.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.1, line_width=0)
+
+# --------------------------------------------------------------------------
+# Chart 1: Cumulative Wealth
+# --------------------------------------------------------------------------
+st.subheader("1. Cumulative Wealth")
+fig_wealth = create_base_fig("Cumulative Wealth Multiplier", "Wealth Multiplier")
+
 for name, returns in strategies.items():
+    if name == 'Simple JM Baseline' and not run_simple_jm_cached:
+        continue
     wealth = (1 + returns).cumprod()
-    end_wealth = wealth.iloc[-1]
-    ax_plot.plot(wealth, label=f"{name} (Final: {end_wealth:.2f}x)", color=strategy_colors.get(name))
+    final_val = wealth.iloc[-1]
     
-ax_plot.set_title(f"Wealth Curves: {filter_start} to {filter_end}", fontsize=12)
-ax_plot.set_ylabel('Cumulative Wealth (Multiplier)')
+    fig_wealth.add_trace(go.Scatter(
+        x=wealth.index, y=wealth, mode='lines', 
+        name=f"{name} Wealth",
+        line=dict(color=strategy_colors.get(name), width=2 if 'JM' in name else 1.5)
+    ))
+    
+    # Add ending wealth annotation
+    fig_wealth.add_annotation(
+        x=wealth.index[-1], y=final_val,
+        text=f" {final_val:.2f}x",
+        showarrow=False,
+        xanchor="left",
+        xshift=5,
+        font=dict(color=strategy_colors.get(name), size=12),
+        bgcolor="rgba(0,0,0,0.3)"
+    )
 
-bear_regimes = jm_xgb_df['Forecast_State'] == 1
-ax_plot.fill_between(jm_xgb_df.index, 0, 1, where=bear_regimes, color='red', alpha=0.15, 
-                     transform=ax_plot.get_xaxis_transform(), label='Bear Regime (JM-XGB)')
-                     
-ax_plot.legend()
-ax_plot.grid(True, which="both", ls="--", alpha=0.5)
+apply_bear_shading(fig_wealth)
+st.plotly_chart(fig_wealth, use_container_width=True)
 
+# --------------------------------------------------------------------------
+# Chart 2: Drawdown Profile
+# --------------------------------------------------------------------------
+st.subheader("2. Drawdown Profile")
+fig_dd = create_base_fig("Portfolio Drawdown Percentage", "Drawdown")
+fig_dd.update_yaxes(tickformat=".1%")
+
+# Sort strategies to ensure JM-XGB is plotted last (rendered on top)
+for name, returns in sorted(strategies.items(), key=lambda x: 1 if x[0] == 'JM-XGB Strategy' else 0):
+    if name == 'Simple JM Baseline' and not run_simple_jm_cached:
+        continue
+    wealth = (1 + returns).cumprod()
+    peak = wealth.cummax()
+    drawdown = (wealth - peak) / peak
+    
+    is_xgb = name == 'JM-XGB Strategy'
+    fig_dd.add_trace(go.Scatter(
+        x=drawdown.index, y=drawdown, mode='lines', 
+        name=f"{name} DD",
+        line=dict(color=strategy_colors.get(name), width=2.5 if is_xgb else 1.5),
+        fill='tozeroy' if not is_xgb else None,
+        fillcolor=strategy_colors.get(name) if not is_xgb else None,
+        opacity=1.0 if is_xgb else 0.3
+    ))
+
+apply_bear_shading(fig_dd)
+st.plotly_chart(fig_dd, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 3: Regime Probability vs Benchmark Price
+# --------------------------------------------------------------------------
+st.subheader("3. Regime Probability vs. Market Price")
+fig_prob = make_subplots(specs=[[{"secondary_y": True}]])
+fig_prob.update_layout(
+    height=500,
+    template="plotly_dark",
+    hovermode="x unified",
+    margin=dict(l=20, r=20, t=60, b=40),
+    legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+)
+
+# Left Y-Axis: Benchmark Wealth Curve
+fig_prob.add_trace(
+    go.Scatter(x=bh_wealth.index, y=bh_wealth, mode='lines', 
+               name="S&P 500 (Wealth)",
+               line=dict(color='gray', width=1.5, dash='dot')), 
+    secondary_y=False
+)
+
+# Right Y-Axis: Bear Market Probability
+if 'State_Prob' in jm_xgb_df.columns:
+    fig_prob.add_trace(
+        go.Scatter(x=jm_xgb_df.index, y=jm_xgb_df['State_Prob'], mode='lines', 
+                   name="Bear Regime Probability",
+                   line=dict(color='red', width=1),
+                   fill='tozeroy', fillcolor='rgba(255, 0, 0, 0.15)'), 
+        secondary_y=True
+    )
+    fig_prob.add_hline(y=0.5, line_dash="dash", line_color="red", secondary_y=True)
+
+fig_prob.update_yaxes(title_text="Benchmark Price", secondary_y=False)
+fig_prob.update_yaxes(title_text="Bear Probability", tickformat=".0%", range=[0, 1], secondary_y=True)
+
+apply_bear_shading(fig_prob)
+st.plotly_chart(fig_prob, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 4: Rolling 1-Year Sharpe Ratio
+# --------------------------------------------------------------------------
+st.subheader("4. Rolling 1-Year Sharpe Ratio")
+fig_sharpe = create_base_fig("Rolling 12-Month Sharpe Ratio", "Sharpe Ratio")
+ROLLING_WINDOW = 252 # 1 Trading Year
+
+for name, returns in strategies.items():
+    if name == 'Simple JM Baseline' and not run_simple_jm_cached:
+        continue
+    excess_ret = returns - rf_returns
+    rolling_ann_ret = excess_ret.rolling(window=ROLLING_WINDOW).sum()
+    rolling_ann_vol = returns.rolling(window=ROLLING_WINDOW).std() * np.sqrt(252)
+    rolling_sharpe = rolling_ann_ret / rolling_ann_vol.replace(0, np.nan)
+    
+    fig_sharpe.add_trace(go.Scatter(
+        x=rolling_sharpe.index, y=rolling_sharpe, mode='lines', 
+        name=f"{name} (1Y Sharpe)",
+        line=dict(color=strategy_colors.get(name), width=1.5)
+    ))
+
+fig_sharpe.add_hline(y=0, line_dash="solid", line_color="black", line_width=1)
+apply_bear_shading(fig_sharpe)
+st.plotly_chart(fig_sharpe, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 5: Time-Series Feature Contribution (Local SHAP)
+# --------------------------------------------------------------------------
+st.subheader("5. Time-Series Feature Contribution (Local SHAP)")
+shap_cols = [c for c in jm_xgb_df.columns if c.startswith('SHAP_') and c != 'SHAP_Base_Value']
+
+if shap_cols and not jm_xgb_df[shap_cols].empty:
+    fig_shap_ts = create_base_fig("Local Feature Impact (XGBoost)", "SHAP Value (Log-Odds Impact)", height=600)
+    shap_df = jm_xgb_df[shap_cols].resample('2W').mean().dropna(how='all')
+    
+    import plotly.colors
+    colors_cycle = plotly.colors.qualitative.Plotly
+    
+    for i, col in enumerate(shap_cols):
+        feature_name = col.replace('SHAP_', '')
+        if shap_df[col].abs().sum() > 0.001:
+            fig_shap_ts.add_trace(go.Bar(
+                x=shap_df.index, y=shap_df[col], 
+                name=feature_name,
+                marker_color=colors_cycle[i % len(colors_cycle)],
+                showlegend=False,
+                legendgroup="SHAP"
+            ))
+            
+    fig_shap_ts.update_layout(barmode='relative')
+    st.plotly_chart(fig_shap_ts, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 6: Transactions & Lambda
+# --------------------------------------------------------------------------
+st.subheader("6. Transactions & Lambda Penalty")
 # Filter lambda dates for plotting
 if lambda_dates:
     lambda_ts = pd.Series(lambda_history, index=pd.to_datetime(lambda_dates))
@@ -313,123 +509,112 @@ else:
     lambda_dates_full = [pd.to_datetime(filter_start), pd.to_datetime(filter_end)]
     lambda_history_full = [0, 0]
 
-ax_lambda = fig.add_subplot(gs[2], sharex=ax_plot)
-ax_lambda.step(lambda_dates_full, lambda_history_full, where='post', color='purple', label='Selected Lambda Penalty', linewidth=2)
-ax_lambda.set_ylabel('Lambda Penalty')
-ax_lambda.grid(True, which="both", ls="--", alpha=0.5)
-ax_lambda.legend(loc='upper left')
-
-ax_trades = fig.add_subplot(gs[3], sharex=ax_plot)
 # Aggregate trades by the 6-month evaluation periods
 trades_by_period = jm_xgb_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
-ax_trades.step(trades_by_period.index, trades_by_period, where='post', color=strategy_colors.get('JM-XGB Strategy', 'orange'), label='Transactions (JM-XGB)', linewidth=2)
-if run_simple_jm_cached:
-    simple_jm_trades_by_period = simple_jm_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
-    ax_trades.step(simple_jm_trades_by_period.index, simple_jm_trades_by_period, where='post', color=strategy_colors.get('Simple JM Baseline', 'green'), label='Transactions (Simple JM)', linewidth=2)
-ax_trades.set_ylabel('Transactions')
-ax_trades.grid(True, which="both", ls="--", alpha=0.5)
-ax_trades.legend(loc='upper left')
 
-ax_returns = fig.add_subplot(gs[4], sharex=ax_plot)
-returns_by_period_dict = {}
-for name, returns in strategies.items():
-    ret_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: (1 + x).prod() - 1)
-    returns_by_period_dict[name] = ret_per
-    ax_returns.step(ret_per.index, ret_per, where='post', label=f"{name} Returns", color=strategy_colors.get(name), linewidth=2)
-ax_returns.set_ylabel('Periodic Returns')
-ax_returns.set_xlabel('Date')
-import matplotlib.ticker as mtick
-ax_returns.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-ax_returns.grid(True, which="both", ls="--", alpha=0.5)
-ax_returns.legend(loc='upper left')
-
-ax_vol = fig.add_subplot(gs[5], sharex=ax_plot)
-vol_by_period_dict = {}
-for name, returns in strategies.items():
-    vol_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: x.std() * np.sqrt(252))
-    vol_by_period_dict[name] = vol_per
-    ax_vol.step(vol_per.index, vol_per, where='post', label=f"{name} Volatility", color=strategy_colors.get(name), linewidth=2)
-ax_vol.set_ylabel('Periodic Volatility')
-ax_vol.set_xlabel('Date')
-ax_vol.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-ax_vol.grid(True, which="both", ls="--", alpha=0.5)
-ax_vol.legend(loc='upper left')
-
-plt.tight_layout()
-
-# Generate Plotly Figure for interactive UI
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-fig_plotly = make_subplots(rows=5, cols=1, shared_xaxes=True, 
-                           vertical_spacing=0.06,
-                           subplot_titles=("Wealth Curves", "Lambda Penalty", "Transactions", "Periodic Returns", "Periodic Volatility"),
-                           row_heights=[0.3, 0.175, 0.175, 0.175, 0.175])
-                           
-for name, returns in strategies.items():
-    wealth = (1 + returns).cumprod()
-    fig_plotly.add_trace(go.Scatter(x=wealth.index, y=wealth, mode='lines', 
-                                    name=f"{name} (Final: {wealth.iloc[-1]:.2f}x)",
-                                    line=dict(color=strategy_colors.get(name))), 
-                         row=1, col=1)
-                         
-bear_series = jm_xgb_df['Forecast_State'] == 1
-starts = bear_series.index[(bear_series) & (~bear_series.shift(1).fillna(False))]
-ends = bear_series.index[(bear_series) & (~bear_series.shift(-1).fillna(False))]
-
-for s, e in zip(starts, ends):
-    fig_plotly.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.15, line_width=0, row=1, col=1)
-    
-fig_plotly.add_trace(go.Scatter(x=lambda_dates_full, y=lambda_history_full, 
-                                line_shape='hv', name='Selected Lambda Penalty',
-                                line=dict(color='purple', width=2)),
-                     row=2, col=1)
-
-fig_plotly.add_trace(go.Scatter(x=trades_by_period.index, y=trades_by_period, 
-                                line_shape='hv', name='Transactions (JM-XGB)',
-                                line=dict(color=strategy_colors.get('JM-XGB Strategy', 'orange'), width=2)),
-                     row=3, col=1)
-if run_simple_jm_cached:
-    fig_plotly.add_trace(go.Scatter(x=simple_jm_trades_by_period.index, y=simple_jm_trades_by_period, 
-                                    line_shape='hv', name='Transactions (Simple JM)',
-                                    line=dict(color=strategy_colors.get('Simple JM Baseline', 'green'), width=2)),
-                         row=3, col=1)
-
-for name, ret_per in returns_by_period_dict.items():
-    fig_plotly.add_trace(go.Scatter(x=ret_per.index, y=ret_per, 
-                                    line_shape='hv', name=f"{name} Periodic Returns",
-                                    line=dict(color=strategy_colors.get(name), width=2)),
-                         row=4, col=1)
-
-for name, vol_per in vol_by_period_dict.items():
-    fig_plotly.add_trace(go.Scatter(x=vol_per.index, y=vol_per, 
-                                    line_shape='hv', name=f"{name} Periodic Volatility",
-                                    line=dict(color=strategy_colors.get(name), width=2)),
-                         row=5, col=1)
-                     
-fig_plotly.update_layout(height=1200, hovermode="x unified",
-                         margin=dict(l=20, r=20, t=40, b=20))
-fig_plotly.update_yaxes(title_text="Cumulative Wealth", row=1, col=1)
-fig_plotly.update_yaxes(title_text="Lambda Penalty", row=2, col=1)
-fig_plotly.update_yaxes(title_text="Transactions", row=3, col=1)
-fig_plotly.update_yaxes(title_text="Periodic Returns", tickformat=".2%", row=4, col=1)
-fig_plotly.update_yaxes(title_text="Periodic Volatility", tickformat=".2%", row=5, col=1)
-
-st.plotly_chart(fig_plotly, use_container_width=True)
-
-# Save to buffer for download
-buf = io.BytesIO()
-fig.savefig(buf, format="pdf", bbox_inches='tight')
-buf.seek(0)
-
-timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-pdf_filename = f'performance_report_{timestamp}.pdf'
-
-st.download_button(
-    label="Download PDF Report",
-    data=buf,
-    file_name=pdf_filename,
-    mime="application/pdf"
+fig_trades = make_subplots(specs=[[{"secondary_y": True}]])
+fig_trades.update_layout(
+    height=400,
+    template="plotly_dark",
+    hovermode="x unified",
+    margin=dict(l=20, r=20, t=60, b=40),
+    legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
 )
 
-plt.close(fig)
+fig_trades.add_trace(
+    go.Scatter(x=trades_by_period.index, y=trades_by_period, 
+               mode='lines+markers', name='Transactions',
+               line=dict(color=strategy_colors.get('JM-XGB Strategy', 'orange'), width=2)),
+    secondary_y=False
+)
+
+if run_simple_jm_cached:
+    simple_jm_trades_by_period = simple_jm_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
+    fig_trades.add_trace(go.Scatter(x=simple_jm_trades_by_period.index, y=simple_jm_trades_by_period, 
+                                    mode='lines+markers', name='Transactions (Simple JM)',
+                                    line=dict(color=strategy_colors.get('Simple JM Baseline', 'green'), width=2)),
+                         secondary_y=False)
+
+fig_trades.add_trace(
+    go.Scatter(x=lambda_dates_full, y=lambda_history_full, 
+               line_shape='hv', name='Selected Lambda Penalty',
+               line=dict(color='purple', width=2, dash='dot')),
+    secondary_y=True
+)
+
+fig_trades.update_yaxes(title_text="Transactions", secondary_y=False)
+fig_trades.update_yaxes(title_text="Lambda Penalty", secondary_y=True)
+
+apply_bear_shading(fig_trades)
+st.plotly_chart(fig_trades, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 7: Periodic Returns
+# --------------------------------------------------------------------------
+st.subheader("7. Periodic Returns")
+fig_ret = create_base_fig("Periodic Returns (6-Month Intervals)", "Returns", height=400)
+fig_ret.update_yaxes(tickformat=".2%")
+
+returns_by_period_dict = {}
+for name, returns in strategies.items():
+    if name == 'Simple JM Baseline' and not run_simple_jm_cached:
+        continue
+    ret_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: (1 + x).prod() - 1)
+    returns_by_period_dict[name] = ret_per
+    fig_ret.add_trace(go.Scatter(
+        x=ret_per.index, y=ret_per, 
+        mode='lines+markers', name=f"{name} Periodic Returns",
+        line=dict(color=strategy_colors.get(name), width=2)
+    ))
+
+apply_bear_shading(fig_ret)
+st.plotly_chart(fig_ret, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Chart 8: Periodic Volatility
+# --------------------------------------------------------------------------
+st.subheader("8. Periodic Volatility")
+fig_vol = create_base_fig("Periodic Volatility (6-Month Intervals)", "Volatility", height=400)
+fig_vol.update_yaxes(tickformat=".2%")
+
+vol_by_period_dict = {}
+for name, returns in strategies.items():
+    if name == 'Simple JM Baseline' and not run_simple_jm_cached:
+        continue
+    vol_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: x.std() * np.sqrt(252))
+    vol_by_period_dict[name] = vol_per
+    fig_vol.add_trace(go.Scatter(
+        x=vol_per.index, y=vol_per, 
+        mode='lines+markers', name=f"{name} Periodic Volatility",
+        line=dict(color=strategy_colors.get(name), width=2)
+    ))
+
+apply_bear_shading(fig_vol)
+st.plotly_chart(fig_vol, use_container_width=True)
+
+
+# --------------------------------------------------------------------------
+# Global SHAP Summary Plot 
+# --------------------------------------------------------------------------
+if shap_cols and not jm_xgb_df[shap_cols].empty:
+    st.subheader("Global Feature Importance (SHAP Summary)")
+    st.write("Average absolute impact on model output across the entire selected time period.")
+    
+    # Calculate mean absolute SHAP value for each feature
+    mean_abs_shap = jm_xgb_df[shap_cols].abs().mean().sort_values(ascending=True)
+    mean_abs_shap.index = [x.replace('SHAP_', '') for x in mean_abs_shap.index]
+    
+    fig_shap_summary = go.Figure(go.Bar(
+        x=mean_abs_shap.values,
+        y=mean_abs_shap.index,
+        orientation='h',
+        marker_color='royalblue'
+    ))
+    
+    fig_shap_summary.update_layout(
+        height=400 + (len(mean_abs_shap) * 20),
+        margin=dict(l=20, r=20, t=40, b=20),
+        xaxis_title="Mean Absolute SHAP Value (Impact on prediction)"
+    )
+    
+    st.plotly_chart(fig_shap_summary, use_container_width=True)
