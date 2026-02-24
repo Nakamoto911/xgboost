@@ -690,7 +690,7 @@ with tab_features:
                             'Bear Regime Avg': '{:.4f}',
                         }), 
                         hide_index=True, 
-                        use_container_width=True
+                        width='stretch'
                     )
                 else:
                     st.info("Raw feature data not found for the top SHAP features.")
@@ -740,7 +740,7 @@ with tab_features:
                 # Add horizontal line at 0
                 fig_dep.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
                 
-                st.plotly_chart(fig_dep, use_container_width=True)
+                st.plotly_chart(fig_dep, width='stretch')
                 
         st.markdown("---")
         
@@ -811,7 +811,7 @@ with tab_features:
 
         fig_point.add_vline(x=0, line_width=1, line_color="white")
         
-        st.plotly_chart(fig_point, use_container_width=True)
+        st.plotly_chart(fig_point, width='stretch')
 
 # --------------------------------------------------------------------------
 # Feature Charts Tab
@@ -821,7 +821,7 @@ with tab_feat_charts:
     
     # Re-display Cumulative Wealth
     st.subheader("Cumulative Wealth")
-    st.plotly_chart(fig_wealth, use_container_width=True, key="wealth_chart_features_tab")
+    st.plotly_chart(fig_wealth, width='stretch', key="wealth_chart_features_tab")
     
     st.subheader("Feature Values Over Time")
     
@@ -840,7 +840,7 @@ with tab_feat_charts:
         ))
         
         apply_bear_shading(fig_feat)
-        st.plotly_chart(fig_feat, use_container_width=True, key=f"feat_chart_{feat}")
+        st.plotly_chart(fig_feat, width='stretch', key=f"feat_chart_{feat}")
 
 # --------------------------------------------------------------------------
 # Export Actions (JSON & PDF) inside the Top Container

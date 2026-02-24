@@ -183,8 +183,39 @@ def fetch_and_prepare_data():
     print("Fetching data from Yahoo Finance and FRED...")
     
     # 1. Fetch main assets
-    data = yf.download([TARGET_TICKER, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER], 
-                       start=START_DATE_DATA, end=END_DATE, auto_adjust=False)['Adj Close']
+    tickers = [TARGET_TICKER, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER]
+    
+    # Download individually to bypass yfinance multi-ticker download bugs
+    series_list = []
+    for ticker in tickers:
+        try:
+            df_ticker = yf.download(ticker, start=START_DATE_DATA, end=END_DATE, auto_adjust=False)
+            if df_ticker.empty:
+                print(f"Warning: No data found for {ticker}")
+                continue
+                
+            # Handle cases where 'Adj Close' might be nested (newer yfinance)
+            if isinstance(df_ticker.columns, pd.MultiIndex):
+                if 'Adj Close' in df_ticker.columns.levels[0]:
+                    series = df_ticker['Adj Close'].iloc[:, 0].rename(ticker)
+                else:
+                    series = df_ticker.iloc[:, 0].rename(ticker)
+            else:
+                if 'Adj Close' in df_ticker.columns:
+                    series = df_ticker['Adj Close'].rename(ticker)
+                elif 'Close' in df_ticker.columns:
+                    series = df_ticker['Close'].rename(ticker)
+                else:
+                    series = df_ticker.iloc[:, 0].rename(ticker)
+                    
+            series_list.append(series)
+        except Exception as e:
+            print(f"Failed to download {ticker}: {e}")
+            
+    if not series_list:
+        raise ValueError("Failed to download any data from Yahoo Finance.")
+        
+    data = pd.concat(series_list, axis=1)
     data = data.ffill().dropna()
     
     # 2. Fetch FRED Macro data (2-Year and 10-Year Treasury Yields)
