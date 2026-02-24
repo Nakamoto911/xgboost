@@ -922,12 +922,207 @@ with tab_eval:
         
         fig_box.update_layout(
             title="Distribution of Daily Returns by True JM Regime",
+            margin=dict(l=20, r=20, t=50, b=20),
             yaxis_title="Daily Return",
             template="plotly_dark",
             height=400,
             yaxis=dict(tickformat=".1%", zerolinecolor='gray')
         )
         st.plotly_chart(fig_box, width='stretch')
+
+        # NEW: JM Regime Timeline (Price Overlay)
+        st.subheader("1b. JM Regime Timeline (Price Index Overlay)")
+        st.markdown("Visualize where exactly the JM model placed its regime labels on the market price curve.", help="The background shading indicates the TRUE Jump Model regime detected for that day. This helps identify if the model is 'late' to switch or if it's mis-labeling a rally as a bear regime.")
+        
+        fig_jm_price = create_base_fig("Benchmark Price index vs. JM Ground Truth", "Price Multiplier", height=450)
+        fig_jm_price.add_trace(go.Scatter(
+            x=bh_wealth.index, y=bh_wealth, mode='lines', 
+            name="S&P 500",
+            line=dict(color='white', width=1.5)
+        ))
+        
+        # Apply True JM Shading
+        jm_starts = jm_xgb_df.index[(jm_xgb_df['JM_Target_State'] == 1) & (~jm_xgb_df['JM_Target_State'].shift(1).fillna(0).astype(bool))]
+        jm_ends = jm_xgb_df.index[(jm_xgb_df['JM_Target_State'] == 1) & (~jm_xgb_df['JM_Target_State'].shift(-1).fillna(0).astype(bool))]
+        for s, e in zip(jm_starts, jm_ends):
+            fig_jm_price.add_vrect(x0=s, x1=e, fillcolor="crimson", opacity=0.15, line_width=0, layer="below")
+            
+        st.plotly_chart(fig_jm_price, width='stretch')
+        
+        # NEW: Periodic Return Breakdown (Bull vs Bear)
+        st.subheader("1c. Periodic Return Comparison (Audit)")
+        st.markdown("Examine the annualized return difference (Bull Return - Bear Return) for each 6-month evaluation chunk.", help="A POSITIVE bar means the model correctly separated a higher-yielding Bull regime from a lower-yielding Bear regime in that period. A NEGATIVE bar indicates a 'Regime Breakdown' where the identified Bear state actually had higher returns than the Bull state.")
+        
+        # Calculate returns by regime per period
+        periodic_stats = []
+        for period_start, chunk in jm_xgb_df.groupby(pd.Grouper(freq='6M')):
+            if chunk.empty: continue
+            
+            bull_ret = chunk.loc[chunk['JM_Target_State'] == 0, 'Target_Return']
+            bear_ret = chunk.loc[chunk['JM_Target_State'] == 1, 'Target_Return']
+            
+            # Use geometric annualized return for the chunk
+            ann_bull = (1 + bull_ret).prod() ** (252 / len(chunk)) - 1 if not bull_ret.empty else 0
+            ann_bear = (1 + bear_ret).prod() ** (252 / len(chunk)) - 1 if not bear_ret.empty else 0
+            
+            periodic_stats.append({
+                'Period': period_start,
+                'Bull Ann.': ann_bull,
+                'Bear Ann.': ann_bear,
+                'Difference': ann_bull - ann_bear
+            })
+            
+        if periodic_stats:
+            p_df = pd.DataFrame(periodic_stats)
+            fig_p_break = go.Figure()
+            
+            fig_p_break.add_trace(go.Bar(
+                x=p_df['Period'], y=p_df['Difference'],
+                marker_color=['green' if v > 0 else 'red' for v in p_df['Difference']],
+                name='Bull - Bear Return Delta',
+                text=[f"{v:+.1%}" for v in p_df['Difference']],
+                textposition='outside'
+            ))
+            
+            fig_p_break.update_layout(
+                title="Regime Separation Quality (Annualized Return Delta)",
+                yaxis_title="Return Difference",
+                yaxis_tickformat=".0%",
+                template="plotly_dark",
+                height=400,
+                margin=dict(l=20, r=20, t=50, b=20)
+            )
+            fig_p_break.add_hline(y=0, line_dash="solid", line_color="white", line_width=1)
+            
+            st.plotly_chart(fig_p_break, width='stretch')
+
+        # NEW: Risk-Return Scatter Plot
+        st.subheader("1d. Regime Risk-Return separation")
+        st.markdown("Compare the daily return and volatility characteristics of the two identified regimes.", help="This scatter plot shows the trade-off. Even if the 'Bear' regime has higher returns, it usually sits much further to the right (higher volatility), resulting in a lower Sortino or Sharpe ratio.")
+        
+        # Calculate trailing 21-day volatility and return for each point
+        jm_xgb_df['Trailing_Vol'] = jm_xgb_df['Target_Return'].rolling(21).std() * np.sqrt(252)
+        jm_xgb_df['Trailing_Ret'] = jm_xgb_df['Target_Return'].rolling(21).mean() * 252
+        
+        fig_scatter = go.Figure()
+        
+        for state, label, color in [(0, 'Bull (0)', 'deepskyblue'), (1, 'Bear (1)', 'crimson')]:
+            mask = jm_xgb_df['JM_Target_State'] == state
+            fig_scatter.add_trace(go.Scatter(
+                x=jm_xgb_df.loc[mask, 'Trailing_Vol'],
+                y=jm_xgb_df.loc[mask, 'Trailing_Ret'],
+                mode='markers',
+                name=label,
+                marker=dict(color=color, opacity=0.4, size=6),
+                text=[f"Date: {d.date()}" for d in jm_xgb_df.index[mask]],
+                hoverinfo="text+x+y"
+            ))
+            
+        fig_scatter.update_layout(
+            title="Trailing 21-Day Risk vs Return by Regime",
+            xaxis_title="Annualized Volatility (Trailing 21D)",
+            yaxis_title="Annualized Return (Trailing 21D)",
+            yaxis_tickformat=".0%",
+            xaxis_tickformat=".0%",
+            template="plotly_dark",
+            height=450,
+            margin=dict(l=20, r=20, t=50, b=20)
+        )
+        
+        st.plotly_chart(fig_scatter, width='stretch')
+        
+        # NEW: Regime History Audit Table
+        st.subheader("1e. JM Regime History Audit Table")
+        st.markdown("A granular breakdown of every contiguous regime detected by the Jump Model, including performance and XGBoost accuracy during those specific windows.", help="This table groups consecutive days of the same JM regime into 'segments'. It allows you to see if XGBoost performs better in long, stable regimes versus choppy, short-lived ones.")
+        
+        # Identify contiguous segments
+        jm_states = jm_xgb_df['JM_Target_State']
+        changes = (jm_states != jm_states.shift(1)).cumsum()
+        
+        # Ensure we have the lambda time series mapped to the daily index
+        lambda_ts = pd.Series(lambda_history, index=pd.to_datetime(lambda_dates))
+        lambda_daily = lambda_ts.reindex(jm_xgb_df.index.union(lambda_ts.index)).ffill().bfill().loc[jm_xgb_df.index]
+        
+        # Calculate XGB Accuracy properly (aligned t vs t+1)
+        jm_xgb_df['Next_True_JM'] = jm_xgb_df['JM_Target_State'].shift(-1)
+        jm_xgb_df['XGB_Correct'] = (jm_xgb_df['Forecast_State'] == jm_xgb_df['Next_True_JM']).astype(float)
+        
+        regime_segments = []
+        for segment_id, group in jm_xgb_df.groupby(changes):
+            start_dt = group.index[0]
+            end_dt = group.index[-1]
+            state = group['JM_Target_State'].iloc[0]
+            
+            # Segment returns
+            seg_returns = group['Target_Return']
+            total_ret = (1 + seg_returns).prod() - 1
+            
+            # Segment Drawdown
+            wealth = (1 + seg_returns).cumprod()
+            peak = wealth.cummax()
+            dd = (wealth - peak) / peak
+            max_dd = dd.min()
+            
+            # Forecast accuracy in THIS segment
+            valid_forecasts = group['XGB_Correct'].dropna()
+            acc = valid_forecasts.mean() if not valid_forecasts.empty else 0
+            
+            # Segment Volatility
+            seg_vol = seg_returns.std() * np.sqrt(252)
+            
+            # Segment Lambda (Average)
+            seg_lambda = lambda_daily.loc[group.index].mean()
+            
+            regime_segments.append({
+                'Start': start_dt.date(),
+                'End': end_dt.date(),
+                'Days': len(group),
+                'Regime': 'Bull (0)' if state == 0 else 'Bear (1)',
+                'Return': total_ret,
+                'Vol': seg_vol,
+                'Max DD': max_dd,
+                'Lambda': seg_lambda,
+                'XGB Accuracy': acc
+            })
+            
+        regime_history_df = pd.DataFrame(regime_segments).sort_values('Start', ascending=False)
+        
+        # Add filtering UI
+        col_f1, _ = st.columns([2, 3])
+        with col_f1:
+            filter_regimes = st.multiselect("Filter by Regime", options=['Bull (0)', 'Bear (1)'], default=['Bull (0)', 'Bear (1)'])
+            
+        filtered_history_df = regime_history_df[regime_history_df['Regime'].isin(filter_regimes)]
+        
+        st.dataframe(
+            filtered_history_df.style.format({
+                'Return': '{:.2%}',
+                'Vol': '{:.2%}',
+                'Max DD': '{:.2%}',
+                'Lambda': '{:.1f}',
+                'XGB Accuracy': '{:.1%}'
+            }).background_gradient(subset=['XGB Accuracy'], cmap='RdYlGn', vmin=0.3, vmax=0.7)
+            .apply(lambda x: [
+                'background-color: rgba(220, 20, 60, 0.2); color: crimson' if v == 'Bear (1)' 
+                else 'background-color: rgba(0, 191, 255, 0.15); color: deepskyblue' for v in x
+            ], subset=['Regime']),
+            hide_index=True,
+            width='stretch',
+            column_config={
+                "Start": st.column_config.DateColumn("Start", help="The date this regime segment began."),
+                "End": st.column_config.DateColumn("End", help="The date this regime segment ended."),
+                "Days": st.column_config.NumberColumn("Days", help="Total number of trading days in this segment."),
+                "Regime": st.column_config.TextColumn("Regime", help="The Ground Truth regime identified by the Jump Model."),
+                "Return": st.column_config.NumberColumn("Return", help="Total geometric return during this specific segment."),
+                "Vol": st.column_config.NumberColumn("Vol", help="Annualized volatility of daily returns during this segment."),
+                "Max DD": st.column_config.NumberColumn("Max DD", help="The maximum peak-to-trough decline experienced during this segment."),
+                "Lambda": st.column_config.NumberColumn("Lambda", help="The average Lambda penalty active during this period (higher = more regime stability)."),
+                "XGB Accuracy": st.column_config.NumberColumn(
+                    "XGB Accuracy",
+                    help="Directional accuracy of XGBoost: % of days where prediction at (t) correctly anticipated the JM label at (t+1)."
+                )
+            }
+        )
         
         st.markdown("---")
         
