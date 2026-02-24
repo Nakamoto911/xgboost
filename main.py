@@ -240,7 +240,8 @@ def fetch_and_prepare_data():
     # Downside Deviation (log scale)
     downside_returns = np.minimum(features['Excess_Return'], 0)
     for hl in [5, 21]:
-        ewm_dd = downside_returns.ewm(halflife=hl).std().fillna(0)
+        ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
+        ewm_dd = np.sqrt(ewm_var).fillna(0)
         features[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
         
     # EWM Average Return
@@ -249,7 +250,9 @@ def fetch_and_prepare_data():
         
     # EWM Sortino Ratio
     for hl in [5, 10, 21]:
-        ewm_dd_raw = downside_returns.ewm(halflife=hl).std().fillna(1e-8)
+        ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
+        ewm_dd_raw = np.sqrt(ewm_var).fillna(1e-8)
+        ewm_dd_raw = np.maximum(ewm_dd_raw, 1e-8)
         features[f'Sortino_{hl}'] = features[f'Avg_Ret_{hl}'] / ewm_dd_raw
 
     # B. Cross-Asset Macro Features
@@ -443,7 +446,7 @@ def calculate_metrics(returns_series, rf_series):
     sharpe = ann_excess_ret / ann_vol if ann_vol != 0 else 0
     
     downside_returns = np.minimum(excess_returns, 0)
-    ann_downside_vol = downside_returns.std() * np.sqrt(252)
+    ann_downside_vol = np.sqrt((downside_returns ** 2).mean()) * np.sqrt(252)
     sortino = ann_excess_ret / ann_downside_vol if ann_downside_vol != 0 else 0
     
     cum_wealth = (1 + returns_series).cumprod()
