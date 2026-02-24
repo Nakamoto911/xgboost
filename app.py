@@ -7,6 +7,7 @@ import io
 import pickle
 import json
 import tempfile
+import time
 from datetime import datetime
 import main as backend
 
@@ -30,11 +31,26 @@ lambda_grid_str = st.sidebar.text_input("Lambda Grid (comma separated)", ",".joi
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
 
-if st.sidebar.button("Run Backtest"):
-    # Clear cache if parameters changed to ensure new data is fetched
-    # We will just delete the cache file if it exists, to be safe
+run_button = st.sidebar.button("Run Backtest")
+duration_placeholder = st.sidebar.empty()
+
+@st.cache_data
+def get_cached_data(target, bond, rf, vix, start, end):
+    backend.TARGET_TICKER = target
+    backend.BOND_TICKER = bond
+    backend.RISK_FREE_TICKER = rf
+    backend.VIX_TICKER = vix
+    backend.START_DATE_DATA = start
+    backend.END_DATE = end
     if os.path.exists('data_cache.pkl'):
-        os.remove('data_cache.pkl')
+        try:
+            os.remove('data_cache.pkl')
+        except:
+            pass
+    return backend.fetch_and_prepare_data()
+
+if run_button:
+    backtest_start_time = time.time()
     
     # Update backend globals
     backend.TARGET_TICKER = target_ticker
@@ -53,7 +69,7 @@ if st.sidebar.button("Run Backtest"):
 
     st.write("Fetching and preparing data...")
     try:
-        df = backend.fetch_and_prepare_data()
+        df = get_cached_data(target_ticker, bond_ticker, risk_free_ticker, vix_ticker, start_date_data, end_date)
         st.success("Data fetched and features prepared successfully!")
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -114,6 +130,8 @@ if st.sidebar.button("Run Backtest"):
         
     status_text.text("Backtest complete! Generating results...")
     progress_bar.empty()
+    
+    backtest_duration = time.time() - backtest_start_time
 
     cache_data = {
         'jm_xgb_results': jm_xgb_results,
@@ -123,6 +141,7 @@ if st.sidebar.button("Run Backtest"):
         'run_simple_jm': run_simple_jm,
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
+        'backtest_duration': backtest_duration,
     }
     with open('backtest_cache.pkl', 'wb') as f:
         pickle.dump(cache_data, f)
@@ -140,7 +159,22 @@ if os.path.exists('backtest_cache.pkl'):
         run_simple_jm_cached = cache_data.get('run_simple_jm', False)
         cached_oos_start = cache_data.get('oos_start_date', backend.OOS_START_DATE)
         cached_end_date = cache_data.get('end_date', backend.END_DATE)
+        backtest_duration = cache_data.get('backtest_duration', None)
         cache_loaded = True
+        
+        if backtest_duration is not None:
+            if backtest_duration >= 3600:
+                h = int(backtest_duration // 3600)
+                m = int((backtest_duration % 3600) // 60)
+                s = int(backtest_duration % 60)
+                duration_str = f"{h}h {m}m {s}s"
+            elif backtest_duration >= 60:
+                m = int(backtest_duration // 60)
+                s = int(backtest_duration % 60)
+                duration_str = f"{m}m {s}s"
+            else:
+                duration_str = f"{backtest_duration:.2f} seconds"
+            duration_placeholder.info(f"Last backtest duration: {duration_str}")
     except Exception as e:
         st.error(f"Could not load cache: {e}")
 
@@ -571,7 +605,7 @@ with tab_perf:
     fig_trades.add_trace(
         go.Scatter(x=lambda_dates_full, y=lambda_history_full, 
                    line_shape='hv', name='Selected Lambda Penalty',
-                   line=dict(color='purple', width=2, dash='dot')),
+                   line=dict(color='#FF00FF', width=4, dash='solid')),
         secondary_y=True
     )
     
@@ -830,6 +864,7 @@ with tab_feat_charts:
     exclude_cols = ['Target_Return', 'RF_Rate', 'Forecast_State', 'Strat_Return', 'Trades', 'State_Prob', 'SHAP_Base_Value']
     feature_cols = [c for c in jm_xgb_df.columns if c not in exclude_cols and not c.startswith('SHAP_')]
     
+    feature_charts = {}
     for feat in feature_cols:
         fig_feat = create_base_fig(f"{feat} over Time", feat, height=350)
         
@@ -840,6 +875,7 @@ with tab_feat_charts:
         ))
         
         apply_bear_shading(fig_feat)
+        feature_charts[feat] = fig_feat
         st.plotly_chart(fig_feat, width='stretch', key=f"feat_chart_{feat}")
 
 # --------------------------------------------------------------------------
@@ -858,6 +894,83 @@ with export_container:
         last_record.index = last_record.index.astype(str)
         last_record_dict = last_record.reset_index().to_dict('records')
         
+        
+        # Format the duration string dynamically
+        duration_str = "N/A"
+        if backtest_duration is not None:
+            if backtest_duration >= 3600:
+                h = int(backtest_duration // 3600)
+                m = int((backtest_duration % 3600) // 60)
+                s = int(backtest_duration % 60)
+                duration_str = f"{h}h {m}m {s}s"
+            elif backtest_duration >= 60:
+                m = int(backtest_duration // 60)
+                s = int(backtest_duration % 60)
+                duration_str = f"{m}m {s}s"
+            else:
+                duration_str = f"{backtest_duration:.2f} seconds"
+        
+        def compress_fig(fig, max_points=6):
+            if fig is None: return {}
+            compressed = {}
+            for trace in getattr(fig, 'data', []):
+                name = getattr(trace, 'name', None) or "Unnamed"
+                if getattr(trace, 'showlegend', True) is False and name == "Unnamed": 
+                    continue
+                
+                # Handling horizontal bar charts (like SHAP summary)
+                if getattr(trace, 'type', 'scatter') == 'bar' and getattr(trace, 'orientation', 'v') == 'h':
+                    x = getattr(trace, 'x', [])
+                    y = getattr(trace, 'y', [])
+                    if x is not None and y is not None:
+                        pairs = list(zip(y, x))
+                        if len(pairs) > max_points * 2:
+                            pairs = pairs[:max_points] + pairs[-max_points:]
+                        compressed[name] = {str(k): float(round(v, 3)) if isinstance(v, (float, np.floating)) else v for k, v in pairs}
+                    continue
+                
+                # Handling standard scatter/lines
+                y = getattr(trace, 'y', None)
+                if y is None or len(y) == 0: 
+                    continue
+                
+                y_list = list(y)
+                y_num = [val for val in y_list if isinstance(val, (int, float, np.integer, np.floating))]
+                if not y_num:
+                    continue
+                
+                if len(y_num) > max_points:
+                    step = (len(y_num) - 1) / max(1, max_points - 1)
+                    sampled_y = [y_num[int(round(i * step))] for i in range(max_points)]
+                else:
+                    sampled_y = y_num
+                
+                sampled_y = [float(round(val, 3)) if isinstance(val, (float, np.floating)) else int(val) if isinstance(val, np.integer) else val for val in sampled_y]
+                compressed[name] = sampled_y
+                
+            return {k: v for k, v in compressed.items() if v}
+
+        g = globals()
+        figs = {
+            "Wealth": g.get('fig_wealth'),
+            "Drawdown": g.get('fig_dd'),
+            "Regime_Prob": g.get('fig_prob'),
+            "Sharpe": g.get('fig_sharpe'),
+            "Trades_Lambda": g.get('fig_trades'),
+            "Periodic_Ret": g.get('fig_ret'),
+            "Periodic_Vol": g.get('fig_vol'),
+            "SHAP_TS": g.get('fig_shap_ts'),
+            "SHAP_Summary": g.get('fig_shap_summary'),
+            "Feature_Dependence": g.get('fig_dep'),
+            "SHAP_Point_in_Time": g.get('fig_point'),
+        }
+        
+        fc = g.get('feature_charts', {})
+        for k, v in fc.items():
+            figs[f"Feat_{k}"] = v
+
+        exported_charts = {k: compress_fig(v) for k, v in figs.items() if v is not None and compress_fig(v)}
+        
         return {
             "params": {
                 "tgt": backend.TARGET_TICKER, 
@@ -866,7 +979,8 @@ with export_container:
                 "vix": backend.VIX_TICKER,
                 "cost": backend.TRANSACTION_COST, 
                 "oos": f"{filter_start} to {filter_end}",
-                "lambda_sel": lambda_history[-1] if lambda_history else "N/A"
+                "lambda_sel": lambda_history[-1] if lambda_history else "N/A",
+                "backtest_duration": duration_str
             },
             "data": {
                 "rows": jm_xgb_df.shape[0], 
@@ -879,7 +993,8 @@ with export_container:
                     "strat": m["Strategy"][:15], "ret": m["Ann. Ret"], "vol": m["Ann. Vol"], 
                     "sr": m["Sharpe"], "dd": m["Max DD"], "trd": m["Total Trades"]
                 } for m in metrics_data
-            ]
+            ],
+            "charts": exported_charts
         }
 
     def generate_pdf_report():
@@ -910,7 +1025,8 @@ with export_container:
             "vix": "VIX Ticker",
             "cost": "Transaction Cost",
             "oos": "Out-of-Sample Period",
-            "lambda_sel": "Final Lambda Penalty"
+            "lambda_sel": "Final Lambda Penalty",
+            "backtest_duration": "Backtest Duration"
         }
         
         pdf.set_font("Arial", 'B', 12)
@@ -1009,12 +1125,16 @@ with export_container:
                 st.error("Missing dependencies. Please run `pip install fpdf2 kaleido` in your terminal and restart Streamlit.")
             else:
                 current_time_file = datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label="✅ Click to Save PDF",
-                    data=pdf_bytes,
-                    file_name=f"xgb_{current_time_file}.pdf",
-                    mime="application/pdf"
-                )
+                import base64
+                import streamlit.components.v1 as components
+                b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                href = f"""
+                <a href="data:application/pdf;base64,{b64}" download="xgb_{current_time_file}.pdf" id="download_link"></a>
+                <script>
+                    document.getElementById("download_link").click();
+                </script>
+                """
+                components.html(href, height=0)
 
     with col_exp2:
         if dialog_func:
