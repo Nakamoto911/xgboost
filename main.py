@@ -369,6 +369,12 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     oos_df['Forecast_State'] = (smoothed_probs > 0.5).astype(int)
     oos_df['State_Prob'] = smoothed_probs
     
+    # Calculate JM online regimes for the OOS period to serve as True Labels for Audit
+    X_oos_jm = oos_df[return_features]
+    X_oos_jm = (X_oos_jm - train_df[return_features].mean()) / train_df[return_features].std()
+    oos_states = jm.predict_online(X_oos_jm.values, last_known_state=identified_states[-1])
+    oos_df['JM_Target_State'] = oos_states
+    
     # Add SHAP values to dataframe
     base_value = explainer.expected_value
     if isinstance(base_value, (np.ndarray, list)):
@@ -387,7 +393,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     for col in all_features:
         oos_df[f'Feature_{col}'] = oos_df[col]
         
-    cols_to_keep = ['Target_Return', 'RF_Rate', 'Forecast_State', 'State_Prob', 'SHAP_Base_Value'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
+    cols_to_keep = ['Target_Return', 'RF_Rate', 'Forecast_State', 'State_Prob', 'SHAP_Base_Value', 'JM_Target_State'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
     
     result = oos_df[cols_to_keep]
     _forecast_cache[cache_key] = result

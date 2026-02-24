@@ -387,7 +387,7 @@ def apply_bear_shading(fig):
 # --------------------------------------------------------------------------
 # Main Dashboard Layout
 # --------------------------------------------------------------------------
-tab_perf, tab_features, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "📈 Feature Charts"])
+tab_perf, tab_features, tab_eval, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "🕵️ JM Audit & Eval", "📈 Feature Charts"])
 
 with tab_perf:
     st.subheader("1. Cumulative Wealth")
@@ -877,6 +877,130 @@ with tab_feat_charts:
         apply_bear_shading(fig_feat)
         feature_charts[feat] = fig_feat
         st.plotly_chart(fig_feat, width='stretch', key=f"feat_chart_{feat}")
+
+# --------------------------------------------------------------------------
+# JM Audit & Forecast Evaluation Tab
+# --------------------------------------------------------------------------
+with tab_eval:
+    st.header("JM Audit & Forecast Evaluation")
+    st.markdown("Assess how well the Jump Model mathematically separates market returns, and how accurately XGBoost predicts these underlying regimes.", help="The true 'Bear' and 'Bull' regimes are determined out-of-sample by the Jump Model. XGBoost attempts to forecast these regimes one day in advance. This tab compares the true JM labels against the XGBoost forecasts.")
+    
+    if 'JM_Target_State' not in jm_xgb_df.columns:
+        st.warning("The selected backtest cache does not contain True JM Labels. Please run a new backtest to view this tab.")
+    else:
+        st.subheader("1. Jump Model Regime Audit")
+        st.markdown("Analyze the true financial returns for the out-of-sample periods categorized as Bull (0) or Bear (1) by the JM algorithm.", help="A good regime classification model should show distinctly lower or negative average returns and higher volatility in the Bear (1) regime compared to the Bull (0) regime.")
+        
+        # Calculate JM Actual Stats
+        jm_returns = jm_xgb_df.groupby('JM_Target_State')['Target_Return'].agg(
+            Count='count',
+            Mean='mean',
+            Std_Dev='std',
+            Min='min',
+            Max='max'
+        ).rename(index={0: 'Bull (0)', 1: 'Bear (1)'})
+        
+        jm_returns['Ann. Return'] = jm_returns['Mean'] * 252
+        jm_returns['Ann. Volatility'] = jm_returns['Std_Dev'] * np.sqrt(252)
+        
+        # Display as formatted dataframe
+        st.dataframe(jm_returns[['Count', 'Ann. Return', 'Ann. Volatility', 'Min', 'Max']].style.format({
+            'Ann. Return': '{:.2%}',
+            'Ann. Volatility': '{:.2%}',
+            'Min': '{:.2%}',
+            'Max': '{:.2%}'
+        }), width='stretch')
+
+        # Return Distribution BoxPlot
+        fig_box = go.Figure()
+        
+        df_bull = jm_xgb_df[jm_xgb_df['JM_Target_State'] == 0]
+        df_bear = jm_xgb_df[jm_xgb_df['JM_Target_State'] == 1]
+        
+        fig_box.add_trace(go.Box(y=df_bull['Target_Return'], name="Bull (0)", marker_color="deepskyblue", boxmean='sd'))
+        fig_box.add_trace(go.Box(y=df_bear['Target_Return'], name="Bear (1)", marker_color="crimson", boxmean='sd'))
+        
+        fig_box.update_layout(
+            title="Distribution of Daily Returns by True JM Regime",
+            yaxis_title="Daily Return",
+            template="plotly_dark",
+            height=400,
+            yaxis=dict(tickformat=".1%", zerolinecolor='gray')
+        )
+        st.plotly_chart(fig_box, width='stretch')
+        
+        st.markdown("---")
+        
+        # XGBoost Evaluation
+        st.subheader("2. XGBoost Forecast Quality")
+        st.markdown("Evaluate the classification performance of XGBoost in predicting the next day's true JM regime.", help="Remember that XGBoost predicts the JM regime shifted by 1 day (tomorrow's state). Thus, a perfect forecast matches today's prediction with tomorrow's true state.")
+        
+        # Align XGBoost Forecast (t) with JM Regime (t+1)
+        # The true target for the forecast made at time t is the JM state at t+1.
+        true_labels = jm_xgb_df['JM_Target_State'].shift(-1).dropna()
+        pred_labels = jm_xgb_df['Forecast_State'].loc[true_labels.index]
+        
+        from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+        
+        if len(true_labels) > 0:
+            acc = accuracy_score(true_labels, pred_labels)
+            prec = precision_score(true_labels, pred_labels, zero_division=0)
+            rec = recall_score(true_labels, pred_labels, zero_division=0)
+            f1 = f1_score(true_labels, pred_labels, zero_division=0)
+            
+            # Metrics Row
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Accuracy", f"{acc:.2%}", help="Overall proportion of correct predictions.")
+            col_m2.metric("Precision (Bear)", f"{prec:.2%}", help="When XGBoost predicts Bear, how often is it actually Bear?")
+            col_m3.metric("Recall (Bear)", f"{rec:.2%}", help="Out of all actual Bear days, how many did XGBoost correctly identify?")
+            col_m4.metric("F1-Score (Bear)", f"{f1:.2f}", help="Harmonic mean of Precision and Recall.")
+            
+            # Confusion Matrix Plotly
+            cm = confusion_matrix(true_labels, pred_labels, labels=[0, 1])
+            fig_cm = go.Figure(data=go.Heatmap(
+                z=cm[::-1], # Reverse rows for display matching standard layout
+                x=["Predicted Bull", "Predicted Bear"],
+                y=["Actual Bear", "Actual Bull"], # Reverse y labels correspondingly
+                hoverongaps=False,
+                colorscale="Blues",
+                text=[[str(v) for v in row] for row in cm[::-1]],
+                texttemplate="%{text}",
+                textfont={"size": 16}
+            ))
+            fig_cm.update_layout(
+                title="Confusion Matrix (Predicting t+1 Regime)",
+                height=400,
+                width=400,
+                template="plotly_dark",
+                margin=dict(l=20, r=20, t=50, b=20)
+            )
+            
+            # Center the confusion matrix
+            col_c1, col_c2, col_c3 = st.columns([1, 2, 1])
+            with col_c2:
+                st.plotly_chart(fig_cm, width='stretch')
+                
+            # Rolling Metrics
+            st.subheader("3. Rolling Forecast Accuracy")
+            st.markdown("Track the 6-month rolling accuracy of XGBoost's regime predictions.", help="Helps identify periods where the model struggles to accurately forecast the underlying regimes.")
+            
+            # Create a dataframe for rolling calculation
+            roll_df = pd.DataFrame({'True': true_labels, 'Pred': pred_labels})
+            roll_df['Correct'] = (roll_df['True'] == roll_df['Pred']).astype(int)
+            rolling_acc = roll_df['Correct'].rolling(window=126).mean()  # 126 days is approx 6 months
+            
+            fig_roll = create_base_fig("6-Month Rolling Classification Accuracy", "Accuracy", height=350)
+            fig_roll.add_trace(go.Scatter(
+                x=rolling_acc.index, y=rolling_acc, mode='lines', 
+                name="Rolling Accuracy",
+                line=dict(color='orange', width=2)
+            ))
+            fig_roll.add_hline(y=0.5, line_dash="dash", line_color="red", annotation_text="Coin Toss (50%)")
+            fig_roll.update_yaxes(tickformat=".0%", range=[0, 1])
+            
+            apply_bear_shading(fig_roll)
+            st.plotly_chart(fig_roll, width='stretch')
+
 
 # --------------------------------------------------------------------------
 # Export Actions (JSON & PDF) inside the Top Container
