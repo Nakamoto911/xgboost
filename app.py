@@ -387,7 +387,7 @@ def apply_bear_shading(fig):
 # --------------------------------------------------------------------------
 # Main Dashboard Layout
 # --------------------------------------------------------------------------
-tab_perf, tab_features, tab_eval, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "🕵️ JM Audit & Eval", "📈 Feature Charts"])
+tab_perf, tab_features, tab_jm_audit, tab_xgb_eval, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "🕵️ JM Audit", "🎯 XGBoost Eval", "📈 Feature Charts"])
 
 with tab_perf:
     st.subheader("1. Cumulative Wealth")
@@ -879,11 +879,11 @@ with tab_feat_charts:
         st.plotly_chart(fig_feat, width='stretch', key=f"feat_chart_{feat}")
 
 # --------------------------------------------------------------------------
-# JM Audit & Forecast Evaluation Tab
+# JM Audit Tab
 # --------------------------------------------------------------------------
-with tab_eval:
-    st.header("JM Audit & Forecast Evaluation")
-    st.markdown("Assess how well the Jump Model mathematically separates market returns, and how accurately XGBoost predicts these underlying regimes.", help="The true 'Bear' and 'Bull' regimes are determined out-of-sample by the Jump Model. XGBoost attempts to forecast these regimes one day in advance. This tab compares the true JM labels against the XGBoost forecasts.")
+with tab_jm_audit:
+    st.header("JM Audit")
+    st.markdown("Assess how well the Jump Model mathematically separates market returns.", help="The true 'Bear' and 'Bull' regimes are determined out-of-sample by the Jump Model. This tab compares the true JM labels.")
     
     if 'JM_Target_State' not in jm_xgb_df.columns:
         st.warning("The selected backtest cache does not contain True JM Labels. Please run a new backtest to view this tab.")
@@ -1125,9 +1125,19 @@ with tab_eval:
         )
         
         st.markdown("---")
-        
+
+# --------------------------------------------------------------------------
+# XGBoost Forecast Evaluation Tab
+# --------------------------------------------------------------------------
+with tab_xgb_eval:
+    st.header("XGBoost Forecast Evaluation")
+    st.markdown("Assess how accurately XGBoost predicts the underlying regimes.", help="XGBoost attempts to forecast these regimes one day in advance. This tab compares the true JM labels against the XGBoost forecasts.")
+    
+    if 'JM_Target_State' not in jm_xgb_df.columns:
+        st.warning("The selected backtest cache does not contain True JM Labels. Please run a new backtest to view this tab.")
+    else:
         # XGBoost Evaluation
-        st.subheader("2. XGBoost Forecast Quality")
+        st.subheader("1. XGBoost Forecast Quality")
         st.markdown("Evaluate the classification performance of XGBoost in predicting the next day's true JM regime.", help="Remember that XGBoost predicts the JM regime shifted by 1 day (tomorrow's state). Thus, a perfect forecast matches today's prediction with tomorrow's true state.")
         
         # Align XGBoost Forecast (t) with JM Regime (t+1)
