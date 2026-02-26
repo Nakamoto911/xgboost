@@ -58,6 +58,9 @@ END_DATE = '2026-01-01'         # End of testing period
 # Transaction costs
 TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
 
+# Validation Window (Years)
+VALIDATION_WINDOW_YRS = 5
+
 # Lambda candidate grid for Jump Model (reduced to 4 for computational speed in testing)
 # In production, expand this array (e.g., np.logspace(0, 2, 10))
 LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0] 
@@ -253,7 +256,7 @@ def fetch_and_prepare_data():
         ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
         ewm_dd_raw = np.sqrt(ewm_var).fillna(1e-8)
         ewm_dd_raw = np.maximum(ewm_dd_raw, 1e-8)
-        features[f'Sortino_{hl}'] = features[f'Avg_Ret_{hl}'] / ewm_dd_raw
+        features[f'Sortino_{hl}'] = (features[f'Avg_Ret_{hl}'] / ewm_dd_raw).clip(-10, 10)
 
     # B. Cross-Asset Macro Features
     # 2-Year Yield Features
@@ -315,6 +318,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     cum_ret_1 = train_df['Excess_Return'][identified_states == 1].sum()
     if cum_ret_1 > cum_ret_0:
         identified_states = 1 - identified_states # Flip labels
+        jm.means = jm.means[::-1].copy()
         
     # Shift labels forward by 1 day to create prediction targets
     train_df['Target_State'] = np.roll(identified_states, -1)
@@ -473,7 +477,7 @@ def main(run_simple_jm=False):
     # Rolling Walk-Forward Optimization
     while current_date < final_end_date:
         chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
-        val_start = current_date - pd.DateOffset(years=5)
+        val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         print(f"\nEvaluating period: {current_date.date()} to {chunk_end.date()}")
         
         # 1. Hyperparameter Tuning on Validation Window (for JM-XGB)

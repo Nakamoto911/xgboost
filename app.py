@@ -27,6 +27,7 @@ oos_start_date = st.sidebar.text_input("OOS Start Date", backend.OOS_START_DATE)
 end_date = st.sidebar.text_input("End Date", backend.END_DATE)
 
 transaction_cost = st.sidebar.number_input("Transaction Cost", value=backend.TRANSACTION_COST, format="%.4f")
+validation_window = st.sidebar.number_input("Validation Window (Years)", min_value=1, max_value=20, value=backend.VALIDATION_WINDOW_YRS)
 lambda_grid_str = st.sidebar.text_input("Lambda Grid (comma separated)", ",".join(map(str, backend.LAMBDA_GRID)))
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
@@ -61,6 +62,7 @@ if run_button:
     backend.OOS_START_DATE = oos_start_date
     backend.END_DATE = end_date
     backend.TRANSACTION_COST = transaction_cost
+    backend.VALIDATION_WINDOW_YRS = validation_window
     
     try:
         backend.LAMBDA_GRID = [float(x.strip()) for x in lambda_grid_str.split(',')]
@@ -95,7 +97,7 @@ if run_button:
     
     while current_date < final_end_date:
         chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
-        val_start = current_date - pd.DateOffset(years=5)
+        val_start = current_date - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
         
         status_text.text(f"Evaluating period: {current_date.date()} to {chunk_end.date()}")
         
@@ -1125,7 +1127,240 @@ with tab_jm_audit:
         )
         
         st.markdown("---")
+        
+        # NEW: 1f. Feature Distributions by JM Regime
+        st.subheader("1f. Feature Distributions by JM Regime")
+        st.markdown("Analyze how the raw input features are distributed across the True JM regimes.", help="This helps verify if the feature engineering step produces features that are distinctly different between the two regimes. If the distributions overlap heavily, the clustering algorithm will struggle.")
+        
+        # Get raw features (excluding SHAP and other metadata)
+        exclude_dist_cols = ['Target_Return', 'RF_Rate', 'Forecast_State', 'Strat_Return', 'Trades', 'State_Prob', 'SHAP_Base_Value', 'JM_Target_State', 'Trailing_Vol', 'Trailing_Ret', 'Next_True_JM', 'XGB_Correct']
+        dist_features = [c for c in jm_xgb_df.columns if c.startswith('Feature_')]
+        
+        if dist_features:
+            selected_dist_feat = st.selectbox("Select Feature to view Distribution", [f.replace('Feature_', '') for f in dist_features])
+            
+            fig_dist = go.Figure()
+            feat_col = f"Feature_{selected_dist_feat}"
+            
+            fig_dist.add_trace(go.Box(
+                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 0, feat_col], 
+                name="Bull (0)", 
+                marker_color="deepskyblue", 
+                boxmean='sd'
+            ))
+            fig_dist.add_trace(go.Box(
+                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 1, feat_col], 
+                name="Bear (1)", 
+                marker_color="crimson", 
+                boxmean='sd'
+            ))
+            
+            fig_dist.update_layout(
+                title=f"Distribution of {selected_dist_feat} by True JM Regime",
+                margin=dict(l=20, r=20, t=50, b=20),
+                yaxis_title=selected_dist_feat,
+                template="plotly_dark",
+                height=400
+            )
+            st.plotly_chart(fig_dist, width='stretch')
+        
+        # NEW: 1g. Regime Feature Scatter Plot
+        st.subheader("1g. Regime Feature Scatter Plot")
+        st.markdown("Visualize the multi-dimensional space where the Jump Model draws its clustering boundaries.", help="Select two features to see how they separate the regimes. The K-means algorithm tries to find clusters in this higher-dimensional space.")
+        
+        if len(dist_features) >= 2:
+            col_scat1, col_scat2 = st.columns(2)
+            clean_dist_features = [f.replace('Feature_', '') for f in dist_features]
+            
+            with col_scat1:
+                feat_x = st.selectbox("Select X-Axis Feature", clean_dist_features, index=0)
+            with col_scat2:
+                # Try to default to a volatility/risk feature for the Y-axis if available
+                default_y_idx = 1
+                for i, f in enumerate(clean_dist_features):
+                    if 'DD' in f or 'Vol' in f or 'VIX' in f:
+                        default_y_idx = i
+                        break
+                feat_y = st.selectbox("Select Y-Axis Feature", clean_dist_features, index=default_y_idx)
+                
+            fig_feat_scatter = go.Figure()
+            
+            for state, label, color in [(0, 'Bull (0)', 'deepskyblue'), (1, 'Bear (1)', 'crimson')]:
+                mask = jm_xgb_df['JM_Target_State'] == state
+                fig_feat_scatter.add_trace(go.Scatter(
+                    x=jm_xgb_df.loc[mask, f"Feature_{feat_x}"],
+                    y=jm_xgb_df.loc[mask, f"Feature_{feat_y}"],
+                    mode='markers',
+                    name=label,
+                    marker=dict(color=color, opacity=0.5, size=6),
+                    text=[f"Date: {d.date()}<br>Ret: {r:.2%}" for d, r in zip(jm_xgb_df.index[mask], jm_xgb_df.loc[mask, 'Target_Return'])],
+                    hoverinfo="text+x+y"
+                ))
+                
+            fig_feat_scatter.update_layout(
+                title=f"{feat_y} vs {feat_x} by Regime",
+                xaxis_title=feat_x,
+                yaxis_title=feat_y,
+                template="plotly_dark",
+                height=500,
+                margin=dict(l=20, r=20, t=50, b=20)
+            )
+            st.plotly_chart(fig_feat_scatter, width='stretch')
 
+        # NEW: 1h. Misclassified Regimes Deep Dive (The "Why" Table)
+        st.subheader("1h. Misclassified Regimes Deep Dive (Anomalies)")
+        st.markdown("Investigate specific days where the True JM Regime label seems counter-intuitive based solely on return.", help="Filter for Bear regimes with positive returns, or Bull regimes with negative returns, to see the underlying feature values that drove the clustering decision.")
+        
+        anomaly_type = st.radio(
+            "Select Anomaly Type to Investigate:",
+            options=["Bear Regimes with Positive Returns", "Bull Regimes with Negative Returns"]
+        )
+        
+        if anomaly_type == "Bear Regimes with Positive Returns":
+            anomaly_mask = (jm_xgb_df['JM_Target_State'] == 1) & (jm_xgb_df['Target_Return'] > 0)
+        else:
+            anomaly_mask = (jm_xgb_df['JM_Target_State'] == 0) & (jm_xgb_df['Target_Return'] < 0)
+            
+        anomaly_df = jm_xgb_df[anomaly_mask].copy()
+        
+        if not anomaly_df.empty:
+            st.write(f"Found {len(anomaly_df)} days matching this criteria.")
+            
+            # Add a 'Return Magnitude' filter to focus on the worst offenders
+            min_mag = st.slider("Minimum Return Magnitude Threshold (Absolute %)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
+            
+            filtered_anomaly_df = anomaly_df[anomaly_df['Target_Return'].abs() >= (min_mag / 100)]
+            
+            if not filtered_anomaly_df.empty:
+                 # Select columns to display: Date, Regime, Return, and Top Features
+                 # Assuming SHAP values can tell us what features were important to the *model* globally
+                 # For the *clustering*, we just show the raw features.
+                 display_cols = ['Target_Return', 'JM_Target_State'] + [c for c in dist_features if 'Sortino' in c or 'DD' in c or 'Avg_Ret' in c]
+                 
+                 disp_df = filtered_anomaly_df[display_cols].copy()
+                 disp_df.index = disp_df.index.date
+                 disp_df.index.name = 'Date'
+                 
+                 # Clean up feature names for display
+                 disp_df = disp_df.rename(columns={c: c.replace('Feature_', '') for c in disp_df.columns})
+                 disp_df = disp_df.rename(columns={'JM_Target_State': 'Regime', 'Target_Return': 'Return'})
+                 
+                 st.dataframe(
+                     disp_df.style.format({
+                         'Return': '{:.2%}',
+                         **{c: '{:.4f}' for c in disp_df.columns if c not in ['Return', 'Regime']}
+                     }).apply(lambda x: [
+                        'background-color: rgba(220, 20, 60, 0.2); color: crimson' if v == 1 
+                        else 'background-color: rgba(0, 191, 255, 0.15); color: deepskyblue' for v in x
+                    ], subset=['Regime']),
+                    width='stretch'
+                 )
+            else:
+                st.info(f"No anomalies found with magnitude >= {min_mag}%.")
+        else:
+            st.success("No anomalies of this type found in the current dataset.")
+
+        # NEW: 1i. Regime Feature Drift Over Time
+        st.subheader("1i. Regime Feature Drift Over Time")
+        st.markdown("Track the average value of a specific feature within Bull vs Bear regimes across each 6-month evaluation period.", help="This helps identify if the definition of a 'Bear' market is changing over time. For example, does a Bear market in 2020 have a different average Sortino ratio than a Bear market in 2008?")
+        
+        if dist_features:
+            selected_drift_feat = st.selectbox("Select Feature to view Drift", [f.replace('Feature_', '') for f in dist_features], index=0)
+            feat_col = f"Feature_{selected_drift_feat}"
+            
+            drift_stats = []
+            for period_start, chunk in jm_xgb_df.groupby(pd.Grouper(freq='6M')):
+                if chunk.empty: continue
+                
+                bull_vals = chunk.loc[chunk['JM_Target_State'] == 0, feat_col]
+                bear_vals = chunk.loc[chunk['JM_Target_State'] == 1, feat_col]
+                
+                drift_stats.append({
+                    'Period': period_start,
+                    'Bull Avg': bull_vals.mean() if not bull_vals.empty else np.nan,
+                    'Bear Avg': bear_vals.mean() if not bear_vals.empty else np.nan
+                })
+                
+            if drift_stats:
+                drift_df = pd.DataFrame(drift_stats)
+                
+                fig_drift = create_base_fig(f"Average {selected_drift_feat} over Time by Regime", selected_drift_feat, height=400)
+                
+                fig_drift.add_trace(go.Scatter(
+                    x=drift_df['Period'], y=drift_df['Bull Avg'],
+                    mode='lines+markers', name='Bull (0) Avg',
+                    line=dict(color='deepskyblue', width=2)
+                ))
+                
+                fig_drift.add_trace(go.Scatter(
+                    x=drift_df['Period'], y=drift_df['Bear Avg'],
+                    mode='lines+markers', name='Bear (1) Avg',
+                    line=dict(color='crimson', width=2)
+                ))
+                
+                st.plotly_chart(fig_drift, width='stretch')
+        
+        # NEW: 1j. Export JM Audit to LLM
+        st.subheader("1j. Export JM Audit to LLM")
+        st.markdown("Generate a minimal JSON export of the regime labeling and anomaly data to audit with an LLM.")
+        
+        dialog_func = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
+        
+        def generate_jm_audit_export():
+            # 1. JM Overall Stats
+            jm_stats = jm_returns[['Count', 'Ann. Return', 'Ann. Volatility', 'Min', 'Max']].copy()
+            jm_stats.index = [str(x) for x in jm_stats.index]
+            
+            # 2. Regime History (limit to save tokens, or round)
+            history_export = regime_history_df.copy()
+            history_export['Start'] = history_export['Start'].astype(str)
+            history_export['End'] = history_export['End'].astype(str)
+            for c in ['Return', 'Vol', 'Max DD', 'Lambda', 'XGB Accuracy']:
+                if c in history_export.columns:
+                    history_export[c] = history_export[c].round(4)
+                    
+            # 3. Top Anomalies
+            bear_pos = jm_xgb_df[(jm_xgb_df['JM_Target_State'] == 1) & (jm_xgb_df['Target_Return'] > 0)].copy()
+            bull_neg = jm_xgb_df[(jm_xgb_df['JM_Target_State'] == 0) & (jm_xgb_df['Target_Return'] < 0)].copy()
+            
+            # Get largest anomalies (Top 10 of each) to save tokens
+            bear_pos = bear_pos.sort_values('Target_Return', ascending=False).head(10)
+            bull_neg = bull_neg.sort_values('Target_Return', ascending=True).head(10)
+            
+            anomaly_cols = ['Target_Return', 'JM_Target_State'] + [c for c in dist_features if 'Sortino' in c or 'DD' in c or 'Avg_Ret' in c]
+            
+            def format_anomaly_df(df):
+                if df.empty: return []
+                d = df[anomaly_cols].copy()
+                d.index = d.index.astype(str)
+                d = d.round(4)
+                d = d.rename(columns={c: c.replace('Feature_', '') for c in d.columns})
+                return d.reset_index().to_dict('records')
+                
+            export_data = {
+                "jm_overall_stats": jm_stats.round(4).to_dict('index'),
+                "regime_history_segments": history_export.to_dict('records'),
+                "top_10_bear_pos_anomalies": format_anomaly_df(bear_pos),
+                "top_10_bull_neg_anomalies": format_anomaly_df(bull_neg)
+            }
+            return export_data
+            
+        if dialog_func:
+            @dialog_func("JM Audit LLM Export")
+            def show_jm_audit_export():
+                st.markdown("Copy the JSON below and share it with your LLM.")
+                export_dict = generate_jm_audit_export()
+                st.code(json.dumps(export_dict, separators=(',', ':')), language="json")
+                
+            if st.button("🤖 Export JM Audit Context to LLM"):
+                show_jm_audit_export()
+        else:
+            with st.expander("🤖 Export JM Audit Context to LLM"):
+                st.markdown("Copy the JSON below and share it with your LLM.")
+                export_dict = generate_jm_audit_export()
+                st.code(json.dumps(export_dict, separators=(',', ':')), language="json")
+                
+        st.markdown("---")
 # --------------------------------------------------------------------------
 # XGBoost Forecast Evaluation Tab
 # --------------------------------------------------------------------------
