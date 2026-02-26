@@ -4,6 +4,8 @@ This repository contains an implementation of a quantitative trading strategy th
 
 ## Main Algorithm
 
+![Strategy Flow Diagram](images/strategy_flow.jpg)
+
 The core algorithm operates in two primary phases: Regime Identification and Forecasting, which are evaluated iteratively over time using a rolling window approach.
 
 ### 1. Market Regime Identification (Statistical Jump Model)

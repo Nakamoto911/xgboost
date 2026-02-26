@@ -1247,8 +1247,36 @@ with export_container:
                 if getattr(trace, 'showlegend', True) is False and name == "Unnamed": 
                     continue
                 
+                trace_type = getattr(trace, 'type', 'scatter')
+                
+                # Handling Heatmap
+                if trace_type == 'heatmap':
+                    z = getattr(trace, 'z', None)
+                    if z is not None:
+                        try:
+                            z_flat = [float(round(v, 3)) if isinstance(v, (float, np.floating)) else int(v) for row in z for v in row]
+                            compressed[name] = z_flat[:max_points*max_points]
+                        except Exception:
+                            pass
+                    continue
+                    
+                # Handling Box
+                if trace_type == 'box':
+                    y = getattr(trace, 'y', None)
+                    if y is not None and len(y) > 0:
+                        y_num = [val for val in y if isinstance(val, (int, float, np.integer, np.floating))]
+                        if y_num:
+                            compressed[name] = [
+                                float(round(np.min(y_num), 3)),
+                                float(round(np.percentile(y_num, 25), 3)),
+                                float(round(np.median(y_num), 3)),
+                                float(round(np.percentile(y_num, 75), 3)),
+                                float(round(np.max(y_num), 3))
+                            ]
+                    continue
+
                 # Handling horizontal bar charts (like SHAP summary)
-                if getattr(trace, 'type', 'scatter') == 'bar' and getattr(trace, 'orientation', 'v') == 'h':
+                if trace_type == 'bar' and getattr(trace, 'orientation', 'v') == 'h':
                     x = getattr(trace, 'x', [])
                     y = getattr(trace, 'y', [])
                     if x is not None and y is not None:
@@ -1258,7 +1286,7 @@ with export_container:
                         compressed[name] = {str(k): float(round(v, 3)) if isinstance(v, (float, np.floating)) else v for k, v in pairs}
                     continue
                 
-                # Handling standard scatter/lines
+                # Handling standard scatter/lines/bar
                 y = getattr(trace, 'y', None)
                 if y is None or len(y) == 0: 
                     continue
@@ -1292,6 +1320,12 @@ with export_container:
             "SHAP_Summary": g.get('fig_shap_summary'),
             "Feature_Dependence": g.get('fig_dep'),
             "SHAP_Point_in_Time": g.get('fig_point'),
+            "JM_Return_Dist": g.get('fig_box'),
+            "JM_Regime_Timeline": g.get('fig_jm_price'),
+            "JM_Periodic_Breakdown": g.get('fig_p_break'),
+            "JM_Risk_Return": g.get('fig_scatter'),
+            "XGB_Confusion_Matrix": g.get('fig_cm'),
+            "XGB_Rolling_Acc": g.get('fig_roll'),
         }
         
         fc = g.get('feature_charts', {})
