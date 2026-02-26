@@ -16,18 +16,42 @@ st.set_page_config(page_title="XGBoost Strategy Portal", layout="wide")
 st.title("XGBoost Strategy Backtest Portal")
 export_container = st.container()
 
+if 'start_date_input' not in st.session_state:
+    st.session_state.start_date_input = backend.START_DATE_DATA
+if 'oos_start_input' not in st.session_state:
+    st.session_state.oos_start_input = backend.OOS_START_DATE
+if 'target_ticker_input' not in st.session_state:
+    st.session_state.target_ticker_input = backend.TARGET_TICKER
+if 'val_window_input' not in st.session_state:
+    st.session_state.val_window_input = backend.VALIDATION_WINDOW_YRS
+
+def on_ticker_change():
+    new_ticker = st.session_state.target_ticker_input
+    import yfinance as yf
+    try:
+        t = yf.Ticker(new_ticker)
+        hist = t.history(period="max")
+        if not hist.empty:
+            earliest = hist.index.min()
+            st.session_state.start_date_input = earliest.strftime('%Y-%m-%d')
+            val_window = st.session_state.val_window_input
+            oos_date = earliest + pd.DateOffset(years=int(11 + val_window))
+            st.session_state.oos_start_input = oos_date.strftime('%Y-%m-%d')
+    except Exception as e:
+        print(f"Error fetching data for ticker {new_ticker}: {e}")
+
 st.sidebar.header("Configuration")
-target_ticker = st.sidebar.text_input("Target Ticker", backend.TARGET_TICKER)
+target_ticker = st.sidebar.text_input("Target Ticker", key='target_ticker_input', on_change=on_ticker_change)
 bond_ticker = st.sidebar.text_input("Bond Ticker", backend.BOND_TICKER)
 risk_free_ticker = st.sidebar.text_input("Risk-Free Ticker", backend.RISK_FREE_TICKER)
 vix_ticker = st.sidebar.text_input("VIX Ticker", backend.VIX_TICKER)
 
-start_date_data = st.sidebar.text_input("Data Start Date", backend.START_DATE_DATA)
-oos_start_date = st.sidebar.text_input("OOS Start Date", backend.OOS_START_DATE)
+start_date_data = st.sidebar.text_input("Data Start Date", key='start_date_input')
+oos_start_date = st.sidebar.text_input("OOS Start Date", key='oos_start_input')
 end_date = st.sidebar.text_input("End Date", backend.END_DATE)
 
-transaction_cost = st.sidebar.number_input("Transaction Cost", value=backend.TRANSACTION_COST, format="%.4f")
-validation_window = st.sidebar.number_input("Validation Window (Years)", min_value=1, max_value=20, value=backend.VALIDATION_WINDOW_YRS)
+transaction_cost = st.sidebar.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
+validation_window = st.sidebar.number_input("Validation Window (Years)", min_value=1, max_value=20, key='val_window_input', on_change=on_ticker_change)
 lambda_grid_str = st.sidebar.text_input("Lambda Grid (comma separated)", ",".join(map(str, backend.LAMBDA_GRID)))
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
