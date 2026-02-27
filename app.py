@@ -779,6 +779,7 @@ with tab_features:
             ))
                 
         fig_shap_ts.update_layout(barmode='relative')
+        apply_bear_shading(fig_shap_ts)
         st.plotly_chart(fig_shap_ts, width='stretch')
 
 
