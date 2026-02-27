@@ -287,12 +287,12 @@ def fetch_and_prepare_data():
 # ==============================================================================
 _forecast_cache = {}
 
-def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
+def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, constrain_xgb=False):
     """
     Runs the identification (JM) and forecasting (XGB) for a specific date using 
     an 11-year lookback window.
     """
-    cache_key = (current_date, lambda_penalty, include_xgboost)
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb)
     if cache_key in _forecast_cache:
         return _forecast_cache[cache_key]
 
@@ -358,7 +358,17 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     y_train_xgb = train_df['Target_State']
     X_oos_xgb = oos_df[all_features]
     
-    xgb = XGBClassifier(eval_metric='logloss', random_state=42)
+    if constrain_xgb:
+        xgb = XGBClassifier(
+            eval_metric='logloss', 
+            random_state=42,
+            max_depth=3,
+            subsample=0.5,
+            reg_lambda=1.0
+        )
+    else:
+        xgb = XGBClassifier(eval_metric='logloss', random_state=42)
+        
     xgb.fit(X_train_xgb, y_train_xgb)
     
     # Get probabilities for Class 1 (Bearish)
@@ -400,14 +410,14 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     _forecast_cache[cache_key] = result
     return result
 
-def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=True):
+def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=True, constrain_xgb=False):
     """Simulates the entire period in 6-month chunks for a given lambda."""
     results = []
     current_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
     
     while current_date < end_date:
-        res = run_period_forecast(df, current_date, lambda_penalty, include_xgboost)
+        res = run_period_forecast(df, current_date, lambda_penalty, include_xgboost, constrain_xgb)
         if res is not None:
             results.append(res)
         current_date += pd.DateOffset(months=6)

@@ -81,6 +81,11 @@ else:
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
 
+xgb_params_mode = st.sidebar.selectbox(
+    "XGBoost Hyperparameters", 
+    ["Paper Default (Unconstrained)", "Constrained (Prevent Overfitting)"]
+)
+
 run_button = st.sidebar.button("Run Backtest")
 duration_placeholder = st.sidebar.empty()
 
@@ -101,6 +106,7 @@ def get_cached_data(target, bond, rf, vix, start, end):
 
 if run_button:
     backtest_start_time = time.time()
+    constrain_xgb = (xgb_params_mode == "Constrained (Prevent Overfitting)")
     
     # Update backend globals
     backend.TARGET_TICKER = target_ticker
@@ -150,7 +156,7 @@ if run_button:
         best_lambda = backend.LAMBDA_GRID[0]
         
         for lmbda in backend.LAMBDA_GRID:
-            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
+            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb)
             if not val_res.empty:
                 _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                 if sharpe > best_sharpe:
@@ -161,7 +167,7 @@ if run_button:
         lambda_dates.append(current_date)
         
         # 2. Out-of-Sample Execution
-        oos_chunk_jm_xgb = backend.run_period_forecast(df, current_date, best_lambda, include_xgboost=True)
+        oos_chunk_jm_xgb = backend.run_period_forecast(df, current_date, best_lambda, include_xgboost=True, constrain_xgb=constrain_xgb)
         if oos_chunk_jm_xgb is not None:
             jm_xgb_results.append(oos_chunk_jm_xgb)
             
