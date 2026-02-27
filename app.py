@@ -52,7 +52,32 @@ end_date = st.sidebar.text_input("End Date", backend.END_DATE)
 
 transaction_cost = st.sidebar.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
 validation_window = st.sidebar.number_input("Validation Window (Years)", min_value=1, max_value=20, key='val_window_input', on_change=on_ticker_change)
-lambda_grid_str = st.sidebar.text_input("Lambda Grid (comma separated)", ",".join(map(str, backend.LAMBDA_GRID)))
+
+grid_preset = st.sidebar.selectbox(
+    "Lambda Grid Preset", 
+    ["Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
+)
+
+if grid_preset == "Default (Fast: 4 points)":
+    # Keep current default
+    backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
+    st.sidebar.caption("Using: 1.0, 10.0, 50.0, 100.0")
+
+elif grid_preset == "Expanded (Paper: 21 points)":
+    # 0.0 + 20 points distributed evenly on a logarithmic scale (1 to 100)
+    import numpy as np
+    expanded_grid = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 20)]
+    backend.LAMBDA_GRID = expanded_grid
+    st.sidebar.caption("Using: 0.0 + 20 log-spaced points up to 100.0")
+
+else:
+    # Allow custom input like before
+    lambda_grid_str = st.sidebar.text_input("Custom Grid (comma separated)", "1.0, 10.0, 50.0, 100.0")
+    try:
+        backend.LAMBDA_GRID = [float(x.strip()) for x in lambda_grid_str.split(',')]
+    except ValueError:
+        st.sidebar.error("Invalid Lambda Grid format. Using default.")
+        backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
 
@@ -87,11 +112,6 @@ if run_button:
     backend.END_DATE = end_date
     backend.TRANSACTION_COST = transaction_cost
     backend.VALIDATION_WINDOW_YRS = validation_window
-    
-    try:
-        backend.LAMBDA_GRID = [float(x.strip()) for x in lambda_grid_str.split(',')]
-    except ValueError:
-        st.error("Invalid Lambda Grid format. Using default.")
 
     st.write("Fetching and preparing data...")
     try:
