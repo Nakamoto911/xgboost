@@ -413,7 +413,7 @@ def apply_bear_shading(fig):
 # --------------------------------------------------------------------------
 # Main Dashboard Layout
 # --------------------------------------------------------------------------
-tab_perf, tab_features, tab_jm_audit, tab_xgb_eval, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "🕵️ JM Audit", "🎯 XGBoost Eval", "📈 Feature Charts"])
+tab_perf, tab_features, tab_feat_charts, tab_jm_audit, tab_xgb_eval = st.tabs(["Performance & Tracking", "Feature Impact Analysis", "Feature Charts", "JM Audit", "XGBoost Eval"])
 
 with tab_perf:
     st.subheader(
@@ -480,51 +480,10 @@ with tab_perf:
     st.plotly_chart(fig_dd, width='stretch')
 
     # --------------------------------------------------------------------------
-    # Chart 3: Regime Probability vs Benchmark Price
+    # Chart 3: Rolling 1-Year Sortino Ratio
     # --------------------------------------------------------------------------
     st.subheader(
-        "3. Regime Probability vs. Market Price",
-        help="**Calculated:** Overlay of the S&P 500 wealth index and the XGBoost model's predicted bear regime probability.\n\n**Data:** Market price index and predicted `State_Prob` from the XGBoost model.\n\n**Interpret:** Check if high-conviction bear calls (red area spikes) precede or coincide with actual market drops."
-    )
-    fig_prob = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_prob.update_layout(
-        height=500,
-        template="plotly_dark",
-        hovermode="x unified",
-        margin=dict(l=20, r=20, t=60, b=40),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
-    )
-    
-    # Left Y-Axis: Benchmark Wealth Curve
-    fig_prob.add_trace(
-        go.Scatter(x=bh_wealth.index, y=bh_wealth, mode='lines', 
-                   name="S&P 500 (Wealth)",
-                   line=dict(color='gray', width=1.5, dash='dot')), 
-        secondary_y=False
-    )
-    
-    # Right Y-Axis: Bear Market Probability
-    if 'State_Prob' in jm_xgb_df.columns:
-        fig_prob.add_trace(
-            go.Scatter(x=jm_xgb_df.index, y=jm_xgb_df['State_Prob'], mode='lines', 
-                       name="Bear Regime Probability",
-                       line=dict(color='red', width=1),
-                       fill='tozeroy', fillcolor='rgba(255, 0, 0, 0.15)'), 
-            secondary_y=True
-        )
-        fig_prob.add_hline(y=0.5, line_dash="dash", line_color="red", secondary_y=True)
-    
-    fig_prob.update_yaxes(title_text="Benchmark Price", secondary_y=False)
-    fig_prob.update_yaxes(title_text="Bear Probability", tickformat=".0%", range=[0, 1], secondary_y=True)
-    
-    apply_bear_shading(fig_prob)
-    st.plotly_chart(fig_prob, width='stretch')
-
-    # --------------------------------------------------------------------------
-    # Chart 4: Rolling 1-Year Sortino Ratio
-    # --------------------------------------------------------------------------
-    st.subheader(
-        "4. Rolling 1-Year Sortino Ratio",
+        "3. Rolling 1-Year Sortino Ratio",
         help="**Calculated:** Rolling 252-day annualized excess return over the risk-free rate, divided by downside deviation (standard deviation of only negative returns).\n\n**Data:** Daily strategy returns, risk-free rate, and benchmark returns.\n\n**Interpret:** Evaluates risk-adjusted performance while only penalizing downside volatility. Essential for regime-switching models designed to cut losses but let winners run. Higher values are better."
     )
     fig_sortino = create_base_fig("Rolling 12-Month Sortino Ratio", "Sortino Ratio")
@@ -554,10 +513,10 @@ with tab_perf:
     st.plotly_chart(fig_sortino, width='stretch')
 
     # --------------------------------------------------------------------------
-    # Chart 5: Monthly Returns Heatmap
+    # Chart 4: Monthly Returns Heatmap
     # --------------------------------------------------------------------------
     st.subheader(
-        "5. Monthly Returns Heatmap (JM-XGB Strategy)",
+        "4. Monthly Returns Heatmap (JM-XGB Strategy)",
         help="**Calculated:** Compounded daily returns for each calendar month.\n\n**Data:** Daily strategy returns.\n\n**Interpret:** Shows seasonality and consistency. Green months are profitable. Look for a balance of consistency (lots of green) and magnitude (deep green vs shallow red)."
     )
     
@@ -613,10 +572,10 @@ with tab_perf:
     
     with col_dist:
         # --------------------------------------------------------------------------
-        # Chart 6: Return Distribution Histogram
+        # Chart 5: Return Distribution Histogram
         # --------------------------------------------------------------------------
         st.subheader(
-            "6. Return Distribution",
+            "5. Return Distribution",
             help="**Calculated:** Histogram of daily return frequencies.\n\n**Data:** Daily returns of the strategy vs. Buy & Hold benchmark.\n\n**Interpret:** A good strategy chops off the 'left tail' (fewer large negative days) while preserving the 'right tail' (large positive days)."
         )
         
@@ -683,10 +642,10 @@ with tab_perf:
         
     with col_scatter:
         # --------------------------------------------------------------------------
-        # Chart 7: Risk / Return Scatter
+        # Chart 6: Risk / Return Scatter
         # --------------------------------------------------------------------------
         st.subheader(
-            "7. Risk / Return Profile",
+            "6. Risk / Return Profile",
             help="**Calculated:** Annualized Return vs. Annualized Volatility over the entire backtest period.\n\n**Data:** Strategy metrics table.\n\n**Interpret:** The 'Holy Grail' is the top-left quadrant (High Return, Low Risk). Strategies further up and to the left are mathematically superior."
         )
         
@@ -1674,6 +1633,47 @@ with tab_xgb_eval:
             with col_c2:
                 st.plotly_chart(fig_cm, width='stretch')
                 
+            # --------------------------------------------------------------------------
+            # Chart 2: Regime Probability vs Benchmark Price
+            # --------------------------------------------------------------------------
+            st.subheader(
+                "2. Regime Probability vs. Market Price",
+                help="**Calculated:** Overlay of the S&P 500 wealth index and the XGBoost model's predicted bear regime probability.\n\n**Data:** Market price index and predicted `State_Prob` from the XGBoost model.\n\n**Interpret:** Check if high-conviction bear calls (red area spikes) precede or coincide with actual market drops."
+            )
+            fig_prob = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_prob.update_layout(
+                height=500,
+                template="plotly_dark",
+                hovermode="x unified",
+                margin=dict(l=20, r=20, t=60, b=40),
+                legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+            )
+            
+            # Left Y-Axis: Benchmark Wealth Curve
+            fig_prob.add_trace(
+                go.Scatter(x=bh_wealth.index, y=bh_wealth, mode='lines', 
+                           name="S&P 500 (Wealth)",
+                           line=dict(color='gray', width=1.5, dash='dot')), 
+                secondary_y=False
+            )
+            
+            # Right Y-Axis: Bear Market Probability
+            if 'State_Prob' in jm_xgb_df.columns:
+                fig_prob.add_trace(
+                    go.Scatter(x=jm_xgb_df.index, y=jm_xgb_df['State_Prob'], mode='lines', 
+                               name="Bear Regime Probability",
+                               line=dict(color='red', width=1),
+                               fill='tozeroy', fillcolor='rgba(255, 0, 0, 0.15)'), 
+                    secondary_y=True
+                )
+                fig_prob.add_hline(y=0.5, line_dash="dash", line_color="red", secondary_y=True)
+            
+            fig_prob.update_yaxes(title_text="Benchmark Price", secondary_y=False)
+            fig_prob.update_yaxes(title_text="Bear Probability", tickformat=".0%", range=[0, 1], secondary_y=True)
+            
+            apply_bear_shading(fig_prob)
+            st.plotly_chart(fig_prob, width='stretch')
+
             # Rolling Metrics
             st.subheader(
                 "3. Rolling Forecast Accuracy",
