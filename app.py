@@ -408,7 +408,7 @@ def create_base_fig(title, y_title, height=500):
 
 def apply_bear_shading(fig):
     for s, e in zip(starts, ends):
-        fig.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.1, line_width=0)
+        fig.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.1, line_width=0, layer="below")
 
 # --------------------------------------------------------------------------
 # Main Dashboard Layout
@@ -416,7 +416,10 @@ def apply_bear_shading(fig):
 tab_perf, tab_features, tab_jm_audit, tab_xgb_eval, tab_feat_charts = st.tabs(["📊 Performance & Tracking", "🤖 Feature Impact Analysis", "🕵️ JM Audit", "🎯 XGBoost Eval", "📈 Feature Charts"])
 
 with tab_perf:
-    st.subheader("1. Cumulative Wealth")
+    st.subheader(
+        "1. Cumulative Wealth",
+        help="**Calculated:** Compounding growth of daily returns `(1 + returns).cumprod()`.\n\n**Data:** Strategy returns (net of transaction costs) vs. benchmarks.\n\n**Interpret:** Shows the total value of investment over time. A curve that stays above the benchmark indicates outperformance."
+    )
     fig_wealth = create_base_fig("Cumulative Wealth Multiplier", "Wealth Multiplier")
     
     for name, returns in strategies.items():
@@ -448,7 +451,10 @@ with tab_perf:
     # --------------------------------------------------------------------------
     # Chart 2: Drawdown Profile
     # --------------------------------------------------------------------------
-    st.subheader("2. Drawdown Profile")
+    st.subheader(
+        "2. Drawdown Profile",
+        help="**Calculated:** Percentage drop from the highest historical peak `(wealth - peak) / peak`.\n\n**Data:** Cumulative wealth trajectories of the strategy vs. benchmarks.\n\n**Interpret:** Visualizes downside risk. The area closer to 0% is better. Shallower drawdowns during red regions (bear markets) show the strategy successfully preserved capital."
+    )
     fig_dd = create_base_fig("Portfolio Drawdown Percentage", "Drawdown")
     fig_dd.update_yaxes(tickformat=".1%")
     
@@ -476,7 +482,10 @@ with tab_perf:
     # --------------------------------------------------------------------------
     # Chart 3: Regime Probability vs Benchmark Price
     # --------------------------------------------------------------------------
-    st.subheader("3. Regime Probability vs. Market Price")
+    st.subheader(
+        "3. Regime Probability vs. Market Price",
+        help="**Calculated:** Overlay of the S&P 500 wealth index and the XGBoost model's predicted bear regime probability.\n\n**Data:** Market price index and predicted `State_Prob` from the XGBoost model.\n\n**Interpret:** Check if high-conviction bear calls (red area spikes) precede or coincide with actual market drops."
+    )
     fig_prob = make_subplots(specs=[[{"secondary_y": True}]])
     fig_prob.update_layout(
         height=500,
@@ -512,10 +521,13 @@ with tab_perf:
     st.plotly_chart(fig_prob, width='stretch')
 
     # --------------------------------------------------------------------------
-    # Chart 4: Rolling 1-Year Sharpe Ratio
+    # Chart 4: Rolling 1-Year Sortino Ratio
     # --------------------------------------------------------------------------
-    st.subheader("4. Rolling 1-Year Sharpe Ratio")
-    fig_sharpe = create_base_fig("Rolling 12-Month Sharpe Ratio", "Sharpe Ratio")
+    st.subheader(
+        "4. Rolling 1-Year Sortino Ratio",
+        help="**Calculated:** Rolling 252-day annualized excess return over the risk-free rate, divided by downside deviation (standard deviation of only negative returns).\n\n**Data:** Daily strategy returns, risk-free rate, and benchmark returns.\n\n**Interpret:** Evaluates risk-adjusted performance while only penalizing downside volatility. Essential for regime-switching models designed to cut losses but let winners run. Higher values are better."
+    )
+    fig_sortino = create_base_fig("Rolling 12-Month Sortino Ratio", "Sortino Ratio")
     ROLLING_WINDOW = 252 # 1 Trading Year
     
     for name, returns in strategies.items():
@@ -523,18 +535,197 @@ with tab_perf:
             continue
         excess_ret = returns - rf_returns
         rolling_ann_ret = excess_ret.rolling(window=ROLLING_WINDOW).sum()
-        rolling_ann_vol = returns.rolling(window=ROLLING_WINDOW).std() * np.sqrt(252)
-        rolling_sharpe = rolling_ann_ret / rolling_ann_vol.replace(0, np.nan)
         
-        fig_sharpe.add_trace(go.Scatter(
-            x=rolling_sharpe.index, y=rolling_sharpe, mode='lines', 
-            name=f"{name} (1Y Sharpe)",
+        # Calculate trailing downside deviation
+        # Create a boolean mask for negative excess returns, calculate rolling std on that
+        downside_returns = excess_ret.where(excess_ret < 0, 0)
+        rolling_downside_vol = downside_returns.rolling(window=ROLLING_WINDOW).std() * np.sqrt(252)
+        
+        rolling_sortino = rolling_ann_ret / rolling_downside_vol.replace(0, np.nan)
+        
+        fig_sortino.add_trace(go.Scatter(
+            x=rolling_sortino.index, y=rolling_sortino, mode='lines', 
+            name=f"{name} (1Y Sortino)",
             line=dict(color=strategy_colors.get(name), width=1.5)
         ))
     
-    fig_sharpe.add_hline(y=0, line_dash="solid", line_color="black", line_width=1)
-    apply_bear_shading(fig_sharpe)
-    st.plotly_chart(fig_sharpe, width='stretch')
+    fig_sortino.add_hline(y=0, line_dash="solid", line_color="black", line_width=1)
+    apply_bear_shading(fig_sortino)
+    st.plotly_chart(fig_sortino, width='stretch')
+
+    # --------------------------------------------------------------------------
+    # Chart 5: Monthly Returns Heatmap
+    # --------------------------------------------------------------------------
+    st.subheader(
+        "5. Monthly Returns Heatmap (JM-XGB Strategy)",
+        help="**Calculated:** Compounded daily returns for each calendar month.\n\n**Data:** Daily strategy returns.\n\n**Interpret:** Shows seasonality and consistency. Green months are profitable. Look for a balance of consistency (lots of green) and magnitude (deep green vs shallow red)."
+    )
+    
+    # Calculate monthly returns for the main strategy
+    strat_returns_daily = strategies['JM-XGB Strategy']
+    # Resample to monthly and calculate geometric return
+    monthly_returns = strat_returns_daily.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+    
+    # Create a DataFrame for the heatmap
+    heatmap_df = pd.DataFrame({'Return': monthly_returns})
+    heatmap_df['Year'] = heatmap_df.index.year
+    heatmap_df['Month'] = heatmap_df.index.strftime('%b')
+    
+    # Pivot the data
+    heatmap_pivot = heatmap_df.pivot(index='Year', columns='Month', values='Return')
+    
+    # Reorder columns to standard calendar order
+    month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    # Only include months that exist in the data
+    valid_months = [m for m in month_order if m in heatmap_pivot.columns]
+    heatmap_pivot = heatmap_pivot[valid_months]
+    
+    # Calculate Annual Returns for row totals
+    heatmap_pivot['YTD'] = strat_returns_daily.resample('YE').apply(lambda x: (1 + x).prod() - 1).values
+    
+    # Format as percentages
+    heatmap_text = heatmap_pivot.map(lambda x: f"{x:.1%}" if pd.notnull(x) else "")
+    
+    # Create the heatmap figure
+    fig_heatmap = go.Figure(data=go.Heatmap(
+        z=heatmap_pivot.values,
+        x=heatmap_pivot.columns,
+        y=heatmap_pivot.index,
+        text=heatmap_text.values,
+        texttemplate="%{text}",
+        textfont={"size": 10},
+        colorscale=["red", "black", "green"],
+        zmid=0,  # Center the color scale at 0%
+        showscale=False,
+        xgap=2,
+        ygap=2
+    ))
+    
+    fig_heatmap.update_layout(
+        height=min(400, 50 + 30 * len(heatmap_pivot)), # Dynamic height based on years
+        template="plotly_dark",
+        margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(autorange="reversed", type='category') # Reverse year order so most recent is top
+    )
+    st.plotly_chart(fig_heatmap, width='stretch')
+
+    col_dist, col_scatter = st.columns(2)
+    
+    with col_dist:
+        # --------------------------------------------------------------------------
+        # Chart 6: Return Distribution Histogram
+        # --------------------------------------------------------------------------
+        st.subheader(
+            "6. Return Distribution",
+            help="**Calculated:** Histogram of daily return frequencies.\n\n**Data:** Daily returns of the strategy vs. Buy & Hold benchmark.\n\n**Interpret:** A good strategy chops off the 'left tail' (fewer large negative days) while preserving the 'right tail' (large positive days)."
+        )
+        
+        fig_dist = go.Figure()
+        
+        all_rets = pd.concat([strategies['Buy & Hold'], strategies['JM-XGB Strategy']]).dropna()
+        if not all_rets.empty:
+            p_low = all_rets.quantile(0.005)
+            p_high = all_rets.quantile(0.995)
+            max_abs = max(abs(p_low), abs(p_high), 0.02)
+            x_range = [-max_abs, max_abs]
+            b_size = max_abs / 40.0
+            x_bins = dict(start=-max_abs, end=max_abs, size=b_size)
+        else:
+            x_range = [-0.05, 0.05]
+            x_bins = None
+        
+        # Plot Benchmark first (in background)
+        if x_bins is not None:
+            import numpy as np
+            bins_array = np.arange(x_bins['start'], x_bins['end'] + x_bins['size'], x_bins['size'])
+        else:
+            bins_array = 100
+
+        def get_hist_lines(data, bins):
+            counts, bin_edges = np.histogram(data.dropna(), bins=bins)
+            probs = counts / counts.sum()
+            centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+            return centers, probs
+
+        centers_bh, probs_bh = get_hist_lines(strategies['Buy & Hold'], bins_array)
+        fig_dist.add_trace(go.Scatter(
+            x=centers_bh, y=probs_bh,
+            mode='lines',
+            name='Buy & Hold',
+            line=dict(color='gray', width=2, shape='spline'),
+            fill='tozeroy',
+            fillcolor='rgba(128, 128, 128, 0.4)'
+        ))
+
+        centers_st, probs_st = get_hist_lines(strategies['JM-XGB Strategy'], bins_array)
+        fig_dist.add_trace(go.Scatter(
+            x=centers_st, y=probs_st,
+            mode='lines',
+            name='JM-XGB Strategy',
+            line=dict(color='darkorange', width=2, shape='spline'),
+            fill='tozeroy',
+            fillcolor='rgba(255, 140, 0, 0.5)'
+        ))
+
+        fig_dist.update_layout(
+            barmode='overlay',
+            template="plotly_dark",
+            height=350,
+            margin=dict(l=20, r=20, t=30, b=20),
+            xaxis_title="Daily Return",
+            yaxis_title="Probability",
+            xaxis=dict(tickformat=".1%", range=x_range),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+        )
+        # Add a vertical line at 0
+        fig_dist.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
+        st.plotly_chart(fig_dist, width='stretch')
+        
+    with col_scatter:
+        # --------------------------------------------------------------------------
+        # Chart 7: Risk / Return Scatter
+        # --------------------------------------------------------------------------
+        st.subheader(
+            "7. Risk / Return Profile",
+            help="**Calculated:** Annualized Return vs. Annualized Volatility over the entire backtest period.\n\n**Data:** Strategy metrics table.\n\n**Interpret:** The 'Holy Grail' is the top-left quadrant (High Return, Low Risk). Strategies further up and to the left are mathematically superior."
+        )
+        
+        fig_scatter = go.Figure()
+        
+        for m in metrics_data:
+            name = m['Strategy']
+            # Parse percentage strings back to floats
+            ret = float(m['Ann. Ret'].strip('%')) / 100
+            vol = float(m['Ann. Vol'].strip('%')) / 100
+            
+            fig_scatter.add_trace(go.Scatter(
+                x=[vol], y=[ret],
+                mode='markers+text',
+                name=name,
+                marker=dict(
+                    size=15, 
+                    color=strategy_colors.get(name, 'gray'),
+                    line=dict(width=2, color='white')
+                ),
+                text=[name.replace(' Strategy', '').replace(' Baseline', '')],
+                textposition="top center"
+            ))
+            
+        fig_scatter.update_layout(
+            template="plotly_dark",
+            height=350,
+            margin=dict(l=20, r=20, t=30, b=20),
+            xaxis_title="Annualized Volatility (Risk)",
+            yaxis_title="Annualized Return",
+            xaxis=dict(tickformat=".1%", rangemode="tozero"),
+            yaxis=dict(tickformat=".1%"),
+            showlegend=False
+        )
+        # Add risk-free rate assumption line (horizontal)
+        rf_mean = rf_returns.mean() * 252
+        fig_scatter.add_hline(y=rf_mean, line_dash="dot", line_color="gray", annotation_text=f"Risk-Free ({rf_mean:.1%})", annotation_position="bottom right")
+        
+        st.plotly_chart(fig_scatter, width='stretch')
 
 # --------------------------------------------------------------------------
 with tab_features:
@@ -544,7 +735,10 @@ with tab_features:
     # --------------------------------------------------------------------------
     # Chart 5: Time-Series Feature Contribution (Local SHAP)
     # --------------------------------------------------------------------------
-    st.subheader("Time-Series Feature Contribution (Local SHAP)")
+    st.subheader(
+        "Time-Series Feature Contribution (Local SHAP)",
+        help="**Calculated:** Average Daily SHAP values aggregated to a monthly frequency.\n\n**Data:** XGBoost SHAP (SHapley Additive exPlanations) values for the top 7 features.\n\n**Interpret:** Shows exactly how much each feature contributed to the model's 'Bear' prediction at any point in time. Positive values push the model toward calling a Bear regime."
+    )
     shap_cols = [c for c in jm_xgb_df.columns if c.startswith('SHAP_') and c != 'SHAP_Base_Value']
     
     if shap_cols and not jm_xgb_df[shap_cols].empty:
@@ -587,110 +781,17 @@ with tab_features:
         fig_shap_ts.update_layout(barmode='relative')
         st.plotly_chart(fig_shap_ts, width='stretch')
 
-with tab_perf:
-    # --------------------------------------------------------------------------
-    # Chart 6: Transactions & Lambda
-    # --------------------------------------------------------------------------
-    st.subheader("6. Transactions & Lambda Penalty")
-    # Filter lambda dates for plotting
-    if lambda_dates:
-        lambda_ts = pd.Series(lambda_history, index=pd.to_datetime(lambda_dates))
-        lambda_ts_daily = lambda_ts.reindex(jm_xgb_df.index.union(lambda_ts.index)).ffill().bfill().loc[jm_xgb_df.index]
-        lambda_dates_full = lambda_ts_daily.index
-        lambda_history_full = lambda_ts_daily.values
-    else:
-        lambda_dates_full = [pd.to_datetime(filter_start), pd.to_datetime(filter_end)]
-        lambda_history_full = [0, 0]
 
-    # Aggregate trades by the 6-month evaluation periods
-    trades_by_period = jm_xgb_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
-    
-    fig_trades = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_trades.update_layout(
-        height=400,
-        template="plotly_dark",
-        hovermode="x unified",
-        margin=dict(l=20, r=20, t=60, b=40),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
-    )
-    
-    fig_trades.add_trace(
-        go.Scatter(x=trades_by_period.index, y=trades_by_period, 
-                   mode='lines+markers', name='Transactions',
-                   line=dict(color=strategy_colors.get('JM-XGB Strategy', 'orange'), width=2)),
-        secondary_y=False
-    )
-    
-    if run_simple_jm_cached:
-        simple_jm_trades_by_period = simple_jm_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
-        fig_trades.add_trace(go.Scatter(x=simple_jm_trades_by_period.index, y=simple_jm_trades_by_period, 
-                                        mode='lines+markers', name='Transactions (Simple JM)',
-                                        line=dict(color=strategy_colors.get('Simple JM Baseline', 'green'), width=2)),
-                             secondary_y=False)
-    
-    fig_trades.add_trace(
-        go.Scatter(x=lambda_dates_full, y=lambda_history_full, 
-                   line_shape='hv', name='Selected Lambda Penalty',
-                   line=dict(color='#FF00FF', width=4, dash='solid')),
-        secondary_y=True
-    )
-    
-    fig_trades.update_yaxes(title_text="Transactions", secondary_y=False)
-    fig_trades.update_yaxes(title_text="Lambda Penalty", secondary_y=True)
-
-    apply_bear_shading(fig_trades)
-    st.plotly_chart(fig_trades, width='stretch')
-
-    # --------------------------------------------------------------------------
-    # Chart 7: Periodic Returns
-    # --------------------------------------------------------------------------
-    st.subheader("7. Periodic Returns")
-    fig_ret = create_base_fig("Periodic Returns (6-Month Intervals)", "Returns", height=400)
-    fig_ret.update_yaxes(tickformat=".2%")
-    
-    returns_by_period_dict = {}
-    for name, returns in strategies.items():
-        if name == 'Simple JM Baseline' and not run_simple_jm_cached:
-            continue
-        ret_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: (1 + x).prod() - 1)
-        returns_by_period_dict[name] = ret_per
-        fig_ret.add_trace(go.Scatter(
-            x=ret_per.index, y=ret_per, 
-            mode='lines+markers', name=f"{name} Periodic Returns",
-            line=dict(color=strategy_colors.get(name), width=2)
-        ))
-
-    apply_bear_shading(fig_ret)
-    st.plotly_chart(fig_ret, width='stretch')
-
-    # --------------------------------------------------------------------------
-    # Chart 8: Periodic Volatility
-    # --------------------------------------------------------------------------
-    st.subheader("8. Periodic Volatility")
-    fig_vol = create_base_fig("Periodic Volatility (6-Month Intervals)", "Volatility", height=400)
-    fig_vol.update_yaxes(tickformat=".2%")
-    
-    vol_by_period_dict = {}
-    for name, returns in strategies.items():
-        if name == 'Simple JM Baseline' and not run_simple_jm_cached:
-            continue
-        vol_per = returns.groupby(pd.Grouper(freq='6M')).apply(lambda x: x.std() * np.sqrt(252))
-        vol_by_period_dict[name] = vol_per
-        fig_vol.add_trace(go.Scatter(
-            x=vol_per.index, y=vol_per, 
-            mode='lines+markers', name=f"{name} Periodic Volatility",
-            line=dict(color=strategy_colors.get(name), width=2)
-        ))
-
-    apply_bear_shading(fig_vol)
-    st.plotly_chart(fig_vol, width='stretch')
 
 # --------------------------------------------------------------------------
 # Global SHAP Summary Plot & Detailed Feature Analysis
 # --------------------------------------------------------------------------
 with tab_features:
     if shap_cols and not jm_xgb_df[shap_cols].empty:
-        st.subheader("Global Feature Importance (SHAP Summary)")
+        st.subheader(
+            "Global Feature Importance (SHAP Summary)",
+            help="**Calculated:** Mean Absolute SHAP value for each feature over the entire period.\n\n**Data:** XGBoost SHAP values.\n\n**Interpret:** Identifies the single most important features for the model on average. Features at the top drive the majority of the model's regime classification decisions."
+        )
         st.write("Average absolute impact on model output across the entire selected time period.")
         
         # Calculate mean absolute SHAP value for each feature
@@ -720,7 +821,10 @@ with tab_features:
         
         # Top 5 Features Averages by Regime
         with col_f1:
-            st.subheader("Feature Averages by Regime (Raw Values)")
+            st.subheader(
+                "Feature Averages by Regime (Raw Values)",
+                help="**Calculated:** Simple average of raw feature values grouped by the predicted regime.\n\n**Data:** Raw feature data and predicted XGBoost states.\n\n**Interpret:** Helps ground the SHAP values by showing what the features actually look like in Bull vs Bear markets (e.g. is VIX higher in Bear regimes?)."
+            )
             st.markdown("How do the most important features behave in Bull vs Bear regimes?")
             
             top_features = mean_abs_shap.tail(5).index.tolist()[::-1] # Reverse to get top 5 descending
@@ -757,7 +861,10 @@ with tab_features:
                     
         # Feature Dependence Plot
         with col_f2:
-            st.subheader("Feature Dependence (SHAP Impact vs Raw Value)")
+            st.subheader(
+                "Feature Dependence (SHAP Impact vs Raw Value)",
+                help="**Calculated:** Scatter plot of a feature's raw value (X) vs its SHAP value (Y).\n\n**Data:** Raw feature data, SHAP values, and predicted regimes (colors).\n\n**Interpret:** Reveals non-linear relationships and thresholds. For example, you can see the exact numerical level where VIX spikes from being a 'Bull' signal to a 'Bear' signal."
+            )
             st.markdown("Observe non-linear thresholds where a feature triggers a regime shift.")
             
             # Select feature to plot
@@ -805,7 +912,10 @@ with tab_features:
         st.markdown("---")
         
         # Point-in-Time Explanation (Waterfall alternative using Bar)
-        st.subheader("Point-in-Time Explanation")
+        st.subheader(
+            "Point-in-Time Explanation",
+            help="**Calculated:** Static bar chart of SHAP values for a single specific day.\n\n**Data:** XGBoost SHAP values extracted by date.\n\n**Interpret:** Extremely useful for auditing specific market crashes or fake-outs. Pick a date to see exactly which indicator triggered the model's action."
+        )
         st.markdown("Examine exactly which features drove the model prediction on a specific day.")
         
         # Date selection
@@ -882,6 +992,62 @@ with tab_feat_charts:
     # Re-display Cumulative Wealth
     st.subheader("Cumulative Wealth")
     st.plotly_chart(fig_wealth, width='stretch', key="wealth_chart_features_tab")
+
+    # --------------------------------------------------------------------------
+    # Transactions & Lambda
+    # --------------------------------------------------------------------------
+    st.subheader(
+        "Transactions & Lambda Penalty",
+        help="**Calculated:** Sum of regime-switching trades aggregated over 6-month periods, overlaid with the selected Lambda (Jump Penalty) parameter.\n\n**Data:** Number of trades triggered by regime changes and the history of the Jump Penalty hyperparameter.\n\n**Interpret:** Shows how actively the strategy trades. Higher Lambda values penalize jumping between states, theoretically reducing the transaction count."
+    )
+    # Filter lambda dates for plotting
+    if lambda_dates:
+        lambda_ts = pd.Series(lambda_history, index=pd.to_datetime(lambda_dates))
+        lambda_ts_daily = lambda_ts.reindex(jm_xgb_df.index.union(lambda_ts.index)).ffill().bfill().loc[jm_xgb_df.index]
+        lambda_dates_full = lambda_ts_daily.index
+        lambda_history_full = lambda_ts_daily.values
+    else:
+        lambda_dates_full = [pd.to_datetime(filter_start), pd.to_datetime(filter_end)]
+        lambda_history_full = [0, 0]
+
+    # Aggregate trades by the 6-month evaluation periods
+    trades_by_period = jm_xgb_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
+    
+    fig_trades = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_trades.update_layout(
+        height=400,
+        template="plotly_dark",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+    )
+    
+    fig_trades.add_trace(
+        go.Scatter(x=trades_by_period.index, y=trades_by_period, 
+                   mode='lines+markers', name='Transactions',
+                   line=dict(color=strategy_colors.get('JM-XGB Strategy', 'orange'), width=2)),
+        secondary_y=False
+    )
+    
+    if run_simple_jm_cached:
+        simple_jm_trades_by_period = simple_jm_df.groupby(pd.Grouper(freq='6M'))['Trades'].sum()
+        fig_trades.add_trace(go.Scatter(x=simple_jm_trades_by_period.index, y=simple_jm_trades_by_period, 
+                                        mode='lines+markers', name='Transactions (Simple JM)',
+                                        line=dict(color=strategy_colors.get('Simple JM Baseline', 'green'), width=2)),
+                             secondary_y=False)
+    
+    fig_trades.add_trace(
+        go.Scatter(x=lambda_dates_full, y=lambda_history_full, 
+                   line_shape='hv', name='Selected Lambda Penalty',
+                   line=dict(color='#FF00FF', width=4, dash='solid')),
+        secondary_y=True
+    )
+    
+    fig_trades.update_yaxes(title_text="Transactions", secondary_y=False)
+    fig_trades.update_yaxes(title_text="Lambda Penalty", secondary_y=True)
+
+    apply_bear_shading(fig_trades)
+    st.plotly_chart(fig_trades, width='stretch')
     
     st.subheader("Feature Values Over Time")
     
@@ -892,13 +1058,46 @@ with tab_feat_charts:
     
     feature_charts = {}
     for feat in feature_cols:
-        fig_feat = create_base_fig(f"{feat} over Time", feat, height=350)
+        shap_col = feat.replace('Feature_', 'SHAP_') if feat.startswith('Feature_') else f"SHAP_{feat}"
+        has_shap = shap_col in jm_xgb_df.columns
         
-        fig_feat.add_trace(go.Scatter(
-            x=jm_xgb_df.index, y=jm_xgb_df[feat], mode='lines', 
-            name=feat,
-            line=dict(color='dodgerblue', width=1.5)
-        ))
+        if has_shap:
+            fig_feat = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_feat.update_layout(
+                title=f"{feat} over Time with SHAP Impact",
+                height=350,
+                template="plotly_dark",
+                margin=dict(l=20, r=20, t=50, b=20),
+                legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
+            )
+            
+            # Secondary y-axis: SHAP Impact (Area chart)
+            fig_feat.add_trace(go.Scatter(
+                x=jm_xgb_df.index, y=jm_xgb_df[shap_col], mode='lines', 
+                name="SHAP Impact",
+                line=dict(width=0),
+                fill='tozeroy',
+                fillcolor='rgba(255, 140, 0, 0.3)'
+            ), secondary_y=True)
+
+            # Primary y-axis: Raw Feature
+            fig_feat.add_trace(go.Scatter(
+                x=jm_xgb_df.index, y=jm_xgb_df[feat], mode='lines', 
+                name=f"Raw {feat}",
+                line=dict(color='dodgerblue', width=1.5)
+            ), secondary_y=False)
+            
+            fig_feat.update_yaxes(title_text="Raw Value", secondary_y=False, showgrid=False)
+            fig_feat.update_yaxes(title_text="SHAP Impact", secondary_y=True, showgrid=False)
+            
+        else:
+            fig_feat = create_base_fig(f"{feat} over Time", feat, height=350)
+            
+            fig_feat.add_trace(go.Scatter(
+                x=jm_xgb_df.index, y=jm_xgb_df[feat], mode='lines', 
+                name=feat,
+                line=dict(color='dodgerblue', width=1.5)
+            ))
         
         apply_bear_shading(fig_feat)
         feature_charts[feat] = fig_feat
@@ -914,7 +1113,10 @@ with tab_jm_audit:
     if 'JM_Target_State' not in jm_xgb_df.columns:
         st.warning("The selected backtest cache does not contain True JM Labels. Please run a new backtest to view this tab.")
     else:
-        st.subheader("1. Jump Model Regime Audit")
+        st.subheader(
+            "1. Jump Model Regime Audit",
+            help="**Calculated:** Statistical summary of returns within Ground Truth regimes.\n\n**Data:** Out-of-sample `Target_Return` grouped by `JM_Target_State`.\n\n**Interpret:** Confirms the jump model successfully identified two distinct regimes. Bear (1) should ideally have a negative average return and higher volatility than Bull (0)."
+        )
         st.markdown("Analyze the true financial returns for the out-of-sample periods categorized as Bull (0) or Bear (1) by the JM algorithm.", help="A good regime classification model should show distinctly lower or negative average returns and higher volatility in the Bear (1) regime compared to the Bull (0) regime.")
         
         # Calculate JM Actual Stats
@@ -957,7 +1159,10 @@ with tab_jm_audit:
         st.plotly_chart(fig_box, width='stretch')
 
         # NEW: JM Regime Timeline (Price Overlay)
-        st.subheader("1b. JM Regime Timeline (Price Index Overlay)")
+        st.subheader(
+            "1b. JM Regime Timeline (Price Index Overlay)",
+            help="**Calculated:** Benchmark price curve with background shading matching exactly when the Jump Model detected a Bear state.\n\n**Data:** S&P 500 wealth curve and True `JM_Target_State`.\n\n**Interpret:** Visually audits the 'timing' of the math. Does the red shading cover the major drawdowns perfectly without excessive false alarms?"
+        )
         st.markdown("Visualize where exactly the JM model placed its regime labels on the market price curve.", help="The background shading indicates the TRUE Jump Model regime detected for that day. This helps identify if the model is 'late' to switch or if it's mis-labeling a rally as a bear regime.")
         
         fig_jm_price = create_base_fig("Benchmark Price index vs. JM Ground Truth", "Price Multiplier", height=450)
@@ -976,7 +1181,10 @@ with tab_jm_audit:
         st.plotly_chart(fig_jm_price, width='stretch')
         
         # NEW: Periodic Return Breakdown (Bull vs Bear)
-        st.subheader("1c. Periodic Return Comparison (Audit)")
+        st.subheader(
+            "1c. Periodic Return Comparison (Audit)",
+            help="**Calculated:** Annualized return of the True Bull regime minus the annualized return of the True Bear regime for every 6-month window.\n\n**Data:** `Target_Return` and `JM_Target_State`.\n\n**Interpret:** Bar above 0 (Green) means the regimes separated correctly. Bar below 0 (Red) indicates a 'Regime Breakdown' where the Bear state actually rallied harder than the Bull state."
+        )
         st.markdown("Examine the annualized return difference (Bull Return - Bear Return) for each 6-month evaluation chunk.", help="A POSITIVE bar means the model correctly separated a higher-yielding Bull regime from a lower-yielding Bear regime in that period. A NEGATIVE bar indicates a 'Regime Breakdown' where the identified Bear state actually had higher returns than the Bull state.")
         
         # Calculate returns by regime per period
@@ -1023,7 +1231,10 @@ with tab_jm_audit:
             st.plotly_chart(fig_p_break, width='stretch')
 
         # NEW: Risk-Return Scatter Plot
-        st.subheader("1d. Regime Risk-Return separation")
+        st.subheader(
+            "1d. Regime Risk-Return separation",
+            help="**Calculated:** Scatter plot of Trailing 21-Day Volatility vs Trailing 21-Day Return, colored by Ground Truth regime.\n\n**Data:** Rolling 21-Day stats of `Target_Return` colored by `JM_Target_State`.\n\n**Interpret:** A healthy model shows two distinct blobs. The Bear (red) blob should be lower and wider (choppy, low return) while the Bull (blue) blob should be clustered higher and far to the left (steady, high return)."
+        )
         st.markdown("Compare the daily return and volatility characteristics of the two identified regimes.", help="This scatter plot shows the trade-off. Even if the 'Bear' regime has higher returns, it usually sits much further to the right (higher volatility), resulting in a lower Sortino or Sharpe ratio.")
         
         # Calculate trailing 21-day volatility and return for each point
@@ -1058,7 +1269,10 @@ with tab_jm_audit:
         st.plotly_chart(fig_scatter, width='stretch')
         
         # NEW: Regime History Audit Table
-        st.subheader("1e. JM Regime History Audit Table")
+        st.subheader(
+            "1e. JM Regime History Audit Table",
+            help="**Calculated:** Contiguous chunks of identical JM regimes are collapsed into single rows with aggregate stats.\n\n**Data:** Continuous segments of `JM_Target_State`.\n\n**Interpret:** Useful to see if the XGBoost algorithm struggles during long regimes vs short choppy regimes."
+        )
         st.markdown("A granular breakdown of every contiguous regime detected by the Jump Model, including performance and XGBoost accuracy during those specific windows.", help="This table groups consecutive days of the same JM regime into 'segments'. It allows you to see if XGBoost performs better in long, stable regimes versus choppy, short-lived ones.")
         
         # Identify contiguous segments
@@ -1153,7 +1367,10 @@ with tab_jm_audit:
         st.markdown("---")
         
         # NEW: 1f. Feature Distributions by JM Regime
-        st.subheader("1f. Feature Distributions by JM Regime")
+        st.subheader(
+            "1f. Feature Distributions by JM Regime",
+            help="**Calculated:** Box plot of raw input features separated by ground truth regime.\n\n**Data:** User-selected raw feature grouped by `JM_Target_State`.\n\n**Interpret:** Box plots without much overlap prove the feature engineer created a variable that easily separates the two market states."
+        )
         st.markdown("Analyze how the raw input features are distributed across the True JM regimes.", help="This helps verify if the feature engineering step produces features that are distinctly different between the two regimes. If the distributions overlap heavily, the clustering algorithm will struggle.")
         
         # Get raw features (excluding SHAP and other metadata)
@@ -1189,7 +1406,10 @@ with tab_jm_audit:
             st.plotly_chart(fig_dist, width='stretch')
         
         # NEW: 1g. Regime Feature Scatter Plot
-        st.subheader("1g. Regime Feature Scatter Plot")
+        st.subheader(
+            "1g. Regime Feature Scatter Plot",
+            help="**Calculated:** 2D Scatter plot mapping raw feature A vs feature B.\n\n**Data:** `JM_Target_State` labels mapped onto a 2D feature space.\n\n**Interpret:** Shows the exact multidimensional boundaries drawn by the Jump Model's clustering algorithm to define Bull vs Bear markets."
+        )
         st.markdown("Visualize the multi-dimensional space where the Jump Model draws its clustering boundaries.", help="Select two features to see how they separate the regimes. The K-means algorithm tries to find clusters in this higher-dimensional space.")
         
         if len(dist_features) >= 2:
@@ -1232,7 +1452,10 @@ with tab_jm_audit:
             st.plotly_chart(fig_feat_scatter, width='stretch')
 
         # NEW: 1h. Misclassified Regimes Deep Dive (The "Why" Table)
-        st.subheader("1h. Misclassified Regimes Deep Dive (Anomalies)")
+        st.subheader(
+            "1h. Misclassified Regimes Deep Dive (Anomalies)",
+            help="**Calculated:** Filters data for days where the True JM Regime label opposes the actual daily return (e.g. Bear states that have positive returns).\n\n**Data:** `JM_Target_State` and `Target_Return`.\n\n**Interpret:** Audits the jump model's confidence. If a Bear day had a +3% return, looking at the features might reveal it was due to extreme underlying volatility, justifying the Bear label despite the rally."
+        )
         st.markdown("Investigate specific days where the True JM Regime label seems counter-intuitive based solely on return.", help="Filter for Bear regimes with positive returns, or Bull regimes with negative returns, to see the underlying feature values that drove the clustering decision.")
         
         anomaly_type = st.radio(
@@ -1285,7 +1508,10 @@ with tab_jm_audit:
             st.success("No anomalies of this type found in the current dataset.")
 
         # NEW: 1i. Regime Feature Drift Over Time
-        st.subheader("1i. Regime Feature Drift Over Time")
+        st.subheader(
+            "1i. Regime Feature Drift Over Time",
+            help="**Calculated:** Tracks the moving average of a raw feature within each regime bucket over time.\n\n**Data:** Selected feature grouped by 6-month intervals and `JM_Target_State`.\n\n**Interpret:** Identifies regime drift. If the red line moves significantly over the years, it implies the definition of a 'Bear Market' according to this feature is slowly changing."
+        )
         st.markdown("Track the average value of a specific feature within Bull vs Bear regimes across each 6-month evaluation period.", help="This helps identify if the definition of a 'Bear' market is changing over time. For example, does a Bear market in 2020 have a different average Sortino ratio than a Bear market in 2008?")
         
         if dist_features:
@@ -1396,7 +1622,10 @@ with tab_xgb_eval:
         st.warning("The selected backtest cache does not contain True JM Labels. Please run a new backtest to view this tab.")
     else:
         # XGBoost Evaluation
-        st.subheader("1. XGBoost Forecast Quality")
+        st.subheader(
+            "1. XGBoost Forecast Quality",
+            help="**Calculated:** Classification metrics (Accuracy, Precision, Recall, F1) comparing XGBoost prediction at (t) vs True JM Label at (t+1).\n\n**Data:** `Forecast_State` compared against a 1-day shifted `JM_Target_State`.\n\n**Interpret:** High precision means when it calls a Bear market, it's usually right. High recall means it rarely misses an actual Bear market. The Confusion Matrix visualized the Raw Trade-Off."
+        )
         st.markdown("Evaluate the classification performance of XGBoost in predicting the next day's true JM regime.", help="Remember that XGBoost predicts the JM regime shifted by 1 day (tomorrow's state). Thus, a perfect forecast matches today's prediction with tomorrow's true state.")
         
         # Align XGBoost Forecast (t) with JM Regime (t+1)
@@ -1445,7 +1674,10 @@ with tab_xgb_eval:
                 st.plotly_chart(fig_cm, width='stretch')
                 
             # Rolling Metrics
-            st.subheader("3. Rolling Forecast Accuracy")
+            st.subheader(
+                "3. Rolling Forecast Accuracy",
+                help="**Calculated:** 126-day (approx 6-month) simple moving average of a boolean 'Correct / Incorrect' array.\n\n**Data:** Daily boolean match between XGBoost (t) and True JM (t+1).\n\n**Interpret:** Shows model stability over time. Dips below the 50% line mean the model is performing worse than a coin toss during that specific 6 month window."
+            )
             st.markdown("Track the 6-month rolling accuracy of XGBoost's regime predictions.", help="Helps identify periods where the model struggles to accurately forecast the underlying regimes.")
             
             # Create a dataframe for rolling calculation
@@ -1571,10 +1803,11 @@ with export_container:
             "Wealth": g.get('fig_wealth'),
             "Drawdown": g.get('fig_dd'),
             "Regime_Prob": g.get('fig_prob'),
-            "Sharpe": g.get('fig_sharpe'),
+            "Sortino": g.get('fig_sortino'),
+            "Monthly_Heatmap": g.get('fig_heatmap'),
+            "Return_Dist": g.get('fig_dist'),
+            "Risk_Return_Scatter": g.get('fig_scatter'),
             "Trades_Lambda": g.get('fig_trades'),
-            "Periodic_Ret": g.get('fig_ret'),
-            "Periodic_Vol": g.get('fig_vol'),
             "SHAP_TS": g.get('fig_shap_ts'),
             "SHAP_Summary": g.get('fig_shap_summary'),
             "Feature_Dependence": g.get('fig_dep'),
@@ -1704,10 +1937,11 @@ with export_container:
             "Cumulative Wealth": fig_wealth,
             "Drawdown Profile": fig_dd,
             "Regime Probability vs Market": fig_prob,
-            "Rolling 1-Year Sharpe": fig_sharpe,
+            "Rolling 1-Year Sortino": fig_sortino,
+            "Monthly Returns Heatmap": fig_heatmap,
+            "Return Distribution": fig_dist,
+            "Risk / Return Profile": fig_scatter,
             "Transactions & Lambda": fig_trades,
-            "Periodic Returns": fig_ret,
-            "Periodic Volatility": fig_vol,
         }
         
         if 'fig_shap_ts' in locals() or 'fig_shap_ts' in globals():
