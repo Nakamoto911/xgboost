@@ -311,10 +311,18 @@ if run_simple_jm_cached:
     strat_dfs.append(simple_jm_df)
     
 for strat_df in strat_dfs:
-    strat_returns = np.where(strat_df['Forecast_State'] == 0, 
+    # 1. Shift the forecast so the prediction made at T applies to the return of T+1
+    tradable_signal = strat_df['Forecast_State'].shift(1).fillna(0)
+    
+    # 2. Calculate returns using the properly aligned signal
+    strat_returns = np.where(tradable_signal == 0, 
                              strat_df['Target_Return'], 
                              strat_df['RF_Rate'])
-    trades = strat_df['Forecast_State'].diff().abs().fillna(0)
+                             
+    # 3. Calculate trades based on the shifted signal
+    trades = tradable_signal.diff().abs().fillna(0)
+    
+    # 4. Assign back to the dataframe
     strat_df['Strat_Return'] = strat_returns - (trades * transaction_cost)
     strat_df['Trades'] = trades
 
