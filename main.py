@@ -363,18 +363,12 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     
     # Get probabilities for Class 1 (Bearish)
     oos_probs = xgb.predict_proba(X_oos_xgb)[:, 1]
-    
-    # Apply exponential smoothing (halflife 8 days) to probabilities
-    smoothed_probs = pd.Series(oos_probs).ewm(halflife=8).mean().values
+    oos_df['Raw_Prob'] = oos_probs
     
     # Calculate SHAP values
     import shap
     explainer = shap.TreeExplainer(xgb)
     shap_values = explainer.shap_values(X_oos_xgb)
-    
-    # Threshold at 0.5
-    oos_df['Forecast_State'] = (smoothed_probs > 0.5).astype(int)
-    oos_df['State_Prob'] = smoothed_probs
     
     # Calculate JM online regimes for the OOS period to serve as True Labels for Audit
     X_oos_jm = oos_df[return_features]
@@ -400,7 +394,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True):
     for col in all_features:
         oos_df[f'Feature_{col}'] = oos_df[col]
         
-    cols_to_keep = ['Target_Return', 'RF_Rate', 'Forecast_State', 'State_Prob', 'SHAP_Base_Value', 'JM_Target_State'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
+    cols_to_keep = ['Target_Return', 'RF_Rate', 'Raw_Prob', 'SHAP_Base_Value', 'JM_Target_State'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
     
     result = oos_df[cols_to_keep]
     _forecast_cache[cache_key] = result
@@ -422,6 +416,12 @@ def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=
         return pd.DataFrame()
         
     full_res = pd.concat(results)
+    
+    if include_xgboost:
+        # 1. Apply continuous EWMA over the unbroken time series
+        full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=8).mean()
+        # 2. Threshold to generate states
+        full_res['Forecast_State'] = (full_res['State_Prob'] > 0.5).astype(int)
     
     # FIX: Shift the forecast state by 1 day to prevent look-ahead bias in validation! 
     # Forecast made at end of Day T applies to Return of Day T+1
@@ -513,6 +513,10 @@ def main(run_simple_jm=False):
 
     # Combine Results
     jm_xgb_df = pd.concat(jm_xgb_results)
+    
+    # Apply continuous EWMA to the raw OOS probabilities
+    jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=8).mean()
+    jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
     
     # Calculate Strategy Returns applying transaction costs
     strat_dfs = [jm_xgb_df]

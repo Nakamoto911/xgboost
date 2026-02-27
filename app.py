@@ -213,6 +213,10 @@ if not jm_xgb_results:
     st.stop()
     
 jm_xgb_df = pd.concat(jm_xgb_results)
+if 'Raw_Prob' in jm_xgb_df.columns:
+    jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=8).mean()
+    jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
+
 if run_simple_jm_cached:
     simple_jm_df = pd.concat(simple_jm_results)
 
