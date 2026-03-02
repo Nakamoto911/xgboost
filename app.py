@@ -155,6 +155,9 @@ if run_button:
         best_sharpe = -np.inf
         best_lambda = backend.LAMBDA_GRID[0]
         
+        best_sharpe_jm = -np.inf
+        best_lambda_jm = backend.LAMBDA_GRID[0]
+        
         for lmbda in backend.LAMBDA_GRID:
             val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb)
             if not val_res.empty:
@@ -162,6 +165,14 @@ if run_button:
                 if sharpe > best_sharpe:
                     best_sharpe = sharpe
                     best_lambda = lmbda
+            
+            if run_simple_jm:
+                val_res_jm = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=False)
+                if not val_res_jm.empty:
+                    _, _, sharpe_jm, _, _ = backend.calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
+                    if sharpe_jm > best_sharpe_jm:
+                        best_sharpe_jm = sharpe_jm
+                        best_lambda_jm = lmbda
                     
         lambda_history.append(best_lambda)
         lambda_dates.append(current_date)
@@ -172,7 +183,7 @@ if run_button:
             jm_xgb_results.append(oos_chunk_jm_xgb)
             
         if run_simple_jm:
-            oos_chunk_simple_jm = backend.run_period_forecast(df, current_date, 10.0, include_xgboost=False)
+            oos_chunk_simple_jm = backend.run_period_forecast(df, current_date, best_lambda_jm, include_xgboost=False)
             if oos_chunk_simple_jm is not None:
                 simple_jm_results.append(oos_chunk_simple_jm)
             

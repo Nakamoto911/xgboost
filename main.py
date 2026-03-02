@@ -340,11 +340,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
         # Predict day-by-day to simulate real-time tracking
         oos_states = jm.predict_online(X_oos_jm.values, last_known_state=identified_states[-1])
         
-        # Shift the labels forward by 1 day to create the forecast for tomorrow
-        forecasts = np.roll(oos_states, 1)
-        forecasts[0] = identified_states[-1] # First day uses last known state from training
-        
-        oos_df['Forecast_State'] = forecasts
+        oos_df['Forecast_State'] = oos_states
         result = oos_df[['Target_Return', 'RF_Rate', 'Forecast_State']]
         _forecast_cache[cache_key] = result
         return result
@@ -490,9 +486,12 @@ def main(run_simple_jm=False):
         val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         print(f"\nEvaluating period: {current_date.date()} to {chunk_end.date()}")
         
-        # 1. Hyperparameter Tuning on Validation Window (for JM-XGB)
+        # 1. Hyperparameter Tuning on Validation Window (for JM-XGB and Simple JM)
         best_sharpe = -np.inf
         best_lambda = LAMBDA_GRID[0]
+        
+        best_sharpe_jm = -np.inf
+        best_lambda_jm = LAMBDA_GRID[0]
         
         for lmbda in LAMBDA_GRID:
             val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
@@ -501,8 +500,18 @@ def main(run_simple_jm=False):
                 if sharpe > best_sharpe:
                     best_sharpe = sharpe
                     best_lambda = lmbda
-                    
+            
+            if run_simple_jm:
+                val_res_jm = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=False)
+                if not val_res_jm.empty:
+                    _, _, sharpe_jm, _, _ = calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
+                    if sharpe_jm > best_sharpe_jm:
+                        best_sharpe_jm = sharpe_jm
+                        best_lambda_jm = lmbda
+                        
         print(f"Optimal Lambda selected for JM-XGB: {best_lambda} (Val Sharpe: {best_sharpe:.2f})")
+        if run_simple_jm:
+            print(f"Optimal Lambda selected for Simple JM: {best_lambda_jm} (Val Sharpe: {best_sharpe_jm:.2f})")
         lambda_history.append(best_lambda)
         lambda_dates.append(current_date)
         
@@ -512,10 +521,9 @@ def main(run_simple_jm=False):
         if oos_chunk_jm_xgb is not None:
             jm_xgb_results.append(oos_chunk_jm_xgb)
             
-        # Simple JM (Using a default lambda for the simple baseline to save compute, 
-        # normally you'd tune this separately)
+        # Simple JM (dynamically tuned separately)
         if run_simple_jm:
-            oos_chunk_simple_jm = run_period_forecast(df, current_date, 10.0, include_xgboost=False)
+            oos_chunk_simple_jm = run_period_forecast(df, current_date, best_lambda_jm, include_xgboost=False)
             if oos_chunk_simple_jm is not None:
                 simple_jm_results.append(oos_chunk_simple_jm)
             
