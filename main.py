@@ -53,7 +53,7 @@ VIX_TICKER = '^VIX'             # VIX Index
 # Timeline
 START_DATE_DATA = '1987-01-01'  # Need data way before 1999 to allow for 11-year lookbacks
 OOS_START_DATE = '2007-01-01'   # Out-of-sample testing begins (paper: 2007-2023)
-END_DATE = '2024-01-01'         # End of testing period (paper: 2007-2023)
+END_DATE = '2026-01-01'         # End of testing period
 
 # Transaction costs
 TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
@@ -62,7 +62,11 @@ TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
 VALIDATION_WINDOW_YRS = 5
 
 # Lambda candidate grid for Jump Model (paper: 0.0 to 100.0, log-spaced)
-LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20))
+# Reduced from 20 to 10 candidates to limit walk-forward overfitting on single-asset backtest
+LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
+
+# EWMA halflife candidates for probability smoothing (paper: Section 4.2)
+EWMA_HL_GRID = [0, 2, 4, 8]
 
 # ==============================================================================
 # 2. STATISTICAL JUMP MODEL (Implementation from scratch)
@@ -353,8 +357,13 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
     y_train_xgb = train_df['Target_State']
     X_oos_xgb = oos_df[all_features]
     
-    xgb = XGBClassifier(eval_metric='logloss', random_state=42)
-        
+    xgb = XGBClassifier(
+        eval_metric='logloss', random_state=42,
+        max_depth=4, n_estimators=100, learning_rate=0.1,
+        reg_alpha=1.0, reg_lambda=5.0,
+        subsample=0.8, colsample_bytree=0.8,
+    )
+
     xgb.fit(X_train_xgb, y_train_xgb)
     
     # Get probabilities for Class 1 (Bearish)
@@ -396,44 +405,47 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
     _forecast_cache[cache_key] = result
     return result
 
-def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=True, constrain_xgb=False):
+def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=True, constrain_xgb=False, ewma_halflife=8):
     """Simulates the entire period in 6-month chunks for a given lambda."""
     results = []
     current_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
-    
+
     while current_date < end_date:
         res = run_period_forecast(df, current_date, lambda_penalty, include_xgboost, constrain_xgb)
         if res is not None:
             results.append(res)
         current_date += pd.DateOffset(months=6)
-        
+
     if not results:
         return pd.DataFrame()
-        
+
     full_res = pd.concat(results)
-    
+
     if include_xgboost:
-        # 1. Apply continuous EWMA over the unbroken time series
-        full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=8).mean()
+        # 1. Apply continuous EWMA over the unbroken time series (paper: tune halflife from {0,2,4,8})
+        if ewma_halflife == 0:
+            full_res['State_Prob'] = full_res['Raw_Prob']
+        else:
+            full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=ewma_halflife).mean()
         # 2. Threshold to generate states
         full_res['Forecast_State'] = (full_res['State_Prob'] > 0.5).astype(int)
-    
-    # FIX: Shift the forecast state by 1 day to prevent look-ahead bias in validation! 
+
+    # FIX: Shift the forecast state by 1 day to prevent look-ahead bias in validation!
     # Forecast made at end of Day T applies to Return of Day T+1
     trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
-    
+
     # Calculate 0/1 Strategy Returns
     # State 0 (Bullish) = Target Asset, State 1 (Bearish) = Risk-Free
-    strat_returns = np.where(trading_signals == 0, 
-                             full_res['Target_Return'], 
+    strat_returns = np.where(trading_signals == 0,
+                             full_res['Target_Return'],
                              full_res['RF_Rate'])
     full_res['Strat_Return'] = strat_returns
-    
+
     # Apply Transaction Costs (when forecast changes)
     trades = trading_signals.diff().abs().fillna(0)
     full_res['Strat_Return'] -= trades * TRANSACTION_COST
-    
+
     return full_res
 
 # ==============================================================================
@@ -472,19 +484,36 @@ def main(run_simple_jm=False, fixed_lambda=None):
     lambda_history = []
     lambda_dates = []
 
-    # Rolling Walk-Forward Optimization
+    # --- Phase 1: Tune EWMA halflife once on initial validation window (paper Section 4.2) ---
+    # The paper selects one halflife per asset on the pre-OOS validation window, then fixes it.
+    initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+    best_ewma_hl = EWMA_HL_GRID[-1]
+    best_init_sharpe = -np.inf
+
+    if fixed_lambda is None:
+        print(f"\nTuning EWMA halflife on initial validation window ({initial_val_start.date()} to {current_date.date()})...")
+        for hl in EWMA_HL_GRID:
+            for lmbda in LAMBDA_GRID:
+                val_res = simulate_strategy(df, initial_val_start, current_date, lmbda, include_xgboost=True, ewma_halflife=hl)
+                if not val_res.empty:
+                    _, _, sharpe, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    if sharpe > best_init_sharpe:
+                        best_init_sharpe = sharpe
+                        best_ewma_hl = hl
+        print(f"Selected EWMA halflife: {best_ewma_hl} (fixed for entire OOS period)")
+
+    # --- Phase 2: Walk-forward lambda tuning (only lambda, halflife is fixed) ---
     while current_date < final_end_date:
         chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
         val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         print(f"\nEvaluating period: {current_date.date()} to {chunk_end.date()}")
 
         if fixed_lambda is not None:
-            # Skip walk-forward tuning, use fixed lambda
             best_lambda = fixed_lambda
             best_lambda_jm = fixed_lambda
             print(f"Lambda (fixed): {best_lambda}")
         else:
-            # 1. Hyperparameter Tuning on Validation Window (for JM-XGB and Simple JM)
+            # Tune only lambda on validation window (EWMA halflife is already fixed)
             best_sharpe = -np.inf
             best_lambda = LAMBDA_GRID[0]
 
@@ -492,7 +521,7 @@ def main(run_simple_jm=False, fixed_lambda=None):
             best_lambda_jm = LAMBDA_GRID[0]
 
             for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
+                val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, ewma_halflife=best_ewma_hl)
                 if not val_res.empty:
                     _, _, sharpe, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                     if sharpe > best_sharpe:
@@ -507,20 +536,18 @@ def main(run_simple_jm=False, fixed_lambda=None):
                             best_sharpe_jm = sharpe_jm
                             best_lambda_jm = lmbda
 
-            print(f"Optimal Lambda selected for JM-XGB: {best_lambda} (Val Sharpe: {best_sharpe:.2f})")
+            print(f"Optimal Lambda for JM-XGB: {best_lambda:.2f} (Val Sharpe: {best_sharpe:.2f})")
             if run_simple_jm:
-                print(f"Optimal Lambda selected for Simple JM: {best_lambda_jm} (Val Sharpe: {best_sharpe_jm:.2f})")
+                print(f"Optimal Lambda for Simple JM: {best_lambda_jm:.2f} (Val Sharpe: {best_sharpe_jm:.2f})")
 
         lambda_history.append(best_lambda)
         lambda_dates.append(current_date)
 
-        # 2. Out-of-Sample Execution for this 6-month chunk
-        # JM-XGB
+        # Out-of-Sample Execution for this 6-month chunk
         oos_chunk_jm_xgb = run_period_forecast(df, current_date, best_lambda, include_xgboost=True)
         if oos_chunk_jm_xgb is not None:
             jm_xgb_results.append(oos_chunk_jm_xgb)
 
-        # Simple JM (dynamically tuned separately)
         if run_simple_jm:
             oos_chunk_simple_jm = run_period_forecast(df, current_date, best_lambda_jm, include_xgboost=False)
             if oos_chunk_simple_jm is not None:
@@ -530,9 +557,12 @@ def main(run_simple_jm=False, fixed_lambda=None):
 
     # Combine Results
     jm_xgb_df = pd.concat(jm_xgb_results)
-    
-    # Apply continuous EWMA to the raw OOS probabilities
-    jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=8).mean()
+
+    # Apply continuous EWMA over the full OOS series (halflife fixed from Phase 1)
+    if best_ewma_hl == 0:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
+    else:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
     jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
     
     # Calculate Strategy Returns applying transaction costs
