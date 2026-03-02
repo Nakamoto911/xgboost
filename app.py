@@ -246,6 +246,26 @@ if 'Raw_Prob' in jm_xgb_df.columns:
 if run_simple_jm_cached:
     simple_jm_df = pd.concat(simple_jm_results)
 
+precalc_dfs = [jm_xgb_df]
+if run_simple_jm_cached:
+    precalc_dfs.append(simple_jm_df)
+    
+for strat_df in precalc_dfs:
+    # 1. Shift the forecast so the prediction made at T applies to the return of T+1
+    tradable_signal = strat_df['Forecast_State'].shift(1).fillna(0)
+    
+    # 2. Calculate returns using the properly aligned signal
+    strat_returns = np.where(tradable_signal == 0, 
+                             strat_df['Target_Return'], 
+                             strat_df['RF_Rate'])
+                             
+    # 3. Calculate trades based on the shifted signal
+    trades = tradable_signal.diff().abs().fillna(0)
+    
+    # 4. Assign back to the dataframe
+    strat_df['Strat_Return'] = strat_returns - (trades * transaction_cost)
+    strat_df['Trades'] = trades
+
 st.subheader("Analysis Period")
 
 min_date = jm_xgb_df.index.min().date()
@@ -335,26 +355,6 @@ if jm_xgb_df.empty:
     
 if run_simple_jm_cached:
     simple_jm_df = simple_jm_df.loc[str(filter_start):str(filter_end)]
-
-strat_dfs = [jm_xgb_df]
-if run_simple_jm_cached:
-    strat_dfs.append(simple_jm_df)
-    
-for strat_df in strat_dfs:
-    # 1. Shift the forecast so the prediction made at T applies to the return of T+1
-    tradable_signal = strat_df['Forecast_State'].shift(1).fillna(0)
-    
-    # 2. Calculate returns using the properly aligned signal
-    strat_returns = np.where(tradable_signal == 0, 
-                             strat_df['Target_Return'], 
-                             strat_df['RF_Rate'])
-                             
-    # 3. Calculate trades based on the shifted signal
-    trades = tradable_signal.diff().abs().fillna(0)
-    
-    # 4. Assign back to the dataframe
-    strat_df['Strat_Return'] = strat_returns - (trades * transaction_cost)
-    strat_df['Trades'] = trades
 
 bh_returns = jm_xgb_df['Target_Return']
 rf_returns = jm_xgb_df['RF_Rate']
