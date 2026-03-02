@@ -45,15 +45,15 @@ warnings.filterwarnings('ignore')
 # ==============================================================================
 # 1. CONFIGURATION: Change Asset and Time Periods Here
 # ==============================================================================
-TARGET_TICKER = '^GSPC'         # S&P 500
+TARGET_TICKER = '^SP500TR'      # S&P 500 Total Return (includes dividends)
 BOND_TICKER = 'VBMFX'           # Vanguard Total Bond Market (Proxy for US Agg Bond)
 RISK_FREE_TICKER = '^IRX'       # 13-Week Treasury Bill (Proxy for Risk-Free)
 VIX_TICKER = '^VIX'             # VIX Index
 
 # Timeline
 START_DATE_DATA = '1987-01-01'  # Need data way before 1999 to allow for 11-year lookbacks
-OOS_START_DATE = '2004-01-01'   # Out-of-sample testing begins
-END_DATE = '2026-01-01'         # End of testing period
+OOS_START_DATE = '2007-01-01'   # Out-of-sample testing begins (paper: 2007-2023)
+END_DATE = '2024-01-01'         # End of testing period (paper: 2007-2023)
 
 # Transaction costs
 TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
@@ -61,9 +61,8 @@ TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
 # Validation Window (Years)
 VALIDATION_WINDOW_YRS = 5
 
-# Lambda candidate grid for Jump Model (reduced to 4 for computational speed in testing)
-# In production, expand this array (e.g., np.logspace(0, 2, 10))
-LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0] 
+# Lambda candidate grid for Jump Model (paper: 0.0 to 100.0, log-spaced)
+LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20))
 
 # ==============================================================================
 # 2. STATISTICAL JUMP MODEL (Implementation from scratch)
@@ -320,7 +319,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
         identified_states = 1 - identified_states # Flip labels
         jm.means = jm.means[::-1].copy()
         
-    # Shift labels forward by 1 day to create prediction targets
+    # Shift labels forward by 1 day to create prediction targets (per paper: predict s_{t+1} from x_t)
     train_df['Target_State'] = np.roll(identified_states, -1)
     train_df = train_df.iloc[:-1] # Drop last row due to shift
     
@@ -354,16 +353,7 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
     y_train_xgb = train_df['Target_State']
     X_oos_xgb = oos_df[all_features]
     
-    if constrain_xgb:
-        xgb = XGBClassifier(
-            eval_metric='logloss', 
-            random_state=42,
-            max_depth=3,
-            subsample=0.5,
-            reg_lambda=1.0
-        )
-    else:
-        xgb = XGBClassifier(eval_metric='logloss', random_state=42)
+    xgb = XGBClassifier(eval_metric='logloss', random_state=42)
         
     xgb.fit(X_train_xgb, y_train_xgb)
     
@@ -468,65 +458,74 @@ def calculate_metrics(returns_series, rf_series):
     
     return ann_geom_ret, ann_vol, sharpe, sortino, mdd
 
-def main(run_simple_jm=False):
+def main(run_simple_jm=False, fixed_lambda=None):
     df = fetch_and_prepare_data()
-    
+
     print(f"\n--- Starting Out-of-Sample Backtest ({OOS_START_DATE} to {END_DATE}) ---")
+    if fixed_lambda is not None:
+        print(f"Using FIXED lambda={fixed_lambda} (no walk-forward tuning)")
     current_date = pd.to_datetime(OOS_START_DATE)
     final_end_date = pd.to_datetime(END_DATE)
-    
+
     jm_xgb_results = []
     simple_jm_results = []
     lambda_history = []
     lambda_dates = []
-    
+
     # Rolling Walk-Forward Optimization
     while current_date < final_end_date:
         chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
         val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         print(f"\nEvaluating period: {current_date.date()} to {chunk_end.date()}")
-        
-        # 1. Hyperparameter Tuning on Validation Window (for JM-XGB and Simple JM)
-        best_sharpe = -np.inf
-        best_lambda = LAMBDA_GRID[0]
-        
-        best_sharpe_jm = -np.inf
-        best_lambda_jm = LAMBDA_GRID[0]
-        
-        for lmbda in LAMBDA_GRID:
-            val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
-            if not val_res.empty:
-                _, _, sharpe, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_lambda = lmbda
-            
+
+        if fixed_lambda is not None:
+            # Skip walk-forward tuning, use fixed lambda
+            best_lambda = fixed_lambda
+            best_lambda_jm = fixed_lambda
+            print(f"Lambda (fixed): {best_lambda}")
+        else:
+            # 1. Hyperparameter Tuning on Validation Window (for JM-XGB and Simple JM)
+            best_sharpe = -np.inf
+            best_lambda = LAMBDA_GRID[0]
+
+            best_sharpe_jm = -np.inf
+            best_lambda_jm = LAMBDA_GRID[0]
+
+            for lmbda in LAMBDA_GRID:
+                val_res = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True)
+                if not val_res.empty:
+                    _, _, sharpe, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    if sharpe > best_sharpe:
+                        best_sharpe = sharpe
+                        best_lambda = lmbda
+
+                if run_simple_jm:
+                    val_res_jm = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=False)
+                    if not val_res_jm.empty:
+                        _, _, sharpe_jm, _, _ = calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
+                        if sharpe_jm > best_sharpe_jm:
+                            best_sharpe_jm = sharpe_jm
+                            best_lambda_jm = lmbda
+
+            print(f"Optimal Lambda selected for JM-XGB: {best_lambda} (Val Sharpe: {best_sharpe:.2f})")
             if run_simple_jm:
-                val_res_jm = simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=False)
-                if not val_res_jm.empty:
-                    _, _, sharpe_jm, _, _ = calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
-                    if sharpe_jm > best_sharpe_jm:
-                        best_sharpe_jm = sharpe_jm
-                        best_lambda_jm = lmbda
-                        
-        print(f"Optimal Lambda selected for JM-XGB: {best_lambda} (Val Sharpe: {best_sharpe:.2f})")
-        if run_simple_jm:
-            print(f"Optimal Lambda selected for Simple JM: {best_lambda_jm} (Val Sharpe: {best_sharpe_jm:.2f})")
+                print(f"Optimal Lambda selected for Simple JM: {best_lambda_jm} (Val Sharpe: {best_sharpe_jm:.2f})")
+
         lambda_history.append(best_lambda)
         lambda_dates.append(current_date)
-        
+
         # 2. Out-of-Sample Execution for this 6-month chunk
         # JM-XGB
         oos_chunk_jm_xgb = run_period_forecast(df, current_date, best_lambda, include_xgboost=True)
         if oos_chunk_jm_xgb is not None:
             jm_xgb_results.append(oos_chunk_jm_xgb)
-            
+
         # Simple JM (dynamically tuned separately)
         if run_simple_jm:
             oos_chunk_simple_jm = run_period_forecast(df, current_date, best_lambda_jm, include_xgboost=False)
             if oos_chunk_simple_jm is not None:
                 simple_jm_results.append(oos_chunk_simple_jm)
-            
+
         current_date = chunk_end
 
     # Combine Results
