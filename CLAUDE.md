@@ -38,7 +38,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 
 ### Entry Points
 - `main.py` (~815 lines) -- Core backtest engine. Fetches data, fits models, runs walk-forward simulation, outputs PDF report.
-- `app.py` (~2059 lines) -- Streamlit dashboard. Imports `main.py` as `backend` and exposes all parameters via sidebar controls with interactive Plotly charts.
+- `app.py` (~2120 lines) -- Streamlit dashboard. Imports `main.py` as `backend`. Sidebar has an experiment preset selector that auto-fills all StrategyConfig parameters (tuning metric, validation window type, lambda smoothing, threshold, allocation style, ensemble K). Uses `walk_forward_backtest()` for execution. Interactive Plotly charts.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~795 lines) -- Multi-asset benchmark. Tests 12 ETFs across 5 market periods with parallel execution.
 
@@ -59,7 +59,8 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - State 0 = Bullish (invest in target asset), State 1 = Bearish (rotate to risk-free). States are aligned after fitting so State 0 always has higher cumulative excess return.
 - Forecast signal is shifted +1 day before applying to returns to prevent look-ahead bias.
 - Binary 0/1 allocation is the strategy's core strength. Experiments proved continuous allocation and higher thresholds destroy performance.
-- `app.py` mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass configuration from sidebar controls.
+- `app.py` sidebar has an experiment preset selector (all 9 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
+- `app.py` mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass data/grid configuration from sidebar controls.
 
 ## Configuration
 

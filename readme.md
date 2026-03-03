@@ -55,16 +55,19 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 .
 ├── main.py                  # Core backtest engine (S&P 500, generates PDF report)
 ├── app.py                   # Streamlit interactive dashboard
+├── run_experiments.py        # Experiment runner (strategy hypothesis testing)
+├── config.py                # StrategyConfig dataclass for parameterizing variants
 ├── requirements.txt
 ├── cache/                   # Auto-generated data caches (gitignored)
 │   ├── data_cache.pkl       # Fetched + engineered S&P 500 data (main.py)
 │   ├── backtest_cache.pkl   # Last dashboard run results (app.py)
 │   └── data_cache_*.pkl     # Per-ETF caches (benchmark_assets.py)
 ├── benchmarks/              # Timestamped benchmark outputs (gitignored)
-│   ├── benchmark_report_YYYYMMDD_HHMMSS.md
-│   └── benchmark_results_YYYYMMDD_HHMMSS.csv
+│   ├── experiment_report_YYYYMMDD_HHMMSS.md   # run_experiments.py output
+│   ├── benchmark_report_YYYYMMDD_HHMMSS.md    # benchmark_assets.py output
+│   └── benchmark_results_YYYYMMDD_HHMMSS.csv  # benchmark_assets.py output
 └── misc_scripts/
-    ├── benchmark_assets.py  # Multi-asset benchmark vs Buy & Hold
+    ├── benchmark_assets.py  # Multi-asset robustness testing
     └── ...                  # Other debug/test scripts
 ```
 
@@ -78,31 +81,92 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 
 ## Running
 
-### Full Backtest (S&P 500)
-Runs the walk-forward backtest and saves a timestamped PDF report:
-```bash
-python main.py
-```
-Data is cached in `cache/data_cache.pkl` to avoid re-fetching on subsequent runs. Delete it to force a fresh download.
+There are three entry points depending on your goal:
 
-### Interactive Dashboard
-Launches the Streamlit app for interactive exploration of strategy parameters and results:
+### 1. Strategy Research: Experiment Runner (Recommended for testing hypotheses)
+Tests a controlled set of 9 pre-defined strategy variants and compares each against the paper baseline. This is the primary tool for validating improvements.
+
+```bash
+python run_experiments.py [all|list|N|N,M|N-M]
+```
+
+**Options:**
+- `python run_experiments.py all` — Run all 9 experiments
+- `python run_experiments.py list` — List available experiments
+- `python run_experiments.py 1,5,6` — Run experiments #1, #5, #6
+- `python run_experiments.py 5-7` — Run experiments #5 through #7
+
+**Output:** Timestamped markdown report (`benchmarks/experiment_report_YYYYMMDD_HHMMSS.md`) with:
+- Side-by-side comparison table (Sharpe, Sortino, Max DD vs B&H)
+- Sub-period performance breakdown (GFC, Recovery, Late Cycle, COVID, Post-COVID)
+- Lambda stability diagnostics (mean, std, coefficient of variation)
+- Integration recommendations for each experiment
+- Future enhancement backlog
+
+**Experiments tested:**
+1. Paper Baseline (reference)
+2. Sortino Tuned (optimize for downside volatility)
+3. Conservative Threshold (0.6 instead of 0.5)
+4. Continuous Allocation (fractional instead of binary)
+5. Lambda Smoothing (smooth lambda selection across periods)
+6. Expanding Window (growing validation window instead of rolling)
+7. Lambda Ensemble (average top-3 lambdas)
+8. The Ultimate Combo (all experimental features)
+9. Expanding + Lambda Smoothing (combination)
+
+### 2. Interactive Exploration: Dashboard
+Launches the Streamlit app for interactive exploration of strategy parameters and results. Select an experiment preset or customize parameters manually, run the backtest, and view live charts:
+
 ```bash
 streamlit run app.py
 ```
-Opens in your default browser. The last run is cached in `cache/backtest_cache.pkl` for fast reload.
 
-### Multi-Asset Benchmark
-Tests JM-XGB vs Buy & Hold across 12 ETFs and 6 time periods. Results are saved to `benchmarks/` with a timestamp:
+**Features:**
+- Experiment preset selector (auto-fills all parameters)
+- Customizable Strategy Parameters (tuning metric, validation window type, lambda smoothing, etc.)
+- Data & Execution settings (tickers, dates, lambda grid, XGB hyperparameters)
+- Interactive Plotly charts (wealth curve, drawdowns, sub-periods)
+- SHAP importance analysis
+- Results cached for fast reload
+
+Opens in your default browser. The last run is cached in `cache/backtest_cache.pkl`.
+
+### 3. Full Backtest (S&P 500)
+Runs the walk-forward backtest with current parameters and saves a timestamped PDF report:
+
+```bash
+python main.py
+```
+
+**Output:** PDF report with:
+- Performance metrics table (Sharpe, Sortino, Max DD, trades)
+- Wealth curve chart with annotated bear regimes
+- Feature importance rankings
+
+Data is cached in `cache/data_cache.pkl` to avoid re-fetching on subsequent runs. Delete it to force a fresh download from Yahoo Finance and FRED.
+
+### 4. Multi-Asset Robustness Testing (Optional)
+Tests the finalized strategy across 12 ETFs to verify the edge generalizes beyond S&P 500:
+
 ```bash
 python misc_scripts/benchmark_assets.py
 ```
-Each run produces two timestamped files in `benchmarks/`:
-- `benchmark_report_YYYYMMDD_HHMMSS.md` — full results with parameters, data coverage, per-period tables, and aggregate summary
+
+**Output:** Two files in `benchmarks/`:
+- `benchmark_report_YYYYMMDD_HHMMSS.md` — full results with per-period tables
 - `benchmark_results_YYYYMMDD_HHMMSS.csv` — raw data for further analysis
 
-ETFs tested: `IVV`, `IJH`, `IWM`, `EFA`, `EEM`, `AGG`, `SPTL`, `HYG`, `SPBO`, `IYR`, `DBC`, `GLD`
+**Assets tested:** `IVV`, `IJH`, `IWM`, `EFA`, `EEM`, `AGG`, `SPTL`, `HYG`, `SPBO`, `IYR`, `DBC`, `GLD`
 
-Time periods: GFC (2007–2009), Recovery (2010–2015), Late Cycle (2016–2019), COVID (2020–2021), Post-COVID (2022–2025), Full (2007–2025)
+**Optimization notes:** Reduced lambda grid (5 points), no SHAP, multiprocessing for speed.
 
-Per-ETF data is cached in `cache/data_cache_<TICKER>.pkl`. Delete individual files to re-fetch specific ETFs.
+Per-ETF data cached in `cache/data_cache_<TICKER>.pkl`. Delete individual files to re-fetch.
+
+---
+
+### Typical Workflow
+
+1. **Use `run_experiments.py`** to test hypothesis-driven strategy modifications and generate comparison reports
+2. **Use `app.py`** to interactively explore promising variants and visualize results
+3. **Use `main.py`** to generate a final PDF report of your chosen configuration
+4. **Use `benchmark_assets.py`** to verify the strategy works across other asset classes (optional, for robustness)

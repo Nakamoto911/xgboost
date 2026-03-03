@@ -15,14 +15,48 @@ from config import StrategyConfig
 st.title("XGBoost Strategy Backtest Portal")
 export_container = st.container()
 
-if 'start_date_input' not in st.session_state:
-    st.session_state.start_date_input = backend.START_DATE_DATA
-if 'oos_start_input' not in st.session_state:
-    st.session_state.oos_start_input = backend.OOS_START_DATE
-if 'target_ticker_input' not in st.session_state:
-    st.session_state.target_ticker_input = backend.TARGET_TICKER
-if 'val_window_input' not in st.session_state:
-    st.session_state.val_window_input = backend.VALIDATION_WINDOW_YRS
+# =============================================================================
+# Experiment Presets
+# =============================================================================
+EXPERIMENT_PRESETS = {
+    "1. Paper Baseline": StrategyConfig(name="1. Paper Baseline"),
+    "2. Sortino Tuned": StrategyConfig(name="2. Sortino Tuned", tuning_metric="sortino"),
+    "3. Conservative Threshold (0.6)": StrategyConfig(name="3. Conservative Threshold (0.6)", prob_threshold=0.60),
+    "4. Continuous Allocation": StrategyConfig(name="4. Continuous Allocation", allocation_style="continuous"),
+    "5. Lambda Smoothing": StrategyConfig(name="5. Lambda Smoothing", lambda_smoothing=True),
+    "6. Expanding Window": StrategyConfig(name="6. Expanding Window", validation_window_type="expanding"),
+    "7. Lambda Ensemble (Top 3)": StrategyConfig(name="7. Lambda Ensemble (Top 3)", lambda_ensemble_k=3),
+    "8. The Ultimate Combo": StrategyConfig(
+        name="8. The Ultimate Combo",
+        tuning_metric="sortino", prob_threshold=0.55,
+        allocation_style="continuous", lambda_smoothing=True,
+    ),
+    "9. Expanding + Lambda Smoothing": StrategyConfig(
+        name="9. Expanding + Lambda Smoothing",
+        validation_window_type="expanding", lambda_smoothing=True,
+    ),
+}
+PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
+
+# =============================================================================
+# Session State Initialization
+# =============================================================================
+_defaults = {
+    'start_date_input': backend.START_DATE_DATA,
+    'oos_start_input': backend.OOS_START_DATE,
+    'target_ticker_input': backend.TARGET_TICKER,
+    'val_window_input': backend.VALIDATION_WINDOW_YRS,
+    'tuning_metric': "sharpe",
+    'validation_window_type': "rolling",
+    'lambda_smoothing': False,
+    'prob_threshold': 0.50,
+    'allocation_style': "binary",
+    'lambda_ensemble_k': 1,
+    'xgb_params_mode': "Optimized",
+}
+for key, val in _defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
 def on_ticker_change():
     new_ticker = st.session_state.target_ticker_input
@@ -39,7 +73,56 @@ def on_ticker_change():
     except Exception as e:
         print(f"Error fetching data for ticker {new_ticker}: {e}")
 
-st.sidebar.header("Configuration")
+def on_preset_change():
+    preset_name = st.session_state.experiment_preset
+    if preset_name == "Custom":
+        return
+    cfg = EXPERIMENT_PRESETS[preset_name]
+    st.session_state.tuning_metric = cfg.tuning_metric
+    st.session_state.validation_window_type = cfg.validation_window_type
+    st.session_state.lambda_smoothing = cfg.lambda_smoothing
+    st.session_state.prob_threshold = cfg.prob_threshold
+    st.session_state.allocation_style = cfg.allocation_style
+    st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
+    st.session_state.xgb_params_mode = "Optimized"
+
+def on_strategy_param_change():
+    """Auto-switch to 'Custom' if user manually changes a param that no longer matches the preset."""
+    preset_name = st.session_state.get('experiment_preset', 'Custom')
+    if preset_name == 'Custom':
+        return
+    cfg = EXPERIMENT_PRESETS.get(preset_name)
+    if cfg is None:
+        return
+    if (st.session_state.tuning_metric == cfg.tuning_metric and
+        st.session_state.validation_window_type == cfg.validation_window_type and
+        st.session_state.lambda_smoothing == cfg.lambda_smoothing and
+        abs(st.session_state.prob_threshold - cfg.prob_threshold) < 0.001 and
+        st.session_state.allocation_style == cfg.allocation_style and
+        st.session_state.lambda_ensemble_k == cfg.lambda_ensemble_k and
+        st.session_state.xgb_params_mode == "Optimized"):
+        return
+    st.session_state.experiment_preset = 'Custom'
+
+# =============================================================================
+# Sidebar
+# =============================================================================
+st.sidebar.header("Experiment Preset")
+st.sidebar.selectbox(
+    "Strategy", PRESET_NAMES, index=0,
+    key='experiment_preset', on_change=on_preset_change,
+    help="Select a predefined experiment configuration. All parameters below will be filled automatically. Choose 'Custom' to set parameters manually."
+)
+
+st.sidebar.header("Strategy Parameters")
+st.sidebar.selectbox("Tuning Metric", ["sharpe", "sortino"], key='tuning_metric', on_change=on_strategy_param_change)
+st.sidebar.selectbox("Validation Window Type", ["rolling", "expanding"], key='validation_window_type', on_change=on_strategy_param_change)
+st.sidebar.checkbox("Lambda Smoothing", key='lambda_smoothing', on_change=on_strategy_param_change)
+st.sidebar.number_input("Probability Threshold", min_value=0.30, max_value=0.70, step=0.05, format="%.2f", key='prob_threshold', on_change=on_strategy_param_change)
+st.sidebar.selectbox("Allocation Style", ["binary", "continuous"], key='allocation_style', on_change=on_strategy_param_change)
+st.sidebar.number_input("Lambda Ensemble K", min_value=1, max_value=5, key='lambda_ensemble_k', on_change=on_strategy_param_change)
+
+st.sidebar.header("Data & Execution")
 target_ticker = st.sidebar.text_input("Target Ticker", key='target_ticker_input', on_change=on_ticker_change)
 bond_ticker = st.sidebar.text_input("Bond Ticker", backend.BOND_TICKER)
 risk_free_ticker = st.sidebar.text_input("Risk-Free Ticker", backend.RISK_FREE_TICKER)
@@ -53,29 +136,20 @@ transaction_cost = st.sidebar.number_input("Transaction Cost", value=float(backe
 validation_window = st.sidebar.number_input("Validation Window (Years)", min_value=1, max_value=20, key='val_window_input', on_change=on_ticker_change)
 
 grid_preset = st.sidebar.selectbox(
-    "Lambda Grid Preset", 
+    "Lambda Grid Preset",
     ["JM-XGB Improved (10 points)", "Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
 )
 
 if grid_preset == "JM-XGB Improved (10 points)":
-    import numpy as np
     backend.LAMBDA_GRID = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 10)]
     st.sidebar.caption("Using: 0.0 + 10 log-spaced points up to 100.0")
-
 elif grid_preset == "Default (Fast: 4 points)":
-    # Keep current default
     backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
     st.sidebar.caption("Using: 1.0, 10.0, 50.0, 100.0")
-
 elif grid_preset == "Expanded (Paper: 21 points)":
-    # 0.0 + 20 points distributed evenly on a logarithmic scale (1 to 100)
-    import numpy as np
-    expanded_grid = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 20)]
-    backend.LAMBDA_GRID = expanded_grid
+    backend.LAMBDA_GRID = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 20)]
     st.sidebar.caption("Using: 0.0 + 20 log-spaced points up to 100.0")
-
 else:
-    # Allow custom input like before
     lambda_grid_str = st.sidebar.text_input("Custom Grid (comma separated)", "1.0, 10.0, 50.0, 100.0")
     try:
         backend.LAMBDA_GRID = [float(x.strip()) for x in lambda_grid_str.split(',')]
@@ -83,21 +157,42 @@ else:
         st.sidebar.error("Invalid Lambda Grid format. Using default.")
         backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
 
+XGB_PARAMS_OPTIONS = {
+    "Optimized": {
+        "max_depth": 4, "n_estimators": 100, "learning_rate": 0.1,
+        "reg_alpha": 1.0, "reg_lambda": 5.0, "subsample": 0.8, "colsample_bytree": 0.8,
+    },
+    "Constrained": {
+        "max_depth": 3, "n_estimators": 50, "learning_rate": 0.05,
+        "reg_alpha": 2.0, "reg_lambda": 10.0, "subsample": 0.6, "colsample_bytree": 0.6,
+    },
+    "Paper Default (XGBoost defaults)": {
+        "max_depth": 6, "n_estimators": 100, "learning_rate": 0.3,
+        "reg_alpha": 0.0, "reg_lambda": 1.0, "subsample": 1.0, "colsample_bytree": 1.0,
+    },
+}
+st.sidebar.selectbox(
+    "XGBoost Hyperparameters",
+    list(XGB_PARAMS_OPTIONS.keys()),
+    key='xgb_params_mode',
+    on_change=on_strategy_param_change,
+)
+_xgb_selected = XGB_PARAMS_OPTIONS[st.session_state.xgb_params_mode]
+st.sidebar.caption(
+    f"depth={_xgb_selected['max_depth']}  trees={_xgb_selected['n_estimators']}  "
+    f"lr={_xgb_selected['learning_rate']}  α={_xgb_selected['reg_alpha']}  "
+    f"λ={_xgb_selected['reg_lambda']}  sub={_xgb_selected['subsample']}  "
+    f"col={_xgb_selected['colsample_bytree']}"
+)
+
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
 
-xgb_params_mode = st.sidebar.selectbox(
-    "XGBoost Hyperparameters", 
-    ["Constrained (Prevent Overfitting)", "Paper Default (Unconstrained)"]
-)
-
-ewma_hl_mode = st.sidebar.selectbox(
-    "EWMA Halflife Smoothing",
-    ["Tune on Initial Window", "Fixed at 8 (Improved for SP500)", "Fixed at 4", "Fixed at 2", "Fixed at 0"]
-)
-
-run_button = st.sidebar.button("Run Backtest")
+run_button = st.sidebar.button("Run Backtest", type="primary")
 duration_placeholder = st.sidebar.empty()
 
+# =============================================================================
+# Data Fetching (cached)
+# =============================================================================
 @st.cache_data
 def get_cached_data(target, bond, rf, vix, start, end):
     backend.TARGET_TICKER = target
@@ -114,32 +209,26 @@ def get_cached_data(target, bond, rf, vix, start, end):
             pass
     return backend.fetch_and_prepare_data()
 
+# =============================================================================
+# Backtest Execution
+# =============================================================================
 if run_button:
     backtest_start_time = time.time()
-    constrain_xgb = (xgb_params_mode == "Constrained (Prevent Overfitting)")
-    
-    config = StrategyConfig()
-    if constrain_xgb:
-        config.xgb_params = {
-            "max_depth": 3, 
-            "n_estimators": 50, 
-            "learning_rate": 0.05,
-            "reg_alpha": 2.0,
-            "reg_lambda": 10.0,
-            "subsample": 0.6,
-            "colsample_bytree": 0.6
-        }
-    else:
-        config.xgb_params = {
-            "max_depth": 4, 
-            "n_estimators": 100, 
-            "learning_rate": 0.1,
-            "reg_alpha": 1.0,
-            "reg_lambda": 5.0,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8
-        }
-        
+
+    # Build StrategyConfig from sidebar values
+    xgb_params = XGB_PARAMS_OPTIONS[st.session_state.xgb_params_mode].copy()
+
+    config = StrategyConfig(
+        name=st.session_state.experiment_preset,
+        tuning_metric=st.session_state.tuning_metric,
+        validation_window_type=st.session_state.validation_window_type,
+        lambda_smoothing=st.session_state.lambda_smoothing,
+        prob_threshold=st.session_state.prob_threshold,
+        allocation_style=st.session_state.allocation_style,
+        lambda_ensemble_k=st.session_state.lambda_ensemble_k,
+        xgb_params=xgb_params,
+    )
+
     # Update backend globals
     backend.TARGET_TICKER = target_ticker
     backend.BOND_TICKER = bond_ticker
@@ -158,101 +247,59 @@ if run_button:
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         st.stop()
-        
-    st.write(f"Starting Out-of-Sample Backtest ({backend.OOS_START_DATE} to {backend.END_DATE})")
-    
-    current_date = pd.to_datetime(backend.OOS_START_DATE)
-    final_end_date = pd.to_datetime(backend.END_DATE)
-    
-    jm_xgb_results = []
-    simple_jm_results = []
-    lambda_history = []
-    lambda_dates = []
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    # --- Phase 1: Tune EWMA halflife once on initial validation window ---
-    if ewma_hl_mode == "Tune on Initial Window":
-        initial_val_start = current_date - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
-        best_ewma_hl = backend.EWMA_HL_GRID[-1]
-        best_init_sharpe = -np.inf
-        
-        status_text.text(f"Phase 1: Tuning EWMA halflife on {initial_val_start.date()} to {current_date.date()}...")
-        for hl in backend.EWMA_HL_GRID:
-            for lmbda in backend.LAMBDA_GRID:
-                val_res = backend.simulate_strategy(df, initial_val_start, current_date, lmbda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=hl)
-                if not val_res.empty:
-                    _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                    if sharpe > best_init_sharpe:
-                        best_init_sharpe = sharpe
-                        best_ewma_hl = hl
-        status_text.text(f"Selected EWMA halflife: {best_ewma_hl}")
-    else:
-        try:
-            best_ewma_hl = int(ewma_hl_mode.split()[2]) if "Fixed at" in ewma_hl_mode else 8
-        except:
-            best_ewma_hl = 8
-    
-    # Calculate total steps for progress bar
-    total_months = (final_end_date.year - current_date.year) * 12 + final_end_date.month - current_date.month
-    total_steps = max(1, total_months // 6)
-    step = 0
-    
-    while current_date < final_end_date:
-        chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
-        val_start = current_date - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
-        
-        status_text.text(f"Evaluating period: {current_date.date()} to {chunk_end.date()}")
-        
-        # 1. Hyperparameter Tuning
-        best_sharpe = -np.inf
-        best_lambda = backend.LAMBDA_GRID[0]
-        
-        best_sharpe_jm = -np.inf
-        best_lambda_jm = backend.LAMBDA_GRID[0]
-        
-        for lmbda in backend.LAMBDA_GRID:
-            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=best_ewma_hl)
-            if not val_res.empty:
-                _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_lambda = lmbda
-            
-            if run_simple_jm:
-                val_res_jm = backend.simulate_strategy(df, val_start, current_date, lmbda, config=config, include_xgboost=False)
-                if not val_res_jm.empty:
-                    _, _, sharpe_jm, _, _ = backend.calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
-                    if sharpe_jm > best_sharpe_jm:
-                        best_sharpe_jm = sharpe_jm
-                        best_lambda_jm = lmbda
-                    
-        lambda_history.append(best_lambda)
-        lambda_dates.append(current_date)
-        
-        # 2. Out-of-Sample Execution
-        oos_chunk_jm_xgb = backend.run_period_forecast(df, current_date, best_lambda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb)
-        if oos_chunk_jm_xgb is not None:
-            jm_xgb_results.append(oos_chunk_jm_xgb)
-            
-        if run_simple_jm:
-            oos_chunk_simple_jm = backend.run_period_forecast(df, current_date, best_lambda_jm, config=config, include_xgboost=False)
-            if oos_chunk_simple_jm is not None:
-                simple_jm_results.append(oos_chunk_simple_jm)
-            
-        current_date = chunk_end
-        step += 1
-        progress_bar.progress(min(1.0, step / total_steps))
-        
-    status_text.text("Backtest complete! Generating results...")
-    progress_bar.empty()
-    
+
+    st.write(f"Running walk-forward backtest ({backend.OOS_START_DATE} to {backend.END_DATE})  |  **{config.name}**")
+
+    with st.spinner("Running JM-XGB walk-forward backtest... This may take several minutes."):
+        jm_xgb_df = backend.walk_forward_backtest(df, config)
+
+    lambda_history = jm_xgb_df.attrs.get('lambda_history', [])
+    lambda_dates = jm_xgb_df.attrs.get('lambda_dates', [])
+    best_ewma_hl = jm_xgb_df.attrs.get('ewma_halflife', 8)
+
+    # Simple JM baseline (separate run if requested)
+    simple_jm_df = pd.DataFrame()
+    if run_simple_jm:
+        with st.spinner("Running Simple JM baseline..."):
+            current_date = pd.to_datetime(backend.OOS_START_DATE)
+            final_end_date = pd.to_datetime(backend.END_DATE)
+            simple_jm_results = []
+            jm_lambda_history = []
+            while current_date < final_end_date:
+                chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
+                if config.validation_window_type == 'expanding':
+                    val_start = pd.to_datetime(backend.OOS_START_DATE) - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
+                else:
+                    val_start = current_date - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
+                best_metric_jm = -np.inf
+                best_lambda_jm = backend.LAMBDA_GRID[0]
+                for lmbda in backend.LAMBDA_GRID:
+                    val_res_jm = backend.simulate_strategy(df, val_start, current_date, lmbda, config=config, include_xgboost=False)
+                    if not val_res_jm.empty:
+                        _, _, sharpe_jm, sortino_jm, _ = backend.calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
+                        metric_jm = sortino_jm if config.tuning_metric == 'sortino' else sharpe_jm
+                        if metric_jm > best_metric_jm:
+                            best_metric_jm = metric_jm
+                            best_lambda_jm = lmbda
+                if config.lambda_smoothing and jm_lambda_history:
+                    best_lambda_jm = (0.7 * best_lambda_jm) + (0.3 * jm_lambda_history[-1])
+                jm_lambda_history.append(best_lambda_jm)
+                oos_chunk = backend.run_period_forecast(df, current_date, best_lambda_jm, config=config, include_xgboost=False)
+                if oos_chunk is not None:
+                    simple_jm_results.append(oos_chunk)
+                current_date = chunk_end
+            if simple_jm_results:
+                simple_jm_df = pd.concat(simple_jm_results)
+                simple_jm_df['Forecast_State'] = simple_jm_df.get('Forecast_State', pd.Series(0, index=simple_jm_df.index))
+                tradable_signal = simple_jm_df['Forecast_State'].shift(1).fillna(0)
+                simple_jm_df['Strat_Return'] = np.where(tradable_signal == 0, simple_jm_df['Target_Return'], simple_jm_df['RF_Rate']) - (tradable_signal.diff().abs().fillna(0) * transaction_cost)
+                simple_jm_df['Trades'] = tradable_signal.diff().abs().fillna(0)
+
     backtest_duration = time.time() - backtest_start_time
 
     cache_data = {
-        'jm_xgb_results': jm_xgb_results,
-        'simple_jm_results': simple_jm_results,
+        'jm_xgb_df': jm_xgb_df,
+        'simple_jm_df': simple_jm_df,
         'lambda_history': lambda_history,
         'lambda_dates': lambda_dates,
         'run_simple_jm': run_simple_jm,
@@ -260,30 +307,65 @@ if run_button:
         'end_date': backend.END_DATE,
         'backtest_duration': backtest_duration,
         'best_ewma_hl': best_ewma_hl,
+        'config_name': config.name,
+        'cache_version': 2,
     }
     _backtest_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'backtest_cache.pkl')
     with open(_backtest_cache_path, 'wb') as f:
         pickle.dump(cache_data, f)
 
+# =============================================================================
+# Load cached results
+# =============================================================================
 _backtest_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'backtest_cache.pkl')
 cache_loaded = False
 if os.path.exists(_backtest_cache_path):
     try:
         with open(_backtest_cache_path, 'rb') as f:
             cache_data = pickle.load(f)
-            
-        jm_xgb_results = cache_data.get('jm_xgb_results', [])
-        simple_jm_results = cache_data.get('simple_jm_results', [])
+
+        cache_version = cache_data.get('cache_version', 1)
+
+        if cache_version >= 2:
+            # New format: complete DataFrames
+            jm_xgb_df = cache_data['jm_xgb_df']
+            simple_jm_df = cache_data.get('simple_jm_df', pd.DataFrame())
+            run_simple_jm_cached = cache_data.get('run_simple_jm', False) and not simple_jm_df.empty
+        else:
+            # Legacy format: raw result lists
+            jm_xgb_results = cache_data.get('jm_xgb_results', [])
+            simple_jm_results = cache_data.get('simple_jm_results', [])
+            run_simple_jm_cached = cache_data.get('run_simple_jm', False)
+            best_ewma_hl_legacy = cache_data.get('best_ewma_hl', 8)
+            if jm_xgb_results:
+                jm_xgb_df = pd.concat(jm_xgb_results)
+                if 'Raw_Prob' in jm_xgb_df.columns:
+                    if best_ewma_hl_legacy == 0:
+                        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
+                    else:
+                        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl_legacy).mean()
+                    jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
+                tradable_signal = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
+                jm_xgb_df['Strat_Return'] = np.where(tradable_signal == 0, jm_xgb_df['Target_Return'], jm_xgb_df['RF_Rate']) - (tradable_signal.diff().abs().fillna(0) * backend.TRANSACTION_COST)
+                jm_xgb_df['Trades'] = tradable_signal.diff().abs().fillna(0)
+            else:
+                jm_xgb_df = pd.DataFrame()
+            if run_simple_jm_cached and simple_jm_results:
+                simple_jm_df = pd.concat(simple_jm_results)
+                tradable_signal = simple_jm_df['Forecast_State'].shift(1).fillna(0)
+                simple_jm_df['Strat_Return'] = np.where(tradable_signal == 0, simple_jm_df['Target_Return'], simple_jm_df['RF_Rate']) - (tradable_signal.diff().abs().fillna(0) * backend.TRANSACTION_COST)
+                simple_jm_df['Trades'] = tradable_signal.diff().abs().fillna(0)
+            else:
+                simple_jm_df = pd.DataFrame()
+
         lambda_history = cache_data.get('lambda_history', [])
         lambda_dates = cache_data.get('lambda_dates', [])
-        run_simple_jm_cached = cache_data.get('run_simple_jm', False)
-        cached_oos_start = cache_data.get('oos_start_date', backend.OOS_START_DATE)
-        cached_end_date = cache_data.get('end_date', backend.END_DATE)
         backtest_duration = cache_data.get('backtest_duration', None)
         best_ewma_hl = cache_data.get('best_ewma_hl', 8)
         cache_loaded = True
-        
+
         if backtest_duration is not None:
+            config_label = cache_data.get('config_name', '')
             if backtest_duration >= 3600:
                 h = int(backtest_duration // 3600)
                 m = int((backtest_duration % 3600) // 60)
@@ -295,48 +377,20 @@ if os.path.exists(_backtest_cache_path):
                 duration_str = f"{m}m {s}s"
             else:
                 duration_str = f"{backtest_duration:.2f} seconds"
-            duration_placeholder.info(f"Last backtest duration: {duration_str}")
+            label = f"Last run: {duration_str}"
+            if config_label:
+                label += f" ({config_label})"
+            duration_placeholder.info(label)
     except Exception as e:
         st.error(f"Could not load cache: {e}")
 
 if not cache_loaded:
     st.info("No cached results found. Please configure parameters and click 'Run Backtest'.")
     st.stop()
-    
-if not jm_xgb_results:
+
+if jm_xgb_df.empty:
     st.error("No results generated. Check your date ranges and data availability.")
     st.stop()
-    
-jm_xgb_df = pd.concat(jm_xgb_results)
-if 'Raw_Prob' in jm_xgb_df.columns:
-    if best_ewma_hl == 0:
-        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
-    else:
-        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
-    jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
-
-if run_simple_jm_cached:
-    simple_jm_df = pd.concat(simple_jm_results)
-
-precalc_dfs = [jm_xgb_df]
-if run_simple_jm_cached:
-    precalc_dfs.append(simple_jm_df)
-    
-for strat_df in precalc_dfs:
-    # 1. Shift the forecast so the prediction made at T applies to the return of T+1
-    tradable_signal = strat_df['Forecast_State'].shift(1).fillna(0)
-    
-    # 2. Calculate returns using the properly aligned signal
-    strat_returns = np.where(tradable_signal == 0, 
-                             strat_df['Target_Return'], 
-                             strat_df['RF_Rate'])
-                             
-    # 3. Calculate trades based on the shifted signal
-    trades = tradable_signal.diff().abs().fillna(0)
-    
-    # 4. Assign back to the dataframe
-    strat_df['Strat_Return'] = strat_returns - (trades * transaction_cost)
-    strat_df['Trades'] = trades
 
 st.subheader("Analysis Period")
 
