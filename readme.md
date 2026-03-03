@@ -47,7 +47,7 @@ The algorithm computes both Asset-Specific and Cross-Asset Macro features:
 The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis (e.g. from 2007 to early 2026), simulating a real-time trading environment:
 - **Walk-Forward Tuning**: Every 6 months, the model tunes the lambda penalty parameter over a 5-year validation window, maximizing the Sharpe ratio. The optimally identified $\lambda$ is then fixed for the next 6 months of out-of-sample forward trading.
 - **Evaluation Points**: The simulation records Returns, Volatility, Sharpe Ratio, Sortino Ratio, Max Drawdown, and number of trades generated for the standard Buy-and-Hold versus the complete JM-XGB framework.
-- **Report Generation**: The script outputs comprehensive performance metrics and charts plotting wealth curves across the test period to a timestamped PDF, highlighting identified "Bear Regimes" where the strategy rotated into the risk-free asset.
+- **Report Generation**: The script outputs comprehensive performance metrics and charts plotting wealth curves across the test period to a timestamped PDF, highlighting identified "Bear Regimes" where the strategy rotated into the risk-free asset
 
 ## Project Structure
 
