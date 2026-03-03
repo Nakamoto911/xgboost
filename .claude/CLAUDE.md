@@ -80,7 +80,7 @@ Dataclass controlling experiment variants:
 - `validation_window_type`: "rolling" (default/paper, 5yr) or "expanding"
 - `prob_threshold`: float (default 0.50, paper: 0.50)
 - `allocation_style`: "binary" (default/paper) or "continuous"
-- `xgb_params`: dict with XGBoost hyperparameters
+- `xgb_params`: dict with XGBoost hyperparameters (default: XGBoost defaults per paper -- max_depth=6, learning_rate=0.3, no regularization)
 
 ## Experiment Framework
 
@@ -104,12 +104,12 @@ Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:
 - Future enhancements backlog with priority/risk ratings
 
 ### Key Findings (as of 2026-03-03)
-- **Best single-asset Sharpe:** 0.697 (Expanding Window) but degenerates to lambda=0
-- **Recommended config:** Lambda Smoothing (Sharpe 0.677, no lambda degeneracy)
+- **Paper Baseline now beats B&H** -- Sharpe ~0.57 vs B&H ~0.54 after switching to default XGB params (Session 2 fix)
 - **Binary 0/1 signal is essential** -- experiments #3, #4, #8 proved continuous/threshold changes destroy performance
-- **Strategy wins in crises, loses in bull markets** -- GFC: +0.725 Sharpe vs B&H; Recovery: -0.384
-- **Lambda instability is a concern** -- Baseline CV=1.67; lambda smoothing reduces to 1.36
-- See `benchmarks/experiment_selection_20260303.md` for full analysis
+- **Strategy wins in crises, loses in bull markets** -- GFC: strong outperformance; Recovery/COVID: underperformance
+- **Lambda stability improved with default XGB** -- CV reduced from 1.24 to ~1.07
+- **Time period (2007-2026 vs 2007-2023) has negligible impact** on relative performance (-0.003 Sharpe delta)
+- See `benchmarks/experiment_selection_20260303.md` for earlier analysis with regularized XGB
 
 ## Feature Set
 
@@ -121,9 +121,10 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 
 ## Known Issues / Paper Gaps
 
-- **XGBoost hyperparameters:** Our config uses custom params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0, etc.) but the paper says "default hyperparameters". This may explain our Sharpe gap vs paper (0.652 vs 0.79 for LargeCap). See enhancement backlog item #1.
+- **XGBoost hyperparameters:** Now using default XGB params (max_depth=6, learning_rate=0.3, no regularization) as the paper specifies. Previous custom regularized params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) caused -0.174 Sharpe delta and made the strategy LOSE to B&H. Switching to defaults fixed this (Session 2, 2026-03-03).
+- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); our paper-comparable config gets ~0.56. Gap likely from data source (Yahoo vs Bloomberg).
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. May affect feature quality.
-- **OOS period:** We test 2007-2026 vs paper's 2007-2023. Extended period includes different market dynamics.
+- **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
 
 ## Caching
 
@@ -131,6 +132,19 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 - `cache/data_cache_{ticker}.pkl` -- Per-ticker caches for multi-asset benchmark
 - `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
 - `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence
+
+## Session Memory & Experiment Tracking
+
+Files in `.claude/`:
+- **MEMORY.md** - Quick reference (auto-loaded each session, keep <200 lines)
+- **experiments.md** - Chronological log of experiments, findings, and changes (newest first)
+- **performance_gaps.md** - Gap analysis vs paper and improvement priorities
+
+**Instructions for Claude:** When running experiments or making improvements:
+1. Read these files at session start to understand prior context
+2. Update them after each significant finding or change (experiments completed, root causes found, improvements applied)
+3. Keep MEMORY.md as a concise index; use other files for details
+4. Ask user before major updates if unsure
 
 ## Python Compatibility
 

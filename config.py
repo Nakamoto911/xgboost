@@ -21,11 +21,11 @@ class StrategyConfig:
     dynamic_feature_selection: bool = False # Idea 4: Drop bottom 20% of features based on validation importance
     xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
     xgb_params: Dict[str, Any] = field(default_factory=lambda: {
-        "max_depth": 4, 
-        "n_estimators": 100, 
-        "learning_rate": 0.1,
-        "reg_alpha": 1.0,
-        "reg_lambda": 5.0,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8
+        "max_depth": 6,
+        "n_estimators": 100,
+        "learning_rate": 0.3,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1.0,
+        "colsample_bytree": 1.0,
     })

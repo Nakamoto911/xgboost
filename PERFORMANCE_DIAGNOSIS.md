@@ -30,19 +30,28 @@ With fixed lambda=5, regularized XGB, hl=8: Sharpe=0.610 vs B&H 0.444. The walk-
 - Code had: hardcoded at 8 (or later, jointly tuned per walk-forward step)
 - Per-chunk EWMA broke smoothing continuity at period boundaries
 
-### 6. XGBoost defaults overfit on noisy regime labels
-The Jump Model produces imperfect labels. Default XGB memorized noise. Regularized config (max_depth=4, reg_alpha=1.0, reg_lambda=5.0, subsample=0.8, colsample_bytree=0.8) gave Sharpe=0.554 vs default 0.488.
+### 6. XGBoost defaults overfit on noisy regime labels (SUPERSEDED)
+~~The Jump Model produces imperfect labels. Default XGB memorized noise. Regularized config gave Sharpe=0.554 vs default 0.488.~~
 
-## Changes Made (commit 8afdd9d)
+**UPDATE (2026-03-03, Session 2):** After fixing EWMA halflife and lambda grid (changes #2-#3 below), the regularized XGB params became counter-productive. A controlled 4-way diagnostic showed:
+- XGB params effect: **+0.174 Sharpe delta** (switching regularized → default)
+- Time period effect: -0.003 (negligible)
+- With default XGB (paper spec): Sharpe 0.566 vs B&H 0.541 = **BEATS B&H**
+- With regularized XGB: Sharpe 0.392 vs B&H 0.541 = **LOSES to B&H**
 
-### 1. XGBoost regularization (`main.py` ~line 360)
+**Root cause:** The original overfitting (finding #6) was caused by the broken EWMA + oversized lambda grid (findings #3, #5). Once those were fixed, the regularization became over-regularization that suppressed the model's ability to learn from regime labels. Reverted to paper's default XGB params.
+
+## Changes Made (commit 8afdd9d, updated Session 2)
+
+### 1. XGBoost params: reverted to paper defaults (`config.py`)
 ```python
 XGBClassifier(
-    max_depth=4, n_estimators=100, learning_rate=0.1,
-    reg_alpha=1.0, reg_lambda=5.0,
-    subsample=0.8, colsample_bytree=0.8,
+    max_depth=6, n_estimators=100, learning_rate=0.3,
+    reg_alpha=0, reg_lambda=1,
+    subsample=1.0, colsample_bytree=1.0,
 )
 ```
+Previously used regularized config (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) which was found to hurt after EWMA/lambda fixes.
 
 ### 2. EWMA halflife tuned once (Phase 1 in `main()`)
 - Tuned from {0, 2, 4, 8} on initial 5-year validation window (2002-2007)
