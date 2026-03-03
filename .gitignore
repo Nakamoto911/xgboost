@@ -17,6 +17,10 @@ __pycache__/
 *.pdf
 !2406.09578v2.pdf
 
+# Cache and benchmark outputs
+cache/
+benchmarks/
+
 # Jupyter
 .ipynb_checkpoints/
 

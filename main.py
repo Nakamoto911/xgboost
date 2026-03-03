@@ -181,7 +181,7 @@ class StatisticalJumpModel:
 import os
 
 def fetch_and_prepare_data():
-    cache_file = 'data_cache.pkl'
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'data_cache.pkl')
     if os.path.exists(cache_file):
         print("Loading data from local cache...")
         return pd.read_pickle(cache_file)

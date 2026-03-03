@@ -107,9 +107,10 @@ def get_cached_data(target, bond, rf, vix, start, end):
     backend.VIX_TICKER = vix
     backend.START_DATE_DATA = start
     backend.END_DATE = end
-    if os.path.exists('data_cache.pkl'):
+    _data_cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'data_cache.pkl')
+    if os.path.exists(_data_cache):
         try:
-            os.remove('data_cache.pkl')
+            os.remove(_data_cache)
         except:
             pass
     return backend.fetch_and_prepare_data()
@@ -239,13 +240,15 @@ if run_button:
         'backtest_duration': backtest_duration,
         'best_ewma_hl': best_ewma_hl,
     }
-    with open('backtest_cache.pkl', 'wb') as f:
+    _backtest_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'backtest_cache.pkl')
+    with open(_backtest_cache_path, 'wb') as f:
         pickle.dump(cache_data, f)
 
+_backtest_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'backtest_cache.pkl')
 cache_loaded = False
-if os.path.exists('backtest_cache.pkl'):
+if os.path.exists(_backtest_cache_path):
     try:
-        with open('backtest_cache.pkl', 'rb') as f:
+        with open(_backtest_cache_path, 'rb') as f:
             cache_data = pickle.load(f)
             
         jm_xgb_results = cache_data.get('jm_xgb_results', [])
