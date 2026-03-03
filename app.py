@@ -55,10 +55,15 @@ validation_window = st.sidebar.number_input("Validation Window (Years)", min_val
 
 grid_preset = st.sidebar.selectbox(
     "Lambda Grid Preset", 
-    ["Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
+    ["JM-XGB Improved (10 points)", "Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
 )
 
-if grid_preset == "Default (Fast: 4 points)":
+if grid_preset == "JM-XGB Improved (10 points)":
+    import numpy as np
+    backend.LAMBDA_GRID = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 10)]
+    st.sidebar.caption("Using: 0.0 + 10 log-spaced points up to 100.0")
+
+elif grid_preset == "Default (Fast: 4 points)":
     # Keep current default
     backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
     st.sidebar.caption("Using: 1.0, 10.0, 50.0, 100.0")
@@ -83,7 +88,12 @@ run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
 
 xgb_params_mode = st.sidebar.selectbox(
     "XGBoost Hyperparameters", 
-    ["Paper Default (Unconstrained)", "Constrained (Prevent Overfitting)"]
+    ["Constrained (Prevent Overfitting)", "Paper Default (Unconstrained)"]
+)
+
+ewma_hl_mode = st.sidebar.selectbox(
+    "EWMA Halflife Smoothing",
+    ["Tune on Initial Window", "Fixed at 8 (Improved for SP500)", "Fixed at 4", "Fixed at 2", "Fixed at 0"]
 )
 
 run_button = st.sidebar.button("Run Backtest")
@@ -140,6 +150,28 @@ if run_button:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # --- Phase 1: Tune EWMA halflife once on initial validation window ---
+    if ewma_hl_mode == "Tune on Initial Window":
+        initial_val_start = current_date - pd.DateOffset(years=backend.VALIDATION_WINDOW_YRS)
+        best_ewma_hl = backend.EWMA_HL_GRID[-1]
+        best_init_sharpe = -np.inf
+        
+        status_text.text(f"Phase 1: Tuning EWMA halflife on {initial_val_start.date()} to {current_date.date()}...")
+        for hl in backend.EWMA_HL_GRID:
+            for lmbda in backend.LAMBDA_GRID:
+                val_res = backend.simulate_strategy(df, initial_val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=hl)
+                if not val_res.empty:
+                    _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    if sharpe > best_init_sharpe:
+                        best_init_sharpe = sharpe
+                        best_ewma_hl = hl
+        status_text.text(f"Selected EWMA halflife: {best_ewma_hl}")
+    else:
+        try:
+            best_ewma_hl = int(ewma_hl_mode.split()[2]) if "Fixed at" in ewma_hl_mode else 8
+        except:
+            best_ewma_hl = 8
+    
     # Calculate total steps for progress bar
     total_months = (final_end_date.year - current_date.year) * 12 + final_end_date.month - current_date.month
     total_steps = max(1, total_months // 6)
@@ -159,7 +191,7 @@ if run_button:
         best_lambda_jm = backend.LAMBDA_GRID[0]
         
         for lmbda in backend.LAMBDA_GRID:
-            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb)
+            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=best_ewma_hl)
             if not val_res.empty:
                 _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                 if sharpe > best_sharpe:
@@ -205,6 +237,7 @@ if run_button:
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
         'backtest_duration': backtest_duration,
+        'best_ewma_hl': best_ewma_hl,
     }
     with open('backtest_cache.pkl', 'wb') as f:
         pickle.dump(cache_data, f)
@@ -223,6 +256,7 @@ if os.path.exists('backtest_cache.pkl'):
         cached_oos_start = cache_data.get('oos_start_date', backend.OOS_START_DATE)
         cached_end_date = cache_data.get('end_date', backend.END_DATE)
         backtest_duration = cache_data.get('backtest_duration', None)
+        best_ewma_hl = cache_data.get('best_ewma_hl', 8)
         cache_loaded = True
         
         if backtest_duration is not None:
@@ -251,7 +285,10 @@ if not jm_xgb_results:
     
 jm_xgb_df = pd.concat(jm_xgb_results)
 if 'Raw_Prob' in jm_xgb_df.columns:
-    jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=8).mean()
+    if best_ewma_hl == 0:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
+    else:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
     jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
 
 if run_simple_jm_cached:
