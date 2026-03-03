@@ -576,6 +576,11 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
     jm_xgb_df['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)
     jm_xgb_df['Trades'] = trades
 
+    # Attach walk-forward metadata for diagnostics (non-breaking: callers can ignore .attrs)
+    jm_xgb_df.attrs['lambda_history'] = lambda_history
+    jm_xgb_df.attrs['lambda_dates'] = [d.strftime('%Y-%m-%d') for d in lambda_dates]
+    jm_xgb_df.attrs['ewma_halflife'] = best_ewma_hl
+
     return jm_xgb_df
 
 # ==============================================================================

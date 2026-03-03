@@ -4,59 +4,111 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Quantitative trading strategy combining a Statistical Jump Model (JM) for market regime identification with XGBoost for return forecasting. Based on arXiv paper 2406.09578v2. Walk-forward backtested from 2007-2026 on S&P 500 Total Return data.
+Quantitative trading strategy combining a Statistical Jump Model (JM) for market regime identification with XGBoost for return forecasting. Based on arXiv paper 2406.09578v2 (Shu, Yu, Mulvey, 2024). Walk-forward backtested from 2007-2026 on S&P 500 Total Return data.
+
+**Goal:** A deployable trading strategy with no look-ahead bias and minimal overfitting, staying as close as possible to the research paper.
 
 ## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Activate the virtual environment first
+source .venv/bin/activate
 
 # Run the full backtest (generates timestamped PDF report)
 python main.py
 
+# Run experiments (generates timestamped MD report in benchmarks/)
+python run_experiments.py              # Run all 9 experiments
+python run_experiments.py 1,5,6,9      # Run specific experiments
+python run_experiments.py 1            # Run single experiment
+python run_experiments.py 2-5          # Run a range
+python run_experiments.py list         # List available experiments
+python run_experiments.py --help       # Show usage
+
 # Launch interactive Streamlit dashboard
 streamlit run app.py
 
-# Run ad-hoc test scripts
-python misc_scripts/test_download.py
-python misc_scripts/benchmark.py
+# Multi-asset benchmark (12 ETFs, parallel execution)
+python misc_scripts/benchmark_assets.py
 ```
 
 There is no formal test framework (pytest/unittest). Tests are standalone scripts in `misc_scripts/`.
 
 ## Architecture
 
-**Two entry points:**
-- `main.py` (651 lines) — Core backtest engine. Self-contained: fetches data, fits models, runs walk-forward simulation, outputs PDF report.
-- `app.py` (2059 lines) — Streamlit dashboard. Imports `main.py` as `backend` and exposes all parameters via sidebar controls with interactive Plotly charts.
+### Entry Points
+- `main.py` (~815 lines) -- Core backtest engine. Fetches data, fits models, runs walk-forward simulation, outputs PDF report.
+- `app.py` (~2059 lines) -- Streamlit dashboard. Imports `main.py` as `backend` and exposes all parameters via sidebar controls with interactive Plotly charts.
+- `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
+- `misc_scripts/benchmark_assets.py` (~795 lines) -- Multi-asset benchmark. Tests 12 ETFs across 5 market periods with parallel execution.
 
-**Algorithm pipeline (in `main.py`):**
-1. `fetch_and_prepare_data()` — Downloads from Yahoo Finance + FRED, engineers features (EWMA-based return/macro features), caches to `data_cache.pkl`
-2. `StatisticalJumpModel` class — 2-state regime model using alternating optimization (K-means + Viterbi). Optimized fast-path for 2 states in the Viterbi forward pass.
-3. `run_period_forecast()` — For a given date: fits JM on 11-year lookback, trains XGBClassifier on regime labels + macro features, predicts 6-month OOS window. Computes SHAP values. Results cached in `_forecast_cache` dict.
-4. `simulate_strategy()` — Chains 6-month forecast periods. Applies EWMA smoothing (halflife=8) to raw probabilities, thresholds at 0.5, shifts signals by 1 day (look-ahead bias prevention), applies transaction costs.
-5. `main()` — Walk-forward loop: every 6 months tunes lambda on 5-year validation window (maximize Sharpe), then runs OOS chunk with best lambda.
+### Supporting Files
+- `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
+- `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
+- `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
+- `paper_text.txt` -- Full text of the reference paper for comparison.
 
-**Key design decisions:**
+### Algorithm Pipeline (in `main.py`)
+1. `fetch_and_prepare_data()` -- Downloads from Yahoo Finance + FRED, engineers features (EWMA-based return/macro features), caches to `cache/data_cache.pkl`
+2. `StatisticalJumpModel` class -- 2-state regime model using alternating optimization (K-means + Viterbi). Optimized fast-path for 2 states in the Viterbi forward pass.
+3. `run_period_forecast()` -- For a given date: fits JM on 11-year lookback, trains XGBClassifier on regime labels + macro features, predicts 6-month OOS window. Computes SHAP values. Results cached in `_forecast_cache` dict.
+4. `simulate_strategy()` -- Chains 6-month forecast periods. Applies EWMA smoothing to raw probabilities, thresholds at 0.5, shifts signals by 1 day (look-ahead bias prevention), applies transaction costs.
+5. `walk_forward_backtest(df, config)` -- Walk-forward loop: every 6 months tunes lambda on validation window (maximize Sharpe), then runs OOS chunk with best lambda. Returns DataFrame with `.attrs` metadata (lambda_history, lambda_dates, ewma_halflife).
+
+### Key Design Decisions
 - State 0 = Bullish (invest in target asset), State 1 = Bearish (rotate to risk-free). States are aligned after fitting so State 0 always has higher cumulative excess return.
 - Forecast signal is shifted +1 day before applying to returns to prevent look-ahead bias.
+- Binary 0/1 allocation is the strategy's core strength. Experiments proved continuous allocation and higher thresholds destroy performance.
 - `app.py` mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass configuration from sidebar controls.
 
 ## Configuration
 
-All key parameters are module-level constants in `main.py` (lines 45-66):
-- `TARGET_TICKER`, `BOND_TICKER`, `RISK_FREE_TICKER`, `VIX_TICKER` — Asset tickers
-- `START_DATE_DATA = '1987-01-01'` — Data start (accommodates 11-year lookback)
-- `OOS_START_DATE = '2007-01-01'` — Out-of-sample start (paper: 2007-2023)
-- `TRANSACTION_COST = 0.0005` — 5 basis points
-- `LAMBDA_GRID = list(np.logspace(0, 2, 20))` — 20 log-spaced jump penalty candidates (1 to 100)
+### Module-Level Constants (`main.py` lines 45-70)
+- `TARGET_TICKER = '^SP500TR'`, `BOND_TICKER = 'VBMFX'`, `RISK_FREE_TICKER = '^IRX'`, `VIX_TICKER = '^VIX'`
+- `START_DATE_DATA = '1987-01-01'` -- Data start (accommodates 11-year lookback)
+- `OOS_START_DATE = '2007-01-01'` -- Out-of-sample start (paper: 2007-2023)
+- `TRANSACTION_COST = 0.0005` -- 5 basis points
+- `LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))` -- 11 candidates (0 + log-spaced 1 to 100)
+- `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing
 
-## Caching
+### StrategyConfig (`config.py`)
+Dataclass controlling experiment variants:
+- `tuning_metric`: "sharpe" (default/paper) or "sortino"
+- `lambda_smoothing`: bool -- EWMA smooth lambda selection across periods (recommended: True)
+- `lambda_ensemble_k`: int -- if > 1, average top-K lambda forecasts
+- `validation_window_type`: "rolling" (default/paper, 5yr) or "expanding"
+- `prob_threshold`: float (default 0.50, paper: 0.50)
+- `allocation_style`: "binary" (default/paper) or "continuous"
+- `xgb_params`: dict with XGBoost hyperparameters
 
-- `data_cache.pkl` — Persisted fetched+engineered data (delete to re-fetch from APIs)
-- `_forecast_cache` — In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
-- `backtest_cache.pkl` — Used by `app.py` for dashboard session persistence
+## Experiment Framework
+
+### Available Experiments (in `run_experiments.py`)
+1. Paper Baseline (reference)
+2. Sortino Tuned
+3. Conservative Threshold (0.6)
+4. Continuous Allocation
+5. Lambda Smoothing
+6. Expanding Window
+7. Lambda Ensemble (Top 3)
+8. The Ultimate Combo
+9. Expanding + Lambda Smoothing
+
+### Report Output
+Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:
+- Results vs B&H table with Sharpe/Sortino/MDD deltas and WIN/LOSE verdicts
+- Sub-period analysis (GFC, Recovery, Late Cycle, COVID, Post-COVID)
+- Lambda stability tracking per experiment (mean, std, CV, timeline)
+- Experiment configurations
+- Future enhancements backlog with priority/risk ratings
+
+### Key Findings (as of 2026-03-03)
+- **Best single-asset Sharpe:** 0.697 (Expanding Window) but degenerates to lambda=0
+- **Recommended config:** Lambda Smoothing (Sharpe 0.677, no lambda degeneracy)
+- **Binary 0/1 signal is essential** -- experiments #3, #4, #8 proved continuous/threshold changes destroy performance
+- **Strategy wins in crises, loses in bull markets** -- GFC: +0.725 Sharpe vs B&H; Recovery: -0.384
+- **Lambda instability is a concern** -- Baseline CV=1.67; lambda smoothing reduces to 1.36
+- See `benchmarks/experiment_selection_20260303.md` for full analysis
 
 ## Feature Set
 
@@ -65,6 +117,19 @@ Two groups fed to XGBoost (defined in `run_period_forecast()`):
 - **Macro features** (XGB only): `Yield_2Y_EWMA_diff`, `Yield_Slope_EWMA_10`, `Yield_Slope_EWMA_diff_21`, `VIX_EWMA_log_diff`, `Stock_Bond_Corr`
 
 Return features are standardized (z-score) before feeding to the Jump Model. XGBoost receives raw feature values.
+
+## Known Issues / Paper Gaps
+
+- **XGBoost hyperparameters:** Our config uses custom params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0, etc.) but the paper says "default hyperparameters". This may explain our Sharpe gap vs paper (0.652 vs 0.79 for LargeCap). See enhancement backlog item #1.
+- **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. May affect feature quality.
+- **OOS period:** We test 2007-2026 vs paper's 2007-2023. Extended period includes different market dynamics.
+
+## Caching
+
+- `cache/data_cache.pkl` -- Persisted fetched+engineered data (delete to re-fetch from APIs)
+- `cache/data_cache_{ticker}.pkl` -- Per-ticker caches for multi-asset benchmark
+- `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
+- `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence
 
 ## Python Compatibility
 
