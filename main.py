@@ -39,6 +39,7 @@ import warnings
 import matplotlib.pyplot as plt
 from datetime import timedelta
 import pandas_datareader.data as web
+from config import StrategyConfig
 
 warnings.filterwarnings('ignore')
 
@@ -289,13 +290,17 @@ def fetch_and_prepare_data():
 # 4. CORE ALGORITHM (Algorithm A & B Simulator)
 # ==============================================================================
 _forecast_cache = {}
+_prev_booster = None
 
-def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, constrain_xgb=False):
+def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig = None, include_xgboost=True, constrain_xgb=False):
     """
     Runs the identification (JM) and forecasting (XGB) for a specific date using 
     an 11-year lookback window.
     """
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb)
+    if config is None:
+        config = StrategyConfig()
+        
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name)
     if cache_key in _forecast_cache:
         return _forecast_cache[cache_key]
 
@@ -353,18 +358,33 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
                       'VIX_EWMA_log_diff', 'Stock_Bond_Corr']
     all_features = return_features + macro_features
     
-    X_train_xgb = train_df[all_features]
-    y_train_xgb = train_df['Target_State']
-    X_oos_xgb = oos_df[all_features]
+    X_train_xgb = train_df[all_features].copy()
+    y_train_xgb = train_df['Target_State'].copy()
+    X_oos_xgb = oos_df[all_features].copy()
     
+    # Idea 4 (Feature Selection):
+    if config.dynamic_feature_selection:
+        temp_xgb = XGBClassifier(eval_metric='logloss', random_state=42, **config.xgb_params)
+        temp_xgb.fit(X_train_xgb, y_train_xgb)
+        importances = temp_xgb.feature_importances_
+        n_drop = int(len(all_features) * 0.2)
+        if n_drop > 0:
+            drop_indices = np.argsort(importances)[:n_drop]
+            all_features = [f for i, f in enumerate(all_features) if i not in drop_indices]
+            X_train_xgb = X_train_xgb[all_features]
+            X_oos_xgb = X_oos_xgb[all_features]
+            
     xgb = XGBClassifier(
-        eval_metric='logloss', random_state=42,
-        max_depth=4, n_estimators=100, learning_rate=0.1,
-        reg_alpha=1.0, reg_lambda=5.0,
-        subsample=0.8, colsample_bytree=0.8,
+        eval_metric='logloss', random_state=42, **config.xgb_params
     )
 
-    xgb.fit(X_train_xgb, y_train_xgb)
+    global _prev_booster
+    # Idea 10 (Online Learning):
+    if config.xgb_online_learning:
+        xgb.fit(X_train_xgb, y_train_xgb, xgb_model=_prev_booster)
+        _prev_booster = xgb.get_booster()
+    else:
+        xgb.fit(X_train_xgb, y_train_xgb)
     
     # Get probabilities for Class 1 (Bearish)
     oos_probs = xgb.predict_proba(X_oos_xgb)[:, 1]
@@ -405,14 +425,17 @@ def run_period_forecast(df, current_date, lambda_penalty, include_xgboost=True, 
     _forecast_cache[cache_key] = result
     return result
 
-def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=True, constrain_xgb=False, ewma_halflife=8):
+def simulate_strategy(df, start_date, end_date, lambda_penalty, config: StrategyConfig = None, include_xgboost=True, constrain_xgb=False, ewma_halflife=8):
     """Simulates the entire period in 6-month chunks for a given lambda."""
+    if config is None:
+        config = StrategyConfig()
+        
     results = []
     current_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
 
     while current_date < end_date:
-        res = run_period_forecast(df, current_date, lambda_penalty, include_xgboost, constrain_xgb)
+        res = run_period_forecast(df, current_date, lambda_penalty, config, include_xgboost, constrain_xgb)
         if res is not None:
             results.append(res)
         current_date += pd.DateOffset(months=6)
@@ -428,25 +451,132 @@ def simulate_strategy(df, start_date, end_date, lambda_penalty, include_xgboost=
             full_res['State_Prob'] = full_res['Raw_Prob']
         else:
             full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=ewma_halflife).mean()
-        # 2. Threshold to generate states
-        full_res['Forecast_State'] = (full_res['State_Prob'] > 0.5).astype(int)
-
-    # FIX: Shift the forecast state by 1 day to prevent look-ahead bias in validation!
-    # Forecast made at end of Day T applies to Return of Day T+1
-    trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
+        
+        # Idea 5 (Thresholding) & Idea 6 (Continuous Allocation)
+        if config.allocation_style == "binary":
+            full_res['Forecast_State'] = (full_res['State_Prob'] > config.prob_threshold).astype(int)
+            trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
+            alloc_target = 1.0 - trading_signals # 1.0 is full target asset, 0.0 is risk-free
+        elif config.allocation_style == "continuous":
+            # Invest linearly based on confidence: 1 - P(bear)
+            alloc_target = (1.0 - full_res['State_Prob']).shift(1).fillna(1.0)
+    else:
+        # Simple JM Baseline Behavior
+        trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
+        alloc_target = 1.0 - trading_signals
 
     # Calculate 0/1 Strategy Returns
-    # State 0 (Bullish) = Target Asset, State 1 (Bearish) = Risk-Free
-    strat_returns = np.where(trading_signals == 0,
-                             full_res['Target_Return'],
-                             full_res['RF_Rate'])
-    full_res['Strat_Return'] = strat_returns
-
-    # Apply Transaction Costs (when forecast changes)
-    trades = trading_signals.diff().abs().fillna(0)
-    full_res['Strat_Return'] -= trades * TRANSACTION_COST
+    strat_returns = (alloc_target * full_res['Target_Return']) + ((1.0 - alloc_target) * full_res['RF_Rate'])
+    trades = alloc_target.diff().abs().fillna(0)
+    
+    full_res['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)
+    full_res['Trades'] = trades
 
     return full_res
+
+def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
+    if config is None:
+        config = StrategyConfig()
+        
+    current_date = pd.to_datetime(OOS_START_DATE)
+    final_end_date = pd.to_datetime(END_DATE)
+
+    jm_xgb_results = []
+    lambda_history = []
+    lambda_dates = []
+
+    global _prev_booster
+    _prev_booster = None
+
+    # --- Phase 1: Tune EWMA halflife once on initial validation window ---
+    initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+    if config.validation_window_type == 'expanding':
+        initial_val_start = pd.to_datetime(OOS_START_DATE) - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+        
+    best_ewma_hl = EWMA_HL_GRID[-1]
+    best_init_metric = -np.inf
+
+    for hl in EWMA_HL_GRID:
+        for lmbda in LAMBDA_GRID:
+            val_res = simulate_strategy(df, initial_val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=hl)
+            if not val_res.empty:
+                _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                if metric_val > best_init_metric:
+                    best_init_metric = metric_val
+                    best_ewma_hl = hl
+
+    # --- Phase 2: Walk-forward lambda tuning ---
+    while current_date < final_end_date:
+        chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
+        
+        if config.validation_window_type == 'expanding':
+            val_start = pd.to_datetime(OOS_START_DATE) - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+        else:
+            val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+            
+        lambda_scores = []
+        for lmbda in LAMBDA_GRID:
+            val_res = simulate_strategy(df, val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+            if not val_res.empty:
+                _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                lambda_scores.append((metric_val, lmbda))
+        
+        lambda_scores.sort(key=lambda x: x[0], reverse=True)
+        if not lambda_scores:
+            lambda_scores = [(0.0, LAMBDA_GRID[0])]
+            
+        best_lambdas = [lam for _, lam in lambda_scores[:max(1, config.lambda_ensemble_k)]]
+        best_lambda = best_lambdas[0]
+
+        if config.lambda_smoothing and lambda_history:
+            best_lambda = (0.7 * best_lambda) + (0.3 * lambda_history[-1])
+
+        lambda_history.append(best_lambda)
+        lambda_dates.append(current_date)
+
+        if config.lambda_ensemble_k > 1:
+            oos_chunks = []
+            for l_val in best_lambdas:
+                oos_chunk_jm_xgb = run_period_forecast(df, current_date, l_val, config, include_xgboost=True)
+                if oos_chunk_jm_xgb is not None:
+                    oos_chunks.append(oos_chunk_jm_xgb)
+            if oos_chunks:
+                avg_prob = sum(c['Raw_Prob'] for c in oos_chunks) / len(oos_chunks)
+                final_chunk = oos_chunks[0].copy()
+                final_chunk['Raw_Prob'] = avg_prob
+                jm_xgb_results.append(final_chunk)
+        else:
+            oos_chunk_jm_xgb = run_period_forecast(df, current_date, best_lambda, config, include_xgboost=True)
+            if oos_chunk_jm_xgb is not None:
+                jm_xgb_results.append(oos_chunk_jm_xgb)
+
+        current_date = chunk_end
+
+    if not jm_xgb_results:
+        return pd.DataFrame()
+        
+    jm_xgb_df = pd.concat(jm_xgb_results)
+
+    if best_ewma_hl == 0:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
+    else:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
+        
+    if config.allocation_style == "binary":
+        jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > config.prob_threshold).astype(int)
+        trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
+        alloc_target = 1.0 - trading_signals
+    elif config.allocation_style == "continuous":
+        alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
+        
+    strat_returns = (alloc_target * jm_xgb_df['Target_Return']) + ((1.0 - alloc_target) * jm_xgb_df['RF_Rate'])
+    trades = alloc_target.diff().abs().fillna(0)
+    jm_xgb_df['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)
+    jm_xgb_df['Trades'] = trades
+
+    return jm_xgb_df
 
 # ==============================================================================
 # 5. METRICS & EXECUTION

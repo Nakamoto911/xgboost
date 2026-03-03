@@ -43,6 +43,13 @@ import warnings
 from multiprocessing import Pool, cpu_count
 import time
 from datetime import datetime
+import sys
+import os
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from config import StrategyConfig
 
 warnings.filterwarnings('ignore')
 
@@ -222,8 +229,11 @@ def fetch_etf_data(ticker):
 
 # ── Core Backtest Logic (fast version, no SHAP) ──────────────────────────────
 
-def run_period_forecast_fast(df, current_date, lambda_penalty, cache, include_xgboost=True):
-    cache_key = (current_date, lambda_penalty, include_xgboost)
+def run_period_forecast_fast(df, current_date, lambda_penalty, cache, config: StrategyConfig = None, include_xgboost=True):
+    if config is None:
+        config = StrategyConfig()
+        
+    cache_key = (current_date, lambda_penalty, include_xgboost, config.name)
     if cache_key in cache:
         return cache[cache_key]
 
@@ -288,11 +298,7 @@ def run_period_forecast_fast(df, current_date, lambda_penalty, cache, include_xg
         return result
 
     xgb = XGBClassifier(
-        eval_metric='logloss', random_state=42,
-        max_depth=4, n_estimators=100, learning_rate=0.1,
-        reg_alpha=1.0, reg_lambda=5.0,
-        subsample=0.8, colsample_bytree=0.8,
-        verbosity=0,
+        eval_metric='logloss', random_state=42, verbosity=0, **config.xgb_params
     )
     xgb.fit(X_train_xgb, y_train_xgb)
     oos_probs = xgb.predict_proba(X_oos_xgb)[:, 1]
@@ -302,12 +308,15 @@ def run_period_forecast_fast(df, current_date, lambda_penalty, cache, include_xg
     return result
 
 
-def simulate_strategy_fast(df, start_date, end_date, lambda_penalty, cache, include_xgboost=True, ewma_halflife=8):
+def simulate_strategy_fast(df, start_date, end_date, lambda_penalty, cache, config: StrategyConfig = None, include_xgboost=True, ewma_halflife=8):
+    if config is None:
+        config = StrategyConfig()
+        
     results = []
     current_date = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     while current_date < end_dt:
-        res = run_period_forecast_fast(df, current_date, lambda_penalty, cache, include_xgboost)
+        res = run_period_forecast_fast(df, current_date, lambda_penalty, cache, config, include_xgboost)
         if res is not None:
             results.append(res)
         current_date += pd.DateOffset(months=6)
@@ -320,13 +329,21 @@ def simulate_strategy_fast(df, start_date, end_date, lambda_penalty, cache, incl
             full_res['State_Prob'] = full_res['Raw_Prob']
         else:
             full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=ewma_halflife).mean()
-        full_res['Forecast_State'] = (full_res['State_Prob'] > 0.5).astype(int)
+            
+        if config.allocation_style == "binary":
+            full_res['Forecast_State'] = (full_res['State_Prob'] > config.prob_threshold).astype(int)
+            trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
+            alloc_target = 1.0 - trading_signals
+        elif config.allocation_style == "continuous":
+            alloc_target = (1.0 - full_res['State_Prob']).shift(1).fillna(1.0)
+    else:
+        trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
+        alloc_target = 1.0 - trading_signals
 
-    trading_signals = full_res['Forecast_State'].shift(1).fillna(0)
-    strat_returns = np.where(trading_signals == 0, full_res['Target_Return'], full_res['RF_Rate'])
-    full_res['Strat_Return'] = strat_returns
-    trades = trading_signals.diff().abs().fillna(0)
-    full_res['Strat_Return'] -= trades * TRANSACTION_COST
+    strat_returns = (alloc_target * full_res['Target_Return']) + ((1.0 - alloc_target) * full_res['RF_Rate'])
+    trades = alloc_target.diff().abs().fillna(0)
+    
+    full_res['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)
     return full_res
 
 
@@ -356,7 +373,7 @@ def calculate_metrics(returns_series, rf_series):
 
 def backtest_single_asset(args):
     """Run full walk-forward backtest for one ETF. Returns list of result dicts."""
-    ticker, df = args
+    ticker, df, config = args
     results = []
     cache = {}  # per-asset forecast cache
 
@@ -364,58 +381,77 @@ def backtest_single_asset(args):
         oos_start_dt = pd.to_datetime(oos_start)
         oos_end_dt = pd.to_datetime(oos_end)
 
-        # Check if we have any data before OOS start (need some history for training)
-        # The inner run_period_forecast_fast() handles insufficient training data gracefully
         if df.index[0] > oos_start_dt - pd.DateOffset(years=3):
-            # Less than 3 years of history before OOS start — skip
-            results.append({
-                'Ticker': ticker, 'Period': period_name,
-                'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan,
-                'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan,
-            })
-            results.append({
-                'Ticker': ticker, 'Period': period_name,
-                'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan,
-                'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan,
-            })
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan})
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan})
             continue
 
         # Phase 1: Tune EWMA halflife on initial validation window
         init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+        if config.validation_window_type == 'expanding':
+            init_val_start = pd.to_datetime(DATA_START) # fast approximation for absolute start
+            
         best_ewma_hl = EWMA_HL_GRID[-1]
-        best_init_sharpe = -np.inf
+        best_init_metric = -np.inf
         for hl in EWMA_HL_GRID:
             for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy_fast(df, init_val_start, oos_start_dt, lmbda, cache,
-                                                  include_xgboost=True, ewma_halflife=hl)
+                val_res = simulate_strategy_fast(df, init_val_start, oos_start_dt, lmbda, cache, config, include_xgboost=True, ewma_halflife=hl)
                 if not val_res.empty:
-                    _, _, sh, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                    if not np.isnan(sh) and sh > best_init_sharpe:
-                        best_init_sharpe = sh
+                    _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                    if not np.isnan(metric_val) and metric_val > best_init_metric:
+                        best_init_metric = metric_val
                         best_ewma_hl = hl
 
         # Phase 2: Walk-forward lambda tuning + OOS execution
         current_date = oos_start_dt
         jm_xgb_chunks = []
+        lambda_history = []
 
         while current_date < oos_end_dt:
             chunk_end = min(current_date + pd.DateOffset(months=6), oos_end_dt)
-            val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+            
+            if config.validation_window_type == 'expanding':
+                val_start = pd.to_datetime(DATA_START)
+            else:
+                val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
 
-            best_sharpe = -np.inf
-            best_lambda = LAMBDA_GRID[len(LAMBDA_GRID)//2]
+            lambda_scores = []
             for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy_fast(df, val_start, current_date, lmbda, cache,
-                                                  include_xgboost=True, ewma_halflife=best_ewma_hl)
+                val_res = simulate_strategy_fast(df, val_start, current_date, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
                 if not val_res.empty:
-                    _, _, sh, _, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                    if not np.isnan(sh) and sh > best_sharpe:
-                        best_sharpe = sh
-                        best_lambda = lmbda
+                    _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                    if not np.isnan(metric_val):
+                        lambda_scores.append((metric_val, lmbda))
+                        
+            lambda_scores.sort(key=lambda x: x[0], reverse=True)
+            if not lambda_scores:
+                lambda_scores = [(0.0, LAMBDA_GRID[len(LAMBDA_GRID)//2])]
+                
+            best_lambdas = [l for _, l in lambda_scores[:max(1, config.lambda_ensemble_k)]]
+            best_lambda = best_lambdas[0]
 
-            oos_chunk = run_period_forecast_fast(df, current_date, best_lambda, cache, include_xgboost=True)
-            if oos_chunk is not None:
-                jm_xgb_chunks.append(oos_chunk)
+            if config.lambda_smoothing and lambda_history:
+                best_lambda = (0.7 * best_lambda) + (0.3 * lambda_history[-1])
+
+            lambda_history.append(best_lambda)
+
+            if config.lambda_ensemble_k > 1:
+                oos_chunks = []
+                for l_val in best_lambdas:
+                    chunk = run_period_forecast_fast(df, current_date, l_val, cache, config, include_xgboost=True)
+                    if chunk is not None: oos_chunks.append(chunk)
+                if oos_chunks:
+                    avg_prob = sum(c['Raw_Prob'] for c in oos_chunks) / len(oos_chunks)
+                    final_chunk = oos_chunks[0].copy()
+                    final_chunk['Raw_Prob'] = avg_prob
+                    jm_xgb_chunks.append(final_chunk)
+            else:
+                oos_chunk = run_period_forecast_fast(df, current_date, best_lambda, cache, config, include_xgboost=True)
+                if oos_chunk is not None:
+                    jm_xgb_chunks.append(oos_chunk)
+                    
             current_date = chunk_end
 
         if not jm_xgb_chunks:
@@ -438,10 +474,16 @@ def backtest_single_asset(args):
             jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
         else:
             jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
-        jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > 0.5).astype(int)
-        tradable_signal = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
-        strat_rets = np.where(tradable_signal == 0, jm_xgb_df['Target_Return'], jm_xgb_df['RF_Rate'])
-        trades = tradable_signal.diff().abs().fillna(0)
+            
+        if config.allocation_style == "binary":
+            jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > config.prob_threshold).astype(int)
+            trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
+            alloc_target = 1.0 - trading_signals
+        elif config.allocation_style == "continuous":
+            alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
+            
+        strat_rets = (alloc_target * jm_xgb_df['Target_Return']) + ((1.0 - alloc_target) * jm_xgb_df['RF_Rate'])
+        trades = alloc_target.diff().abs().fillna(0)
         jm_xgb_df['Strat_Return'] = strat_rets - (trades * TRANSACTION_COST)
 
         # Trim to exact OOS window
@@ -473,6 +515,7 @@ def backtest_single_asset(args):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
+    config = StrategyConfig()
     """Generate a markdown report with parameters and full results."""
     lines = []
     lines.append(f"# JM-XGB Multi-Asset Benchmark Report")
@@ -482,22 +525,20 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
     lines.append(f"")
 
     # Parameters
-    lines.append(f"## Parameters")
+    lines.append(f"## Strategy Configuration (`{config.name}`)")
     lines.append(f"")
     lines.append(f"| Parameter | Value |")
     lines.append(f"|---|---|")
-    lines.append(f"| ETFs tested | {', '.join(ETFS)} |")
+    lines.append(f"| Allocation style | {config.allocation_style} |")
+    lines.append(f"| Tuning metric | {config.tuning_metric} |")
+    lines.append(f"| Binary Prob threshold | {config.prob_threshold} |")
+    lines.append(f"| Validation window | {config.validation_window_type} ({VALIDATION_WINDOW_YRS}yrs) |")
+    lines.append(f"| Lambda smoothing | {config.lambda_smoothing} |")
+    lines.append(f"| Lambda ensemble K | {config.lambda_ensemble_k} |")
+    lines.append(f"| Dyn. Feature Select | {config.dynamic_feature_selection} |")
+    lines.append(f"| Online learning | {config.xgb_online_learning} |")
     lines.append(f"| Lambda grid | {LAMBDA_GRID} |")
-    lines.append(f"| EWMA halflife grid | {EWMA_HL_GRID} |")
-    lines.append(f"| Validation window | {VALIDATION_WINDOW_YRS} years |")
-    lines.append(f"| Transaction cost | {TRANSACTION_COST*10000:.1f} bps |")
-    lines.append(f"| JM lookback | 11 years (relaxed to 3yr min) |")
-    lines.append(f"| OOS chunk size | 6 months |")
-    lines.append(f"| XGBoost | max_depth=4, n_estimators=100, lr=0.1 |")
-    lines.append(f"| Risk-free proxy | {RISK_FREE_TICKER} |")
-    lines.append(f"| Bond proxy | {BOND_TICKER} |")
-    lines.append(f"| VIX | {VIX_TICKER} |")
-    lines.append(f"| Data start | {DATA_START} |")
+    lines.append(f"| EWMA HL grid | {EWMA_HL_GRID} |")
     lines.append(f"")
 
     # Data coverage
@@ -637,7 +678,8 @@ def main():
     print(f"\nRunning walk-forward backtests across {len(TIME_PERIODS)} time periods...")
     print(f"Using {min(cpu_count(), len(asset_data))} parallel workers\n")
 
-    args_list = [(ticker, df) for ticker, df in asset_data.items()]
+    config = StrategyConfig()
+    args_list = [(ticker, df, config) for ticker, df in asset_data.items()]
 
     all_results = []
     n_workers = min(cpu_count(), len(args_list))

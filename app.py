@@ -10,8 +10,7 @@ import tempfile
 import time
 from datetime import datetime
 import main as backend
-
-st.set_page_config(page_title="XGBoost Strategy Portal", layout="wide")
+from config import StrategyConfig
 
 st.title("XGBoost Strategy Backtest Portal")
 export_container = st.container()
@@ -119,6 +118,28 @@ if run_button:
     backtest_start_time = time.time()
     constrain_xgb = (xgb_params_mode == "Constrained (Prevent Overfitting)")
     
+    config = StrategyConfig()
+    if constrain_xgb:
+        config.xgb_params = {
+            "max_depth": 3, 
+            "n_estimators": 50, 
+            "learning_rate": 0.05,
+            "reg_alpha": 2.0,
+            "reg_lambda": 10.0,
+            "subsample": 0.6,
+            "colsample_bytree": 0.6
+        }
+    else:
+        config.xgb_params = {
+            "max_depth": 4, 
+            "n_estimators": 100, 
+            "learning_rate": 0.1,
+            "reg_alpha": 1.0,
+            "reg_lambda": 5.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8
+        }
+        
     # Update backend globals
     backend.TARGET_TICKER = target_ticker
     backend.BOND_TICKER = bond_ticker
@@ -160,7 +181,7 @@ if run_button:
         status_text.text(f"Phase 1: Tuning EWMA halflife on {initial_val_start.date()} to {current_date.date()}...")
         for hl in backend.EWMA_HL_GRID:
             for lmbda in backend.LAMBDA_GRID:
-                val_res = backend.simulate_strategy(df, initial_val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=hl)
+                val_res = backend.simulate_strategy(df, initial_val_start, current_date, lmbda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=hl)
                 if not val_res.empty:
                     _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                     if sharpe > best_init_sharpe:
@@ -192,7 +213,7 @@ if run_button:
         best_lambda_jm = backend.LAMBDA_GRID[0]
         
         for lmbda in backend.LAMBDA_GRID:
-            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=best_ewma_hl)
+            val_res = backend.simulate_strategy(df, val_start, current_date, lmbda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb, ewma_halflife=best_ewma_hl)
             if not val_res.empty:
                 _, _, sharpe, _, _ = backend.calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                 if sharpe > best_sharpe:
@@ -200,7 +221,7 @@ if run_button:
                     best_lambda = lmbda
             
             if run_simple_jm:
-                val_res_jm = backend.simulate_strategy(df, val_start, current_date, lmbda, include_xgboost=False)
+                val_res_jm = backend.simulate_strategy(df, val_start, current_date, lmbda, config=config, include_xgboost=False)
                 if not val_res_jm.empty:
                     _, _, sharpe_jm, _, _ = backend.calculate_metrics(val_res_jm['Strat_Return'], val_res_jm['RF_Rate'])
                     if sharpe_jm > best_sharpe_jm:
@@ -211,12 +232,12 @@ if run_button:
         lambda_dates.append(current_date)
         
         # 2. Out-of-Sample Execution
-        oos_chunk_jm_xgb = backend.run_period_forecast(df, current_date, best_lambda, include_xgboost=True, constrain_xgb=constrain_xgb)
+        oos_chunk_jm_xgb = backend.run_period_forecast(df, current_date, best_lambda, config=config, include_xgboost=True, constrain_xgb=constrain_xgb)
         if oos_chunk_jm_xgb is not None:
             jm_xgb_results.append(oos_chunk_jm_xgb)
             
         if run_simple_jm:
-            oos_chunk_simple_jm = backend.run_period_forecast(df, current_date, best_lambda_jm, include_xgboost=False)
+            oos_chunk_simple_jm = backend.run_period_forecast(df, current_date, best_lambda_jm, config=config, include_xgboost=False)
             if oos_chunk_simple_jm is not None:
                 simple_jm_results.append(oos_chunk_simple_jm)
             
