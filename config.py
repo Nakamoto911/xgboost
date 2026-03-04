@@ -18,6 +18,7 @@ class StrategyConfig:
     allocation_style: str = "binary"     # Options: "binary" (0% or 100%), "continuous" (invest 1 - P(bear))
     
     # --- Idea 4 & 10: Model & Feature Parameters ---
+    calculate_shap: bool = False         # Whether to calculate SHAP values (can be slow)
     dynamic_feature_selection: bool = False # Idea 4: Drop bottom 20% of features based on validation importance
     xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
     xgb_params: Dict[str, Any] = field(default_factory=lambda: {

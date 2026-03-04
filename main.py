@@ -301,7 +301,7 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         config = StrategyConfig()
         
     xgb_key = tuple(sorted(config.xgb_params.items())) if config.xgb_params else ()
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key)
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, config.calculate_shap, xgb_key)
     if cache_key in _forecast_cache:
         return _forecast_cache[cache_key]
 
@@ -391,37 +391,40 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
     oos_probs = xgb.predict_proba(X_oos_xgb)[:, 1]
     oos_df['Raw_Prob'] = oos_probs
     
-    # Calculate SHAP values
-    import shap
-    explainer = shap.TreeExplainer(xgb)
-    shap_values = explainer.shap_values(X_oos_xgb)
-    
+    # Calculate SHAP values if requested
+    if config.calculate_shap:
+        import shap
+        explainer = shap.TreeExplainer(xgb)
+        shap_values = explainer.shap_values(X_oos_xgb)
+        
+        base_value = explainer.expected_value
+        if isinstance(base_value, (np.ndarray, list)):
+            # For Binary Classification, sometimes SHAP returns [logodds_0, logodds_1]
+            base_value = base_value[-1] if len(base_value) > 1 else base_value[0]
+            
+        oos_df['SHAP_Base_Value'] = base_value
+        for i, col in enumerate(all_features):
+            feature_shap_vals = shap_values[:, i]
+            # if shap_values is a list (e.g., class 0 and class 1), use the class 1 values
+            if isinstance(shap_values, list):
+                 feature_shap_vals = shap_values[1][:, i]
+            oos_df[f'SHAP_{col}'] = feature_shap_vals
+            
     # Calculate JM online regimes for the OOS period to serve as True Labels for Audit
     X_oos_jm = oos_df[return_features]
     X_oos_jm = (X_oos_jm - train_df[return_features].mean()) / train_df[return_features].std()
     oos_states = jm.predict_online(X_oos_jm.values, last_known_state=identified_states[-1])
     oos_df['JM_Target_State'] = oos_states
     
-    # Add SHAP values to dataframe
-    base_value = explainer.expected_value
-    if isinstance(base_value, (np.ndarray, list)):
-        # For Binary Classification, sometimes SHAP returns [logodds_0, logodds_1]
-        base_value = base_value[-1] if len(base_value) > 1 else base_value[0]
-        
-    oos_df['SHAP_Base_Value'] = base_value
-    for i, col in enumerate(all_features):
-        feature_shap_vals = shap_values[:, i]
-        # if shap_values is a list (e.g., class 0 and class 1), use the class 1 values
-        if isinstance(shap_values, list):
-             feature_shap_vals = shap_values[1][:, i]
-        oos_df[f'SHAP_{col}'] = feature_shap_vals
-    
     # Keep the feature values as well for scatter/dependence plots later if needed
     for col in all_features:
         oos_df[f'Feature_{col}'] = oos_df[col]
         
-    cols_to_keep = ['Target_Return', 'RF_Rate', 'Raw_Prob', 'SHAP_Base_Value', 'JM_Target_State'] + [f'SHAP_{col}' for col in all_features] + [f'Feature_{col}' for col in all_features]
+    cols_to_keep = ['Target_Return', 'RF_Rate', 'Raw_Prob', 'JM_Target_State'] + [f'Feature_{col}' for col in all_features]
     
+    if config.calculate_shap:
+        cols_to_keep += ['SHAP_Base_Value'] + [f'SHAP_{col}' for col in all_features]
+        
     result = oos_df[cols_to_keep]
     _forecast_cache[cache_key] = result
     return result

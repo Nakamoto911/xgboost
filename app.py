@@ -12,6 +12,8 @@ from datetime import datetime
 import main as backend
 from config import StrategyConfig
 
+st.set_page_config(layout="wide")
+
 st.title("XGBoost Strategy Backtest Portal")
 export_container = st.container()
 
@@ -53,6 +55,7 @@ _defaults = {
     'allocation_style': "binary",
     'lambda_ensemble_k': 1,
     'xgb_params_mode': "Paper Default (XGBoost defaults)",
+    'calculate_shap': False,
 }
 for key, val in _defaults.items():
     if key not in st.session_state:
@@ -186,6 +189,7 @@ st.sidebar.caption(
 )
 
 run_simple_jm = st.sidebar.checkbox("Run Simple JM Baseline", value=False)
+st.sidebar.checkbox("Calculate SHAP Values (Slower)", key='calculate_shap')
 
 run_button = st.sidebar.button("Run Backtest", type="primary")
 duration_placeholder = st.sidebar.empty()
@@ -222,6 +226,7 @@ if run_button:
         allocation_style=st.session_state.allocation_style,
         lambda_ensemble_k=st.session_state.lambda_ensemble_k,
         xgb_params=xgb_params,
+        calculate_shap=st.session_state.calculate_shap,
     )
 
     # Update backend globals
@@ -859,7 +864,9 @@ with tab_features:
     )
     shap_cols = [c for c in jm_xgb_df.columns if c.startswith('SHAP_') and c != 'SHAP_Base_Value']
     
-    if shap_cols and not jm_xgb_df[shap_cols].empty:
+    if not shap_cols or jm_xgb_df[shap_cols].empty:
+        st.info("SHAP calculation is currently disabled. To view Feature Impact Analysis, check 'Calculate SHAP Values (Slower)' in the sidebar and re-run the backtest.")
+    elif shap_cols and not jm_xgb_df[shap_cols].empty:
         fig_shap_ts = create_base_fig("Local Feature Impact (XGBoost)", "SHAP Value (Log-Odds Impact)", height=600)
         # Resample to monthly to improve rendering performance and visual clarity
         shap_df = jm_xgb_df[shap_cols].groupby(pd.Grouper(freq='ME')).mean().dropna(how='all')
