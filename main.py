@@ -300,7 +300,8 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
     if config is None:
         config = StrategyConfig()
         
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name)
+    xgb_key = tuple(sorted(config.xgb_params.items())) if config.xgb_params else ()
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key)
     if cache_key in _forecast_cache:
         return _forecast_cache[cache_key]
 

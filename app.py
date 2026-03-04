@@ -52,7 +52,7 @@ _defaults = {
     'prob_threshold': 0.50,
     'allocation_style': "binary",
     'lambda_ensemble_k': 1,
-    'xgb_params_mode': "Optimized",
+    'xgb_params_mode': "Paper Default (XGBoost defaults)",
 }
 for key, val in _defaults.items():
     if key not in st.session_state:
@@ -84,7 +84,7 @@ def on_preset_change():
     st.session_state.prob_threshold = cfg.prob_threshold
     st.session_state.allocation_style = cfg.allocation_style
     st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
-    st.session_state.xgb_params_mode = "Optimized"
+    st.session_state.xgb_params_mode = "Paper Default (XGBoost defaults)"
 
 def on_strategy_param_change():
     """Auto-switch to 'Custom' if user manually changes a param that no longer matches the preset."""
@@ -100,7 +100,7 @@ def on_strategy_param_change():
         abs(st.session_state.prob_threshold - cfg.prob_threshold) < 0.001 and
         st.session_state.allocation_style == cfg.allocation_style and
         st.session_state.lambda_ensemble_k == cfg.lambda_ensemble_k and
-        st.session_state.xgb_params_mode == "Optimized"):
+        st.session_state.xgb_params_mode == "Paper Default (XGBoost defaults)"):
         return
     st.session_state.experiment_preset = 'Custom'
 
@@ -141,13 +141,13 @@ grid_preset = st.sidebar.selectbox(
 )
 
 if grid_preset == "JM-XGB Improved (10 points)":
-    backend.LAMBDA_GRID = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 10)]
+    backend.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
     st.sidebar.caption("Using: 0.0 + 10 log-spaced points up to 100.0")
 elif grid_preset == "Default (Fast: 4 points)":
     backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
     st.sidebar.caption("Using: 1.0, 10.0, 50.0, 100.0")
 elif grid_preset == "Expanded (Paper: 21 points)":
-    backend.LAMBDA_GRID = [0.0] + [round(x, 2) for x in np.logspace(0, 2, 20)]
+    backend.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20))
     st.sidebar.caption("Using: 0.0 + 20 log-spaced points up to 100.0")
 else:
     lambda_grid_str = st.sidebar.text_input("Custom Grid (comma separated)", "1.0, 10.0, 50.0, 100.0")
@@ -201,12 +201,6 @@ def get_cached_data(target, bond, rf, vix, start, end):
     backend.VIX_TICKER = vix
     backend.START_DATE_DATA = start
     backend.END_DATE = end
-    _data_cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'data_cache.pkl')
-    if os.path.exists(_data_cache):
-        try:
-            os.remove(_data_cache)
-        except:
-            pass
     return backend.fetch_and_prepare_data()
 
 # =============================================================================
@@ -214,6 +208,7 @@ def get_cached_data(target, bond, rf, vix, start, end):
 # =============================================================================
 if run_button:
     backtest_start_time = time.time()
+    backend._forecast_cache.clear()
 
     # Build StrategyConfig from sidebar values
     xgb_params = XGB_PARAMS_OPTIONS[st.session_state.xgb_params_mode].copy()
