@@ -28,8 +28,10 @@ python run_experiments.py --help       # Show usage
 # Launch interactive Streamlit dashboard
 streamlit run app.py
 
-# Multi-asset benchmark (12 ETFs, parallel execution)
-python misc_scripts/benchmark_assets.py
+# Multi-asset benchmark (configurable asset lists, parallel execution)
+python misc_scripts/benchmark_assets.py              # Default ETFs (12 ETFs)
+python misc_scripts/benchmark_assets.py "Long History" # Long-history mutual fund proxies
+python misc_scripts/benchmark_assets.py list           # Show available asset lists
 ```
 
 There is no formal test framework (pytest/unittest). Tests are standalone scripts in `misc_scripts/`.
@@ -40,10 +42,11 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - `main.py` (~815 lines) -- Core backtest engine. Fetches data, fits models, runs walk-forward simulation, outputs PDF report.
 - `app.py` (~2120 lines) -- Streamlit dashboard. Imports `main.py` as `backend`. Sidebar has an experiment preset selector that auto-fills all StrategyConfig parameters (tuning metric, validation window type, lambda smoothing, threshold, allocation style, ensemble K). Uses `walk_forward_backtest()` for execution. Interactive Plotly charts.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
-- `misc_scripts/benchmark_assets.py` (~795 lines) -- Multi-asset benchmark. Tests 12 ETFs across 5 market periods with parallel execution.
+- `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
 
 ### Supporting Files
 - `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
+- `misc_scripts/asset_lists.md` -- Named asset lists for multi-asset benchmark (tickers, asset classes, data_start dates). Parsed by `benchmark_assets.py`.
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
 - `paper_text.txt` -- Full text of the reference paper for comparison.
@@ -129,7 +132,7 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 ## Caching
 
 - `cache/data_cache.pkl` -- Persisted fetched+engineered data (delete to re-fetch from APIs)
-- `cache/data_cache_{ticker}.pkl` -- Per-ticker caches for multi-asset benchmark
+- `cache/data_cache_{ticker}_{date}.pkl` -- Per-ticker/per-list caches for multi-asset benchmark (date from asset list's data_start)
 - `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
 - `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence
 

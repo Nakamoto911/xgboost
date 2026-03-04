@@ -61,13 +61,14 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 ├── cache/                   # Auto-generated data caches (gitignored)
 │   ├── data_cache.pkl       # Fetched + engineered S&P 500 data (main.py)
 │   ├── backtest_cache.pkl   # Last dashboard run results (app.py)
-│   └── data_cache_*.pkl     # Per-ETF caches (benchmark_assets.py)
+│   └── data_cache_*_*.pkl   # Per-asset caches (benchmark_assets.py)
 ├── benchmarks/              # Timestamped benchmark outputs (gitignored)
 │   ├── experiment_report_YYYYMMDD_HHMMSS.md   # run_experiments.py output
 │   ├── benchmark_report_YYYYMMDD_HHMMSS.md    # benchmark_assets.py output
 │   └── benchmark_results_YYYYMMDD_HHMMSS.csv  # benchmark_assets.py output
 └── misc_scripts/
     ├── benchmark_assets.py  # Multi-asset robustness testing
+    ├── asset_lists.md       # Configurable asset lists (tickers, classes, data_start)
     └── ...                  # Other debug/test scripts
 ```
 
@@ -146,21 +147,27 @@ python main.py
 Data is cached in `cache/data_cache.pkl` to avoid re-fetching on subsequent runs. Delete it to force a fresh download from Yahoo Finance and FRED.
 
 ### 4. Multi-Asset Robustness Testing (Optional)
-Tests the finalized strategy across 12 ETFs to verify the edge generalizes beyond S&P 500:
+Tests the finalized strategy across configurable asset lists to verify the edge generalizes beyond S&P 500:
 
 ```bash
-python misc_scripts/benchmark_assets.py
+python misc_scripts/benchmark_assets.py                # Default ETFs (12 ETFs)
+python misc_scripts/benchmark_assets.py "Long History"  # Long-history mutual fund proxies
+python misc_scripts/benchmark_assets.py list            # Show available asset lists
 ```
 
 **Output:** Two files in `benchmarks/`:
 - `benchmark_report_YYYYMMDD_HHMMSS.md` — full results with per-period tables
 - `benchmark_results_YYYYMMDD_HHMMSS.csv` — raw data for further analysis
 
-**Assets tested:** `IVV`, `IJH`, `IWM`, `EFA`, `EEM`, `AGG`, `SPTL`, `HYG`, `SPBO`, `IYR`, `DBC`, `GLD`
+**Asset lists** are defined in `misc_scripts/asset_lists.md`. Each list has a name, tickers with asset class groupings, and a `data_start` date. Two lists are included:
+- **Default ETFs** (12 ETFs: IVV, IJH, IWM, EFA, EEM, AGG, SPTL, HYG, SPBO, IYR, DBC, GLD)
+- **Long History** (12 mutual fund proxies with data back to 1975-1998: ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, PCASX, GC=F)
+
+To add a new list, add a `## List Name` section with `data_start:` and a ticker table to `misc_scripts/asset_lists.md`.
 
 **Optimization notes:** Reduced lambda grid (5 points), no SHAP, multiprocessing for speed.
 
-Per-ETF data cached in `cache/data_cache_<TICKER>.pkl`. Delete individual files to re-fetch.
+Per-asset data cached in `cache/data_cache_<TICKER>_<DATE>.pkl`. Delete individual files to re-fetch.
 
 ---
 

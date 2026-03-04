@@ -60,9 +60,96 @@ BENCHMARKS_DIR = os.path.join(PROJECT_ROOT, 'benchmarks')
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(BENCHMARKS_DIR, exist_ok=True)
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Asset List Loading ────────────────────────────────────────────────────────
 
-ETFS = ['IVV', 'IJH', 'IWM', 'EFA', 'EEM', 'AGG', 'SPTL', 'HYG', 'SPBO', 'IYR', 'DBC', 'GLD']
+ASSET_LISTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asset_lists.md')
+DEFAULT_LIST_NAME = 'Default ETFs'
+
+
+def load_asset_lists(md_path=ASSET_LISTS_PATH):
+    """Parse asset_lists.md -> dict[name -> {tickers, asset_classes, data_start}]."""
+    lists = {}
+    current_name = None
+    current_tickers = []
+    current_classes = {}
+    current_data_start = None
+
+    with open(md_path, 'r') as f:
+        for line in f:
+            stripped = line.strip()
+
+            if stripped.startswith('## '):
+                if current_name and current_tickers:
+                    lists[current_name] = {
+                        'tickers': current_tickers,
+                        'asset_classes': current_classes,
+                        'data_start': current_data_start,
+                    }
+                current_name = stripped[3:].strip()
+                current_tickers = []
+                current_classes = {}
+                current_data_start = None
+                continue
+
+            if stripped.lower().startswith('data_start:'):
+                current_data_start = stripped.split(':', 1)[1].strip()
+                continue
+
+            if stripped.startswith('|'):
+                cells = [c.strip() for c in stripped.split('|')[1:-1]]
+                if not cells or len(cells) < 2:
+                    continue
+                ticker = cells[0]
+                if ticker.lower() == 'ticker' or ticker.startswith('---') or ticker.startswith(':---'):
+                    continue
+                if set(ticker.replace('-', '')) == set():
+                    continue
+                asset_class = cells[1]
+                current_tickers.append(ticker)
+                if asset_class not in current_classes:
+                    current_classes[asset_class] = []
+                current_classes[asset_class].append(ticker)
+
+    if current_name and current_tickers:
+        lists[current_name] = {
+            'tickers': current_tickers,
+            'asset_classes': current_classes,
+            'data_start': current_data_start,
+        }
+
+    return lists
+
+
+def parse_asset_list_selection(args, all_lists):
+    """Parse CLI args to select an asset list. Returns list name or None (exit)."""
+    if not args:
+        return DEFAULT_LIST_NAME
+
+    arg = ' '.join(args).strip()
+
+    if arg.lower() in ('list', 'ls'):
+        print("Available asset lists:")
+        for name, info in all_lists.items():
+            print(f"  {name!r}  ({len(info['tickers'])} tickers, data_start={info['data_start']})")
+        return None
+
+    if arg in ('-h', '--help', 'help'):
+        print("Usage: python misc_scripts/benchmark_assets.py [LIST_NAME | list | --help]")
+        print()
+        print("  (no argument)       Use 'Default ETFs' list")
+        print("  \"Long History\"      Use 'Long History' list")
+        print("  list                Show all available asset lists")
+        return None
+
+    if arg in all_lists:
+        return arg
+
+    print(f"Error: asset list {arg!r} not found.")
+    print("Available lists:", ', '.join(f"'{n}'" for n in all_lists))
+    return None
+
+
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 # Time periods to test (label, oos_start, oos_end)
 TIME_PERIODS = [
@@ -156,9 +243,11 @@ class StatisticalJumpModel:
 
 # ── Data Fetching ─────────────────────────────────────────────────────────────
 
-def fetch_etf_data(ticker):
+def fetch_etf_data(ticker, data_start=None):
     """Fetch and prepare features for a single ETF. Returns (ticker, df) or (ticker, None)."""
-    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}.pkl')
+    if data_start is None:
+        data_start = DATA_START
+    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}.pkl')
     if os.path.exists(cache_file):
         return ticker, pd.read_pickle(cache_file)
 
@@ -166,7 +255,7 @@ def fetch_etf_data(ticker):
         # Download ETF + auxiliary tickers
         raw = {}
         for t in [ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER]:
-            df_t = yf.download(t, start=DATA_START, end='2026-03-01', auto_adjust=False, progress=False)
+            df_t = yf.download(t, start=data_start, end='2026-03-01', auto_adjust=False, progress=False)
             if df_t.empty:
                 continue
             if isinstance(df_t.columns, pd.MultiIndex):
@@ -184,7 +273,7 @@ def fetch_etf_data(ticker):
         data = pd.concat(raw.values(), axis=1).ffill().dropna()
 
         # FRED macro data
-        fred = web.DataReader(['DGS2', 'DGS10'], 'fred', DATA_START, '2026-03-01').ffill().dropna()
+        fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01').ffill().dropna()
         df = data.join(fred, how='inner')
 
         if len(df) < 252 * 5:
@@ -373,7 +462,7 @@ def calculate_metrics(returns_series, rf_series):
 
 def backtest_single_asset(args):
     """Run full walk-forward backtest for one ETF. Returns list of result dicts."""
-    ticker, df, config = args
+    ticker, df, config, data_start = args
     results = []
     cache = {}  # per-asset forecast cache
 
@@ -389,7 +478,7 @@ def backtest_single_asset(args):
         # Phase 1: Tune EWMA halflife on initial validation window
         init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         if config.validation_window_type == 'expanding':
-            init_val_start = pd.to_datetime(DATA_START) # fast approximation for absolute start
+            init_val_start = pd.to_datetime(data_start)
             
         best_ewma_hl = EWMA_HL_GRID[-1]
         best_init_metric = -np.inf
@@ -412,7 +501,7 @@ def backtest_single_asset(args):
             chunk_end = min(current_date + pd.DateOffset(months=6), oos_end_dt)
             
             if config.validation_window_type == 'expanding':
-                val_start = pd.to_datetime(DATA_START)
+                val_start = pd.to_datetime(data_start)
             else:
                 val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
 
@@ -514,11 +603,11 @@ def backtest_single_asset(args):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
+def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, list_name):
     config = StrategyConfig()
     """Generate a markdown report with parameters and full results."""
     lines = []
-    lines.append(f"# JM-XGB Multi-Asset Benchmark Report")
+    lines.append(f"# JM-XGB Multi-Asset Benchmark Report — {list_name}")
     lines.append(f"")
     lines.append(f"**Generated:** {timestamp}")
     lines.append(f"**Runtime:** {elapsed:.1f}s")
@@ -546,7 +635,7 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
     lines.append(f"")
     lines.append(f"| Ticker | Start | End | Rows |")
     lines.append(f"|---|---|---|---|")
-    for ticker in ETFS:
+    for ticker in tickers:
         if ticker in asset_data:
             df = asset_data[ticker]
             lines.append(f"| {ticker} | {df.index[0].date()} | {df.index[-1].date()} | {len(df)} |")
@@ -565,7 +654,7 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
         lines.append(f"| Ticker | JM-XGB Sharpe | B&H Sharpe | Delta | JM-XGB Ret | B&H Ret | JM-XGB MDD | B&H MDD |")
         lines.append(f"|---|---:|---:|---:|---:|---:|---:|---:|")
 
-        for ticker in ETFS:
+        for ticker in tickers:
             jmxgb = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'JM-XGB')]
             bh = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'B&H')]
             if jmxgb.empty or bh.empty:
@@ -586,7 +675,7 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
         bh_full = full_data[full_data['Strategy'] == 'B&H'].dropna(subset=['Sharpe'])
 
         wins, total = 0, 0
-        for ticker in ETFS:
+        for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
             if not j.empty and not b.empty:
@@ -602,7 +691,7 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
 
         lines.append(f"| Ticker | JM-XGB | B&H | Sharpe Delta | JM-XGB MDD | B&H MDD | Verdict |")
         lines.append(f"|---|---:|---:|---:|---:|---:|---|")
-        for ticker in ETFS:
+        for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
             if j.empty or b.empty:
@@ -623,19 +712,13 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
         lines.append(f"")
 
         # Asset class summary
-        asset_classes = {
-            'US Equity': ['IVV', 'IJH', 'IWM'],
-            'Intl Equity': ['EFA', 'EEM'],
-            'Fixed Income': ['AGG', 'SPTL', 'HYG', 'SPBO'],
-            'Real Assets': ['IYR', 'DBC', 'GLD'],
-        }
         lines.append(f"### Asset Class Averages (Full Period Sharpe)")
         lines.append(f"")
         lines.append(f"| Asset Class | JM-XGB Avg | B&H Avg | Delta |")
         lines.append(f"|---|---:|---:|---:|")
-        for cls_name, tickers in asset_classes.items():
+        for cls_name, cls_tickers in asset_classes.items():
             j_sharpes, b_sharpes = [], []
-            for t in tickers:
+            for t in cls_tickers:
                 j = full_data[(full_data['Ticker'] == t) & (full_data['Strategy'] == 'JM-XGB')]
                 b = full_data[(full_data['Ticker'] == t) & (full_data['Strategy'] == 'B&H')]
                 if not j.empty and not b.empty and not np.isnan(j.iloc[0]['Sharpe']):
@@ -651,25 +734,36 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data):
 
 
 def main():
+    # Load asset lists and parse CLI
+    all_lists = load_asset_lists()
+    selected_name = parse_asset_list_selection(sys.argv[1:], all_lists)
+    if selected_name is None:
+        sys.exit(0)
+
+    selected = all_lists[selected_name]
+    tickers = selected['tickers']
+    asset_classes = selected['asset_classes']
+    data_start = selected['data_start']
+
     t0 = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # 1. Fetch all data (sequential — yfinance doesn't parallelize well)
     print("=" * 80)
-    print("  MULTI-ASSET JM-XGB BENCHMARK")
+    print(f"  MULTI-ASSET JM-XGB BENCHMARK  [{selected_name}]")
     print("=" * 80)
-    print(f"\nFetching data for {len(ETFS)} ETFs...")
+    print(f"\nFetching data for {len(tickers)} assets (data_start={data_start})...")
     asset_data = {}
-    for ticker in ETFS:
+    for ticker in tickers:
         print(f"  Fetching {ticker}...", end=" ", flush=True)
-        _, df = fetch_etf_data(ticker)
+        _, df = fetch_etf_data(ticker, data_start=data_start)
         if df is not None:
             asset_data[ticker] = df
             print(f"OK ({len(df)} rows, {df.index[0].date()} to {df.index[-1].date()})")
         else:
             print("FAILED")
 
-    print(f"\nSuccessfully loaded {len(asset_data)}/{len(ETFS)} ETFs")
+    print(f"\nSuccessfully loaded {len(asset_data)}/{len(tickers)} assets")
     if not asset_data:
         print("No data available. Exiting.")
         return
@@ -679,7 +773,7 @@ def main():
     print(f"Using {min(cpu_count(), len(asset_data))} parallel workers\n")
 
     config = StrategyConfig()
-    args_list = [(ticker, df, config) for ticker, df in asset_data.items()]
+    args_list = [(ticker, df, config, data_start) for ticker, df in asset_data.items()]
 
     all_results = []
     n_workers = min(cpu_count(), len(args_list))
@@ -706,7 +800,7 @@ def main():
     results_df.to_csv(csv_path, index=False)
 
     # 4. Generate and save markdown report
-    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data)
+    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name)
     md_path = os.path.join(BENCHMARKS_DIR, f'benchmark_report_{timestamp}.md')
     with open(md_path, 'w') as f:
         f.write(md_content)
@@ -727,7 +821,7 @@ def main():
         print(f"  {'Ticker':<8} │ {'JM-XGB Sharpe':>13} │ {'B&H Sharpe':>10} │ {'Delta':>7} │ {'JM-XGB Ret':>10} │ {'B&H Ret':>9} │ {'JM-XGB MDD':>10} │ {'B&H MDD':>9}")
         print(f"  {'─'*8}─┼─{'─'*13}─┼─{'─'*10}─┼─{'─'*7}─┼─{'─'*10}─┼─{'─'*9}─┼─{'─'*10}─┼─{'─'*9}")
 
-        for ticker in ETFS:
+        for ticker in tickers:
             jmxgb = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'JM-XGB')]
             bh = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'B&H')]
             if jmxgb.empty or bh.empty:
@@ -748,7 +842,7 @@ def main():
         bh_full = full_data[full_data['Strategy'] == 'B&H'].dropna(subset=['Sharpe'])
 
         wins, total = 0, 0
-        for ticker in ETFS:
+        for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
             if not j.empty and not b.empty:
@@ -764,7 +858,7 @@ def main():
 
         print(f"\n  {'Ticker':<8} │ {'JM-XGB':>8} │ {'B&H':>8} │ {'Sharpe Δ':>9} │ {'JM-XGB MDD':>10} │ {'B&H MDD':>9} │ {'Verdict':>8}")
         print(f"  {'─'*8}─┼─{'─'*8}─┼─{'─'*8}─┼─{'─'*9}─┼─{'─'*10}─┼─{'─'*9}─┼─{'─'*8}")
-        for ticker in ETFS:
+        for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
             if j.empty or b.empty:
