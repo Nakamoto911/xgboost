@@ -558,8 +558,31 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append(f"OOS: {OOS_START_DATE} → {END_DATE} | Target: {TARGET_TICKER} | Chunks: {len(chunks)} | Runtime: {elapsed:.0f}s")
     L.append("")
 
+    # === Pipeline Parameters ===
+    import json
+    L.append("## 0. Pipeline Parameters")
+    L.append("")
+    L.append("### Pipeline Setup")
+    L.append(f"- **Target Ticker:** `{TARGET_TICKER}`")
+    L.append(f"- **JM Lambda Grid:** `{LAMBDA_GRID}`")
+    L.append(f"- **EWMA Halflife Grid:** `{EWMA_HL_GRID}`")
+    L.append(f"- **Validation Window:** `{VALIDATION_WINDOW_YRS} years`")
+    L.append(f"- **Transaction Cost:** `{TRANSACTION_COST}`")
+    L.append("")
+    L.append("### Strategy Config")
+    config_dict = getattr(diag.config, '__dict__', {})
+    for k, v in config_dict.items():
+        if k != 'xgb_params':
+            L.append(f"- **{k}:** `{v}`")
+    L.append("")
+    L.append("### XGBoost Parameters")
+    L.append("```json")
+    L.append(json.dumps(getattr(diag.config, 'xgb_params', {}), indent=2))
+    L.append("```")
+    L.append("")
+
     # === Gate Checklist ===
-    L.append("## Gate Checklist")
+    L.append("## 1. Gate Checklist")
     L.append("")
     n_pass = sum(1 for v in g.values() if v is True)
     n_fail = sum(1 for v in g.values() if v is False)
@@ -607,7 +630,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === JM Quality ===
-    L.append("## 1. JM Regime Quality")
+    L.append("## 2. JM Regime Quality")
     L.append("")
 
     sil_vals = [c['silhouette'] for c in chunks if c.get('silhouette') is not None]
@@ -642,7 +665,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === XGBoost OOS Classification ===
-    L.append("## 2. XGBoost OOS Classification")
+    L.append("## 3. XGBoost OOS Classification")
     L.append("")
     L.append("| Metric | Value |")
     L.append("|---|---:|")
@@ -671,7 +694,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
         L.append("")
 
     # === Calibration ===
-    L.append("## 3. Probability Calibration")
+    L.append("## 4. Probability Calibration")
     L.append("")
     L.append(f"- ECE: **{a.get('ece', 0):.4f}**")
     L.append(f"- Calibration bias: **{a.get('calibration_bias', 0):+.4f}** (pred mean {a.get('prob_mean', 0):.3f} vs actual Bear {a.get('actual_bear_pct', 0):.3f})")
@@ -679,7 +702,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === Overfitting ===
-    L.append("## 4. Overfitting Monitor")
+    L.append("## 5. Overfitting Monitor")
     L.append("")
     L.append(f"- Train-OOS accuracy gap (mean): **{a.get('acc_gap_mean', 0):.3f}** (max: {a.get('acc_gap_max', 0):.3f})")
     L.append(f"- Train-OOS log-loss gap (mean): **{a.get('ll_gap_mean', 0):+.3f}**")
@@ -690,7 +713,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === Signal Quality ===
-    L.append("## 5. Signal Quality (IC)")
+    L.append("## 6. Signal Quality (IC)")
     L.append("")
     L.append("| Horizon | Rank IC |")
     L.append("|---|---:|")
@@ -704,7 +727,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === Execution Profile ===
-    L.append("## 6. Execution Profile")
+    L.append("## 7. Execution Profile")
     L.append("")
     L.append(f"- Time in market: **{a.get('time_in_market', 0)*100:.1f}%**" if a.get('time_in_market') else "- Time in market: N/A")
     L.append(f"- Avg holding period: **{a.get('avg_holding_period', 0):.1f} days**" if a.get('avg_holding_period') else "- Avg holding period: N/A")
@@ -712,7 +735,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === Feature Stability ===
-    L.append("## 7. Feature Stability")
+    L.append("## 8. Feature Stability")
     L.append("")
     if a.get('feature_jaccard_mean') is not None:
         L.append(f"Top-3 feature Jaccard similarity (adjacent chunks): **{a['feature_jaccard_mean']:.3f}**")
@@ -735,7 +758,7 @@ def generate_report(diag: PipelineDiagnostics, elapsed: float) -> str:
     L.append("")
 
     # === Per-Chunk Summary (compact) ===
-    L.append("## 8. Per-Chunk Summary")
+    L.append("## 9. Per-Chunk Summary")
     L.append("")
     L.append("| Period | Sil | DBI | AUC | Acc | LL | IC1d | BearPct | HoldPd |")
     L.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
