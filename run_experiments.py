@@ -23,24 +23,6 @@ SUB_PERIODS = [
 # =============================================================================
 EXPERIMENTS = [
     StrategyConfig(name="1. Paper Baseline"),
-    StrategyConfig(name="2. Sortino Tuned", tuning_metric="sortino"),
-    StrategyConfig(name="3. Conservative Threshold (0.6)", prob_threshold=0.60),
-    StrategyConfig(name="4. Continuous Allocation", allocation_style="continuous"),
-    StrategyConfig(name="5. Lambda Smoothing", lambda_smoothing=True),
-    StrategyConfig(name="6. Expanding Window", validation_window_type="expanding"),
-    StrategyConfig(name="7. Lambda Ensemble (Top 3)", lambda_ensemble_k=3),
-    StrategyConfig(
-        name="8. The Ultimate Combo",
-        tuning_metric="sortino",
-        prob_threshold=0.55,
-        allocation_style="continuous",
-        lambda_smoothing=True
-    ),
-    StrategyConfig(
-        name="9. Expanding + Lambda Smoothing",
-        validation_window_type="expanding",
-        lambda_smoothing=True,
-    ),
 ]
 
 
