@@ -68,6 +68,7 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 │   └── benchmark_results_YYYYMMDD_HHMMSS.csv  # benchmark_assets.py output
 └── misc_scripts/
     ├── benchmark_assets.py  # Multi-asset robustness testing
+    ├── diagnose_pipeline.py # Pipeline health diagnostics
     ├── asset_lists.md       # Configurable asset lists (tickers, classes, data_start)
     └── ...                  # Other debug/test scripts
 ```
@@ -82,7 +83,7 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 
 ## Running
 
-There are three entry points depending on your goal:
+There are several entry points depending on your goal:
 
 ### 1. Strategy Research: Experiment Runner (Recommended for testing hypotheses)
 Tests a controlled set of 9 pre-defined strategy variants and compares each against the paper baseline. This is the primary tool for validating improvements.
@@ -169,6 +170,21 @@ To add a new list, add a `## List Name` section with `data_start:` and a ticker 
 
 Per-asset data cached in `cache/data_cache_<TICKER>_<DATE>.pkl`. Delete individual files to re-fetch.
 
+### 5. Pipeline Health Diagnostics
+Analyzes the ML health of the pipeline independent of financial returns, generating a comprehensive markdown report. Useful for verifying the structural integrity of the regime classifications and predictive signals.
+
+```bash
+python misc_scripts/diagnose_pipeline.py
+python misc_scripts/diagnose_pipeline.py --quick  # Skip slow permutation tests
+```
+
+**Output:** A timestamped markdown report in `benchmarks/` containing:
+- 14-point "Gate Checklist" to quickly identify pipeline failures
+- JM Regime Quality (Silhouette, Davies-Bouldin, Return separation)
+- XGBoost OOS Classification metrics (Accuracy, ROC-AUC, Log-loss, MCC)
+- Signal calibration and overfitting analysis
+- Rank IC / Information Ratio across multiple horizons
+
 ---
 
 ### Typical Workflow
@@ -177,3 +193,4 @@ Per-asset data cached in `cache/data_cache_<TICKER>_<DATE>.pkl`. Delete individu
 2. **Use `app.py`** to interactively explore promising variants and visualize results
 3. **Use `main.py`** to generate a final PDF report of your chosen configuration
 4. **Use `benchmark_assets.py`** to verify the strategy works across other asset classes (optional, for robustness)
+5. **Use `diagnose_pipeline.py`** to verify the underlying structural health of the ML models

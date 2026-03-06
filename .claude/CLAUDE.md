@@ -32,6 +32,10 @@ streamlit run app.py
 python misc_scripts/benchmark_assets.py              # Default ETFs (12 ETFs)
 python misc_scripts/benchmark_assets.py "Long History" # Long-history mutual fund proxies
 python misc_scripts/benchmark_assets.py list           # Show available asset lists
+
+# Run pipeline diagnostics
+python misc_scripts/diagnose_pipeline.py              # Full diagnostics
+python misc_scripts/diagnose_pipeline.py --quick      # Skip slow tests (permutation)
 ```
 
 There is no formal test framework (pytest/unittest). Tests are standalone scripts in `misc_scripts/`.
@@ -43,6 +47,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - `app.py` (~2120 lines) -- Streamlit dashboard. Imports `main.py` as `backend`. Sidebar has an experiment preset selector that auto-fills all StrategyConfig parameters (tuning metric, validation window type, lambda smoothing, threshold, allocation style, ensemble K). Uses `walk_forward_backtest()` for execution. Interactive Plotly charts.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
+- `misc_scripts/diagnose_pipeline.py` (~800 lines) -- Pipeline health diagnostics. Generates a minimalist MD report assessing ML model quality and regime structural integrity.
 
 ### Supporting Files
 - `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
