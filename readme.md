@@ -53,10 +53,14 @@ The strategy evaluates backtesting in a fully out-of-sample, walk-forward basis 
 
 ```
 .
-├── main.py                  # Core backtest engine (S&P 500, generates PDF report)
-├── app.py                   # Streamlit interactive dashboard
+├── main.py                   # Core backtest engine (S&P 500, generates PDF report)
+├── app.py                    # Streamlit interactive dashboard (landing/entry page)
+├── pages/                    # Streamlit multi-page dashboard screens
+│   ├── 1_🚀_Performance_Tracker.py  # Fast parameter tuning and strategy performance metrics
+│   ├── 2_📊_Model_Analysis.py       # Deep model analysis (SHAP, diagnostics, feature distributions)
+│   └── 3_🛠️_Diagnostics_Launcher.py # UI for running background scripts and displaying markdown reports
 ├── run_experiments.py        # Experiment runner (strategy hypothesis testing)
-├── config.py                # StrategyConfig dataclass for parameterizing variants
+├── config.py                 # StrategyConfig dataclass for parameterizing variants
 ├── requirements.txt
 ├── cache/                   # Auto-generated data caches (gitignored)
 │   ├── data_cache.pkl       # Fetched + engineered S&P 500 data (main.py)
@@ -117,19 +121,16 @@ python run_experiments.py [all|list|N|N,M|N-M]
 9. Expanding + Lambda Smoothing (combination)
 
 ### 2. Interactive Exploration: Dashboard
-Launches the Streamlit app for interactive exploration of strategy parameters and results. Select an experiment preset or customize parameters manually, run the backtest, and view live charts:
+Launches the Streamlit multi-page app for interactive exploration of strategy parameters, results, and diagnostics. The new multi-page architecture separates fast testing from deep analysis:
 
 ```bash
 streamlit run app.py
 ```
 
-**Features:**
-- Experiment preset selector (auto-fills all parameters)
-- Customizable Strategy Parameters (tuning metric, validation window type, lambda smoothing, etc.)
-- Data & Execution settings (tickers, dates, lambda grid, XGB hyperparameters)
-- Interactive Plotly charts (wealth curve, drawdowns, sub-periods)
-- SHAP importance analysis
-- Results cached for fast reload
+**Pages:**
+- **1. 🚀 Performance Tracker:** Optimized for speed. Wrapper form batches parameter updates (Data Source, JM and XGBoost hyperparameters). Skips heavy ML/SHAP operations to allow rapid metric tuning.
+- **2. 📊 Model Analysis:** Deep evaluation of the active model. Integrates SHAP value evaluation, detailed feature distributions, and waterfall charts. Caches context from the Performance Tracker automatically.
+- **3. 🛠️ Diagnostics Launcher:** Acts as a GUI control center for background scripts (`run_experiments.py`, `benchmark_assets.py`, `diagnose_pipeline.py`). Automatically previews and surfaces trailing LLM-ready markdown reports from the `benchmarks/` directory.
 
 Opens in your default browser. The last run is cached in `cache/backtest_cache.pkl`.
 

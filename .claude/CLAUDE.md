@@ -44,7 +44,11 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 
 ### Entry Points
 - `main.py` (~815 lines) -- Core backtest engine. Fetches data, fits models, runs walk-forward simulation, outputs PDF report.
-- `app.py` (~2120 lines) -- Streamlit dashboard. Imports `main.py` as `backend`. Sidebar has an experiment preset selector that auto-fills all StrategyConfig parameters (tuning metric, validation window type, lambda smoothing, threshold, allocation style, ensemble K). Uses `walk_forward_backtest()` for execution. Interactive Plotly charts.
+- `app.py` & `pages/` -- Streamlit multi-page dashboard. `app.py` is the landing page.
+  - `pages/1_🚀_Performance_Tracker.py`: Fast parameter tuning and strategy performance metrics via `st.form`. Skips heavy ML/SHAP operations.
+  - `pages/2_📊_Model_Analysis.py`: Deep evaluation of the active model, SHAP values, feature charts and diagnostics.
+  - `pages/3_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
+  - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
 - `misc_scripts/diagnose_pipeline.py` (~800 lines) -- Pipeline health diagnostics. Generates a minimalist MD report assessing ML model quality and regime structural integrity.
@@ -67,8 +71,8 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - State 0 = Bullish (invest in target asset), State 1 = Bearish (rotate to risk-free). States are aligned after fitting so State 0 always has higher cumulative excess return.
 - Forecast signal is shifted +1 day before applying to returns to prevent look-ahead bias.
 - Binary 0/1 allocation is the strategy's core strength. Experiments proved continuous allocation and higher thresholds destroy performance.
-- `app.py` sidebar has an experiment preset selector (all 9 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
-- `app.py` mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass data/grid configuration from sidebar controls.
+- `1_🚀_Performance_Tracker.py` sidebar has an experiment preset selector (all 9 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
+- The dashboard mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass data/grid configuration from sidebar controls.
 
 ## Configuration
 
