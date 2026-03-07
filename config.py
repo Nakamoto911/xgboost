@@ -28,5 +28,5 @@ class StrategyConfig:
         "reg_alpha": 0,
         "reg_lambda": 1,
         "subsample": 1.0,
-        "colsample_bytree": 0.7,
+        "colsample_bytree": 0.3,
     })
