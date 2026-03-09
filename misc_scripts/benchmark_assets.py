@@ -170,6 +170,28 @@ DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 TRANSACTION_COST = 0.0005
 LAMBDA_GRID = [0.0, 3.0, 10.0, 30.0, 100.0]  # 5 candidates (speed; finer grids overfit validation window)
 EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
+
+# Paper-prescribed EWMA halflives per asset (from paper Section 4.2).
+# Auto-tuning on Yahoo Finance data overfits the validation window for some assets.
+# When a ticker has a known paper halflife, skip Phase 1 tuning and use it directly.
+PAPER_EWMA_HL = {
+    # hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury
+    '^SP500TR': 8, 'IVV': 8,
+    'IJH': 8, 'VIMSX': 8,
+    'IWM': 8, 'NAESX': 8,
+    'IYR': 8, 'FRESX': 8,
+    'AGG': 8, 'VBMFX': 8,
+    'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,
+    # hl=4: Commodity, Gold
+    'DBC': 4, 'PCASX': 4,
+    'GLD': 4, 'GC=F': 4, 'IAU': 4,
+    # hl=2: Corporate
+    'SPBO': 2, 'VWESX': 2,
+    # hl=0: EM, EAFE, HighYield
+    'EEM': 0, 'VEIEX': 0,
+    'EFA': 0, 'FDIVX': 0,
+    'HYG': 0, 'VWEHX': 0,
+}
 VALIDATION_WINDOW_YRS = 5
 
 # Paper Table 2: bonds and gold use only 6 return features (Avg_Return×3, Sortino×3),
@@ -491,21 +513,25 @@ def backtest_single_asset(args):
             continue
 
         # Phase 1: Tune EWMA halflife on initial validation window
-        init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
-        if config.validation_window_type == 'expanding':
-            init_val_start = pd.to_datetime(data_start)
-            
-        best_ewma_hl = EWMA_HL_GRID[-1]
-        best_init_metric = -np.inf
-        for hl in EWMA_HL_GRID:
-            for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy_fast(df, init_val_start, oos_start_dt, lmbda, cache, config, include_xgboost=True, ewma_halflife=hl)
-                if not val_res.empty:
-                    _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                    metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
-                    if not np.isnan(metric_val) and metric_val > best_init_metric:
-                        best_init_metric = metric_val
-                        best_ewma_hl = hl
+        # Use paper-prescribed halflife if available (avoids overfitting Yahoo data)
+        if ticker in PAPER_EWMA_HL:
+            best_ewma_hl = PAPER_EWMA_HL[ticker]
+        else:
+            init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+            if config.validation_window_type == 'expanding':
+                init_val_start = pd.to_datetime(data_start)
+
+            best_ewma_hl = EWMA_HL_GRID[-1]
+            best_init_metric = -np.inf
+            for hl in EWMA_HL_GRID:
+                for lmbda in LAMBDA_GRID:
+                    val_res = simulate_strategy_fast(df, init_val_start, oos_start_dt, lmbda, cache, config, include_xgboost=True, ewma_halflife=hl)
+                    if not val_res.empty:
+                        _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                        metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                        if not np.isnan(metric_val) and metric_val > best_init_metric:
+                            best_init_metric = metric_val
+                            best_ewma_hl = hl
 
         # Phase 2: Walk-forward lambda tuning + OOS execution
         current_date = oos_start_dt

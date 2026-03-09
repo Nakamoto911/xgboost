@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 import numpy as np
 import pandas as pd
-from main import fetch_and_prepare_data, walk_forward_backtest, calculate_metrics, OOS_START_DATE, END_DATE, TARGET_TICKER, LAMBDA_GRID, EWMA_HL_GRID, TRANSACTION_COST
+from main import fetch_and_prepare_data, walk_forward_backtest, calculate_metrics, OOS_START_DATE, END_DATE, TARGET_TICKER, LAMBDA_GRID, EWMA_HL_GRID, PAPER_EWMA_HL, TRANSACTION_COST
 from config import StrategyConfig
 
 # =============================================================================

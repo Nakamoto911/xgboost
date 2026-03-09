@@ -77,6 +77,28 @@ LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
 # EWMA halflife candidates for probability smoothing (paper: Section 4.2)
 EWMA_HL_GRID = [0, 2, 4, 8]
 
+# Paper-prescribed EWMA halflives per asset (from paper Section 4.2, Table).
+# Auto-tuning on Yahoo Finance data overfits the validation window for some assets.
+# When TARGET_TICKER has a known paper halflife, skip Phase 1 tuning and use it directly.
+PAPER_EWMA_HL = {
+    # hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury
+    '^SP500TR': 8, 'IVV': 8,           # LargeCap
+    'IJH': 8, 'VIMSX': 8,              # MidCap
+    'IWM': 8, 'NAESX': 8,              # SmallCap
+    'IYR': 8, 'FRESX': 8,              # REIT
+    'AGG': 8, 'VBMFX': 8,              # AggBond
+    'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,  # Treasury
+    # hl=4: Commodity, Gold
+    'DBC': 4, 'PCASX': 4,              # Commodity
+    'GLD': 4, 'GC=F': 4, 'IAU': 4,    # Gold
+    # hl=2: Corporate
+    'SPBO': 2, 'VWESX': 2,             # Corporate
+    # hl=0: EM, EAFE, HighYield
+    'EEM': 0, 'VEIEX': 0,              # EM
+    'EFA': 0, 'FDIVX': 0,              # EAFE
+    'HYG': 0, 'VWEHX': 0,             # HighYield
+}
+
 # Override from environment variables (used by Diagnostics Launcher to sync with dashboard)
 if os.environ.get('XGB_TARGET_TICKER'):
     TARGET_TICKER = os.environ['XGB_TARGET_TICKER']
@@ -529,22 +551,26 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
     _prev_booster = None
 
     # --- Phase 1: Tune EWMA halflife once on initial validation window ---
-    initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
-    if config.validation_window_type == 'expanding':
-        initial_val_start = pd.to_datetime(OOS_START_DATE) - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
-        
-    best_ewma_hl = EWMA_HL_GRID[-1]
-    best_init_metric = -np.inf
+    # Use paper-prescribed halflife if available for this ticker (avoids overfitting Yahoo data)
+    if TARGET_TICKER in PAPER_EWMA_HL:
+        best_ewma_hl = PAPER_EWMA_HL[TARGET_TICKER]
+    else:
+        initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+        if config.validation_window_type == 'expanding':
+            initial_val_start = pd.to_datetime(OOS_START_DATE) - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
 
-    for hl in EWMA_HL_GRID:
-        for lmbda in LAMBDA_GRID:
-            val_res = simulate_strategy(df, initial_val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=hl)
-            if not val_res.empty:
-                _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
-                if metric_val > best_init_metric:
-                    best_init_metric = metric_val
-                    best_ewma_hl = hl
+        best_ewma_hl = EWMA_HL_GRID[-1]
+        best_init_metric = -np.inf
+
+        for hl in EWMA_HL_GRID:
+            for lmbda in LAMBDA_GRID:
+                val_res = simulate_strategy(df, initial_val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=hl)
+                if not val_res.empty:
+                    _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                    metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                    if metric_val > best_init_metric:
+                        best_init_metric = metric_val
+                        best_ewma_hl = hl
 
     # --- Phase 2: Walk-forward lambda tuning ---
     while current_date < final_end_date:
