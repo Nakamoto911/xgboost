@@ -174,7 +174,9 @@ VALIDATION_WINDOW_YRS = 5
 
 # Paper Table 2: bonds and gold use only 6 return features (Avg_Return×3, Sortino×3),
 # excluding Downside Deviation (DD_log_5, DD_log_21) which are equity-specific.
-DD_EXCLUDE_TICKERS = {'AGG', 'SPTL', 'GLD', 'VBMFX', 'VUSTX', 'GC=F'}
+DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',        # AggBond proxies
+                      'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury proxies
+                      'GLD', 'GC=F', 'IAU'}   # Gold proxies
 
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
 

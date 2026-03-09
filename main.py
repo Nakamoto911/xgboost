@@ -51,6 +51,13 @@ TARGET_TICKER = '^SP500TR'      # S&P 500 Total Return (includes dividends)
 BOND_TICKER = 'VBMFX'           # Vanguard Total Bond Market (Proxy for US Agg Bond)
 RISK_FREE_TICKER = '^IRX'       # 13-Week Treasury Bill (Proxy for Risk-Free)
 VIX_TICKER = '^VIX'             # VIX Index
+LARGECAP_TICKER = '^SP500TR'    # Paper Table 3: Stock-Bond Corr uses LargeCap vs AggBond for ALL assets
+
+# Paper Table 2: bonds and gold use only 6 return features (Avg_Return×3, Sortino×3).
+# DD features don't separate regimes for these assets and should be excluded.
+DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',        # AggBond proxies
+                      'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury proxies
+                      'GLD', 'GC=F', 'IAU'}   # Gold proxies
 
 # Timeline
 START_DATE_DATA = '1987-01-01'  # Need data way before 1999 to allow for 11-year lookbacks
@@ -207,15 +214,17 @@ class StatisticalJumpModel:
 # 3. DATA FETCHING & FEATURE ENGINEERING
 # ==============================================================================
 def fetch_and_prepare_data():
-    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'data_cache.pkl')
+    safe_ticker = TARGET_TICKER.replace('^', '').replace('=', '')
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache',
+                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}.pkl')
     if os.path.exists(cache_file):
         print("Loading data from local cache...")
         return pd.read_pickle(cache_file)
         
     print("Fetching data from Yahoo Finance and FRED...")
     
-    # 1. Fetch main assets
-    tickers = [TARGET_TICKER, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER]
+    # 1. Fetch main assets — always include LARGECAP_TICKER for Stock-Bond Corr macro feature
+    tickers = list(dict.fromkeys([TARGET_TICKER, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER]))
     
     # Download individually to bypass yfinance multi-ticker download bugs
     series_list = []
@@ -269,12 +278,13 @@ def fetch_and_prepare_data():
     features['Excess_Return'] = target_returns - features['RF_Rate']
     
     # A. Asset-Specific Return Features
-    # Downside Deviation (log scale)
+    # Downside Deviation (log scale) — excluded for bonds/gold per paper Table 2
     downside_returns = np.minimum(features['Excess_Return'], 0)
-    for hl in [5, 21]:
-        ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
-        ewm_dd = np.sqrt(ewm_var).fillna(0)
-        features[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
+    if TARGET_TICKER not in DD_EXCLUDE_TICKERS:
+        for hl in [5, 21]:
+            ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
+            ewm_dd = np.sqrt(ewm_var).fillna(0)
+            features[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
         
     # EWM Average Return
     for hl in [5, 10, 21]:
@@ -302,9 +312,10 @@ def fetch_and_prepare_data():
     vix_log_diff = np.log(df[VIX_TICKER] / df[VIX_TICKER].shift(1)).fillna(0)
     features['VIX_EWMA_log_diff'] = vix_log_diff.ewm(halflife=63).mean()
     
-    # Stock-Bond Correlation
+    # Stock-Bond Correlation — paper Table 3: always corr(LargeCap, AggBond), identical for all target assets
+    largecap_returns = df[LARGECAP_TICKER].pct_change().fillna(0)
     bond_returns = df[BOND_TICKER].pct_change().fillna(0)
-    features['Stock_Bond_Corr'] = target_returns.rolling(window=252).corr(bond_returns).fillna(0)
+    features['Stock_Bond_Corr'] = largecap_returns.rolling(window=252).corr(bond_returns).fillna(0)
     
     final_df = features.dropna()
     print(f"Saving data to local cache ({cache_file})...")
