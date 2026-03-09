@@ -164,6 +164,7 @@ TIME_PERIODS = [
 RISK_FREE_TICKER = '^IRX'
 BOND_TICKER = 'VBMFX'
 VIX_TICKER = '^VIX'
+LARGECAP_TICKER = '^SP500TR'  # Paper Table 3: Stock-Bond Corr uses LargeCap vs AggBond for ALL assets
 DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 
 TRANSACTION_COST = 0.0005
@@ -253,14 +254,16 @@ def fetch_etf_data(ticker, data_start=None):
         data_start = DATA_START
     exclude_dd = ticker in DD_EXCLUDE_TICKERS
     cache_suffix = '_noDD' if exclude_dd else ''
-    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}{cache_suffix}.pkl')
+    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}{cache_suffix}_v2.pkl')
     if os.path.exists(cache_file):
         return ticker, pd.read_pickle(cache_file)
 
     try:
-        # Download ETF + auxiliary tickers
+        # Download ETF + auxiliary tickers.
+        # Always include LARGECAP_TICKER so Stock_Bond_Corr = corr(LargeCap, AggBond) for all assets.
+        tickers_to_fetch = dict.fromkeys([ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
         raw = {}
-        for t in [ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER]:
+        for t in tickers_to_fetch:
             df_t = yf.download(t, start=data_start, end='2026-03-01', auto_adjust=False, progress=False)
             if df_t.empty:
                 continue
@@ -309,9 +312,12 @@ def fetch_etf_data(ticker, data_start=None):
         features['Yield_Slope_EWMA_diff_21'] = slope.diff().fillna(0).ewm(halflife=21).mean()
         features['VIX_EWMA_log_diff'] = np.log(df[VIX_TICKER] / df[VIX_TICKER].shift(1)).fillna(0).ewm(halflife=63).mean()
 
-        if BOND_TICKER in df.columns:
+        # Paper Table 3: Stock-Bond Corr = rolling corr(LargeCap_ret, AggBond_ret), 252-day lookback.
+        # This is a macro feature identical for all assets — NOT corr(target, bond).
+        if BOND_TICKER in df.columns and LARGECAP_TICKER in df.columns:
+            largecap_rets = df[LARGECAP_TICKER].pct_change().fillna(0)
             bond_rets = df[BOND_TICKER].pct_change().fillna(0)
-            features['Stock_Bond_Corr'] = target_returns.rolling(window=252).corr(bond_rets).fillna(0)
+            features['Stock_Bond_Corr'] = largecap_rets.rolling(window=252).corr(bond_rets).fillna(0)
         else:
             features['Stock_Bond_Corr'] = 0.0
 
