@@ -5,7 +5,7 @@ Tests across 12 ETFs and multiple time periods.
 Optimizations for speed (methodology preserved):
 - Skip SHAP computation (not needed for performance evaluation)
 - Reduced lambda grid (5 candidates instead of 11)
-- Reduced EWMA halflife grid (2 candidates)
+- Full EWMA halflife grid (4 candidates)
 - No PDF/chart generation
 - Multiprocessing across assets
 """
@@ -168,7 +168,7 @@ DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 
 TRANSACTION_COST = 0.0005
 LAMBDA_GRID = [0.0, 3.0, 10.0, 30.0, 100.0]  # 5 candidates (speed)
-EWMA_HL_GRID = [0, 8]  # 2 candidates (speed)
+EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
 VALIDATION_WINDOW_YRS = 5
 
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
