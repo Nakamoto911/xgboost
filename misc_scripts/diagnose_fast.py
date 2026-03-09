@@ -11,8 +11,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from xgboost import XGBClassifier
 
-# Import only what we need from main
-from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST
+from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST, EWMA_HL_GRID
 
 TARGET_TICKER = '^SP500TR'
 OOS_START = '2007-01-01'
@@ -82,7 +81,7 @@ def forecast_no_shap(df, current_date, lambda_penalty, include_xgboost=True):
     return oos_df[['Target_Return', 'RF_Rate', 'Raw_Prob', 'JM_State']].copy()
 
 
-def run_strategy(df, start, end, lmbda, include_xgboost=True, ewma_hl=8, threshold=0.5):
+def run_strategy(df, start, end, lmbda, include_xgboost=True, ewma_hl=EWMA_HL_GRID[-1], threshold=0.5):
     """Run the full strategy with configurable EWMA halflife and threshold."""
     results = []
     current = pd.to_datetime(start)
@@ -196,7 +195,7 @@ def test3_ewma_sensitivity(df):
     print("="*80)
     print("Paper says tune from {0, 2, 4, 8}; current code hardcodes 8")
 
-    for hl in [0, 1, 2, 4, 8, 16]:
+    for hl in EWMA_HL_GRID:
         res = run_strategy(df, OOS_START, OOS_END, lmbda=10.0, ewma_hl=hl)
         if res.empty:
             continue
@@ -388,7 +387,7 @@ def test9_xgb_hyperparams(df):
             continue
 
         full = pd.concat(results)
-        full['State_Prob'] = full['Raw_Prob'].ewm(halflife=8).mean()
+        full['State_Prob'] = full['Raw_Prob'].ewm(halflife=EWMA_HL_GRID[-1]).mean()
         full['Forecast_State'] = (full['State_Prob'] > 0.5).astype(int)
         signal = full['Forecast_State'].shift(1).fillna(0)
         sr = np.where(signal == 0, full['Target_Return'], full['RF_Rate'])

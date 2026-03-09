@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, pandas as pd, warnings
 warnings.filterwarnings('ignore')
 from xgboost import XGBClassifier
-from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST
+from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST, EWMA_HL_GRID
 
 df = pd.read_pickle('data_cache.pkl')
 print(f"Data: {df.index[0].date()} to {df.index[-1].date()}", flush=True)
@@ -36,7 +36,7 @@ def forecast(df, current_date, lmbda, regularized=False):
     oos_df['Raw_Prob'] = model.predict_proba(oos_df[all_f])[:, 1]
     return oos_df[['Target_Return','RF_Rate','Raw_Prob']].copy()
 
-def run_strat(df, start, end, lmbda, hl=8, regularized=False):
+def run_strat(df, start, end, lmbda, hl=EWMA_HL_GRID[-1], regularized=False):
     results = []
     cur = pd.to_datetime(start); end_dt = pd.to_datetime(end)
     while cur < end_dt:
@@ -55,10 +55,10 @@ def run_strat(df, start, end, lmbda, hl=8, regularized=False):
     return full
 
 configs = [
-    ("BEFORE (default XGB, lam=10, hl=8)",   10.0, 8, False),
-    ("AFTER  (reg XGB, lam=5, hl=8)",         5.0, 8, True),
-    ("AFTER  (reg XGB, lam=10, hl=8)",        10.0, 8, True),
-    ("AFTER  (reg XGB, lam=20, hl=8)",        20.0, 8, True),
+    (f"BEFORE (default XGB, lam=10, hl={EWMA_HL_GRID[-1]})",   10.0, EWMA_HL_GRID[-1], False),
+    (f"AFTER  (reg XGB, lam=5, hl={EWMA_HL_GRID[-1]})",         5.0, EWMA_HL_GRID[-1], True),
+    (f"AFTER  (reg XGB, lam=10, hl={EWMA_HL_GRID[-1]})",        10.0, EWMA_HL_GRID[-1], True),
+    (f"AFTER  (reg XGB, lam=20, hl={EWMA_HL_GRID[-1]})",        20.0, EWMA_HL_GRID[-1], True),
 ]
 
 print(f"\n{'Config':<42} {'Sharpe':>7} {'Sort':>7} {'Ret':>7} {'MDD':>8} {'Inv':>5}", flush=True)

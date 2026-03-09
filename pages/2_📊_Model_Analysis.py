@@ -229,6 +229,25 @@ with st.sidebar.form("config_form"):
             except ValueError:
                 st.error("Invalid Lambda Grid format. Using default.")
                 backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
+        st.session_state['lambda_grid_value'] = backend.LAMBDA_GRID
+
+        ewma_grid_preset = st.selectbox(
+            "EWMA Halflife Grid",
+            ["Asset-Specific (Paper: 0,2,4,8)", "Fast (0,8)", "Custom"],
+            key='ewma_grid_preset'
+        )
+        if ewma_grid_preset == "Asset-Specific (Paper: 0,2,4,8)":
+            backend.EWMA_HL_GRID = [0, 2, 4, 8]
+        elif ewma_grid_preset == "Fast (0,8)":
+            backend.EWMA_HL_GRID = [0, 8]
+        else:
+            ewma_grid_str = st.text_input("Custom EWMA Grid (comma separated)", "0, 2, 4, 8")
+            try:
+                backend.EWMA_HL_GRID = [int(x.strip()) for x in ewma_grid_str.split(',')]
+            except ValueError:
+                st.error("Invalid EWMA Grid format. Using default.")
+                backend.EWMA_HL_GRID = [0, 2, 4, 8]
+        st.session_state['ewma_grid_value'] = backend.EWMA_HL_GRID
 
     with st.expander("4. XGBoost Parameters", expanded=False):
         st.selectbox("Tuning Metric", ["sharpe", "sortino"], key='tuning_metric')

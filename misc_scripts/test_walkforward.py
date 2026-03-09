@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, pandas as pd, warnings
 warnings.filterwarnings('ignore')
 from xgboost import XGBClassifier
-from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST
+from main import StatisticalJumpModel, calculate_metrics, TRANSACTION_COST, EWMA_HL_GRID
 
 df = pd.read_pickle('data_cache.pkl')
 LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))  # Reduced grid for speed
@@ -31,7 +31,7 @@ def forecast(df, current_date, lmbda):
     oos_df['Raw_Prob'] = model.predict_proba(oos_df[all_f])[:, 1]
     return oos_df[['Target_Return','RF_Rate','Raw_Prob']].copy()
 
-def run_strat(df, start, end, lmbda, hl=8):
+def run_strat(df, start, end, lmbda, hl=EWMA_HL_GRID[-1]):
     results = []
     cur = pd.to_datetime(start); end_dt = pd.to_datetime(end)
     while cur < end_dt:

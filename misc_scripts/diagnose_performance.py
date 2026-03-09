@@ -137,7 +137,7 @@ def test_ewma_sensitivity(df):
     print("Paper specifies halflife candidates: {0, 2, 4, 8}")
     print("Current implementation hardcodes halflife=8")
 
-    halflife_candidates = [0, 2, 4, 8, 16]
+    halflife_candidates = backend.EWMA_HL_GRID
 
     for hl in halflife_candidates:
         backend._forecast_cache.clear()
@@ -332,7 +332,7 @@ def test_threshold_sensitivity(df):
         return
 
     full_res = pd.concat(results)
-    full_res['Smoothed_Prob'] = full_res['Raw_Prob'].ewm(halflife=8).mean()
+    full_res['Smoothed_Prob'] = full_res['Raw_Prob'].ewm(halflife=backend.EWMA_HL_GRID[-1]).mean()
 
     thresholds = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
 
@@ -513,7 +513,7 @@ def test_xgb_hyperparameter_sensitivity(df):
             continue
 
         full_res = pd.concat(results)
-        full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=8).mean()
+        full_res['State_Prob'] = full_res['Raw_Prob'].ewm(halflife=backend.EWMA_HL_GRID[-1]).mean()
         full_res['Forecast_State'] = (full_res['State_Prob'] > 0.5).astype(int)
 
         trading_signal = full_res['Forecast_State'].shift(1).fillna(0)
