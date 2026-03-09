@@ -171,6 +171,10 @@ LAMBDA_GRID = [0.0, 3.0, 10.0, 30.0, 100.0]  # 5 candidates (speed)
 EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
 VALIDATION_WINDOW_YRS = 5
 
+# Paper Table 2: bonds and gold use only 6 return features (Avg_Return×3, Sortino×3),
+# excluding Downside Deviation (DD_log_5, DD_log_21) which are equity-specific.
+DD_EXCLUDE_TICKERS = {'AGG', 'SPTL', 'GLD', 'VBMFX', 'VUSTX', 'GC=F'}
+
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
 
 class StatisticalJumpModel:
@@ -247,7 +251,9 @@ def fetch_etf_data(ticker, data_start=None):
     """Fetch and prepare features for a single ETF. Returns (ticker, df) or (ticker, None)."""
     if data_start is None:
         data_start = DATA_START
-    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}.pkl')
+    exclude_dd = ticker in DD_EXCLUDE_TICKERS
+    cache_suffix = '_noDD' if exclude_dd else ''
+    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}{cache_suffix}.pkl')
     if os.path.exists(cache_file):
         return ticker, pd.read_pickle(cache_file)
 
@@ -286,9 +292,10 @@ def fetch_etf_data(ticker, data_start=None):
         features['Excess_Return'] = target_returns - features['RF_Rate']
 
         downside_returns = np.minimum(features['Excess_Return'], 0)
-        for hl in [5, 21]:
-            ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
-            features[f'DD_log_{hl}'] = np.log(np.sqrt(ewm_var).fillna(0) + 1e-8)
+        if not exclude_dd:
+            for hl in [5, 21]:
+                ewm_var = (downside_returns ** 2).ewm(halflife=hl).mean()
+                features[f'DD_log_{hl}'] = np.log(np.sqrt(ewm_var).fillna(0) + 1e-8)
         for hl in [5, 10, 21]:
             features[f'Avg_Ret_{hl}'] = features['Excess_Return'].ewm(halflife=hl).mean()
         for hl in [5, 10, 21]:
@@ -624,6 +631,20 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
             lines.append(f"| {ticker} | {df.index[0].date()} | {df.index[-1].date()} | {len(df)} |")
         else:
             lines.append(f"| {ticker} | N/A | N/A | N/A |")
+    lines.append(f"")
+
+    # DD exclusion note
+    dd_excluded = [t for t in tickers if t in DD_EXCLUDE_TICKERS]
+    dd_standard = [t for t in tickers if t not in DD_EXCLUDE_TICKERS]
+    lines.append(f"## Feature Set")
+    lines.append(f"")
+    lines.append(f"**Paper Table 2 compliance:** Bonds and gold use 6 return features (Avg_Return×3, Sortino×3); "
+                 f"equities use 8 features (DD_log×2, Avg_Return×3, Sortino×3).")
+    lines.append(f"")
+    if dd_excluded:
+        lines.append(f"- **DD excluded (6 features):** {', '.join(dd_excluded)}")
+    if dd_standard:
+        lines.append(f"- **DD included (8 features):** {', '.join(dd_standard)}")
     lines.append(f"")
 
     # Aggregate summary
