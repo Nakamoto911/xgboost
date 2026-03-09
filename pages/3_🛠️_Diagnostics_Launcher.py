@@ -158,6 +158,21 @@ SCRIPTS = {
 SYNCED_SCRIPTS = {"diagnose_pipeline.py", "run_experiments.py"}
 
 # =============================================================================
+def get_asset_lists():
+    """Parse asset_lists.md to get available lists without importing."""
+    lists = []
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    md_path = os.path.join(base_dir, 'misc_scripts', 'asset_lists.md')
+    try:
+        with open(md_path, 'r') as f:
+            for line in f:
+                if line.startswith('## '):
+                    lists.append(line[3:].strip())
+    except Exception:
+        pass
+    return lists
+
+# =============================================================================
 # Main layout
 # =============================================================================
 col1, col2 = st.columns([1, 2])
@@ -171,6 +186,12 @@ with col1:
 
     if script_info["file"] not in SYNCED_SCRIPTS:
         st.caption("This script uses its own independent configuration.")
+
+    if selected_script == "Benchmark Assets":
+        asset_lists = get_asset_lists()
+        selected_asset_list = st.selectbox("Select Asset List:", asset_lists)
+        if selected_asset_list:
+            st.session_state.selected_asset_list = selected_asset_list
 
     if st.button(f"Run {script_info['file']}", type="primary"):
         st.session_state.running_script = script_info['file']
@@ -190,8 +211,12 @@ with col2:
 
         with st.spinner(f"Running {script_to_run}..."):
             try:
+                cmd = ["python", script_to_run]
+                if script_to_run == "misc_scripts/benchmark_assets.py" and "selected_asset_list" in st.session_state:
+                    cmd.append(st.session_state.selected_asset_list)
+
                 result = subprocess.run(
-                    ["python", script_to_run],
+                    cmd,
                     capture_output=True,
                     text=True,
                     cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

@@ -613,23 +613,6 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
     lines.append(f"**Runtime:** {elapsed:.1f}s")
     lines.append(f"")
 
-    # Parameters
-    lines.append(f"## Strategy Configuration (`{config.name}`)")
-    lines.append(f"")
-    lines.append(f"| Parameter | Value |")
-    lines.append(f"|---|---|")
-    lines.append(f"| Allocation style | {config.allocation_style} |")
-    lines.append(f"| Tuning metric | {config.tuning_metric} |")
-    lines.append(f"| Binary Prob threshold | {config.prob_threshold} |")
-    lines.append(f"| Validation window | {config.validation_window_type} ({VALIDATION_WINDOW_YRS}yrs) |")
-    lines.append(f"| Lambda smoothing | {config.lambda_smoothing} |")
-    lines.append(f"| Lambda ensemble K | {config.lambda_ensemble_k} |")
-    lines.append(f"| Dyn. Feature Select | {config.dynamic_feature_selection} |")
-    lines.append(f"| Online learning | {config.xgb_online_learning} |")
-    lines.append(f"| Lambda grid | {LAMBDA_GRID} |")
-    lines.append(f"| EWMA HL grid | {EWMA_HL_GRID} |")
-    lines.append(f"")
-
     # Data coverage
     lines.append(f"## Data Coverage")
     lines.append(f"")
@@ -642,31 +625,6 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
         else:
             lines.append(f"| {ticker} | N/A | N/A | N/A |")
     lines.append(f"")
-
-    # Per-period tables
-    for period_name, _, _ in TIME_PERIODS:
-        period_data = results_df[results_df['Period'] == period_name]
-        if period_data.empty:
-            continue
-
-        lines.append(f"## {period_name}")
-        lines.append(f"")
-        lines.append(f"| Ticker | JM-XGB Sharpe | B&H Sharpe | Delta | JM-XGB Ret | B&H Ret | JM-XGB MDD | B&H MDD |")
-        lines.append(f"|---|---:|---:|---:|---:|---:|---:|---:|")
-
-        for ticker in tickers:
-            jmxgb = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'JM-XGB')]
-            bh = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'B&H')]
-            if jmxgb.empty or bh.empty:
-                continue
-            j = jmxgb.iloc[0]
-            b = bh.iloc[0]
-            if np.isnan(j['Sharpe']):
-                lines.append(f"| {ticker} | N/A | N/A | N/A | N/A | N/A | N/A | N/A |")
-                continue
-            delta = j['Sharpe'] - b['Sharpe']
-            lines.append(f"| {ticker} | {j['Sharpe']:.2f} | {b['Sharpe']:.2f} | {delta:+.2f} | {j['Ann_Ret']*100:.1f}% | {b['Ann_Ret']*100:.1f}% | {j['Max_DD']*100:.1f}% | {b['Max_DD']*100:.1f}% |")
-        lines.append(f"")
 
     # Aggregate summary
     full_data = results_df[results_df['Period'] == 'Full (2007-2025)']
@@ -729,6 +687,48 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
             else:
                 lines.append(f"| {cls_name} | N/A | N/A | N/A |")
         lines.append(f"")
+
+    # Per-period tables
+    for period_name, _, _ in TIME_PERIODS:
+        period_data = results_df[results_df['Period'] == period_name]
+        if period_data.empty:
+            continue
+
+        lines.append(f"## {period_name}")
+        lines.append(f"")
+        lines.append(f"| Ticker | JM-XGB Sharpe | B&H Sharpe | Delta | JM-XGB Ret | B&H Ret | JM-XGB MDD | B&H MDD |")
+        lines.append(f"|---|---:|---:|---:|---:|---:|---:|---:|")
+
+        for ticker in tickers:
+            jmxgb = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'JM-XGB')]
+            bh = period_data[(period_data['Ticker'] == ticker) & (period_data['Strategy'] == 'B&H')]
+            if jmxgb.empty or bh.empty:
+                continue
+            j = jmxgb.iloc[0]
+            b = bh.iloc[0]
+            if np.isnan(j['Sharpe']):
+                lines.append(f"| {ticker} | N/A | N/A | N/A | N/A | N/A | N/A | N/A |")
+                continue
+            delta = j['Sharpe'] - b['Sharpe']
+            lines.append(f"| {ticker} | {j['Sharpe']:.2f} | {b['Sharpe']:.2f} | {delta:+.2f} | {j['Ann_Ret']*100:.1f}% | {b['Ann_Ret']*100:.1f}% | {j['Max_DD']*100:.1f}% | {b['Max_DD']*100:.1f}% |")
+        lines.append(f"")
+
+    # Parameters
+    lines.append(f"## Strategy Configuration (`{config.name}`)")
+    lines.append(f"")
+    lines.append(f"| Parameter | Value |")
+    lines.append(f"|---|---|")
+    lines.append(f"| Allocation style | {config.allocation_style} |")
+    lines.append(f"| Tuning metric | {config.tuning_metric} |")
+    lines.append(f"| Binary Prob threshold | {config.prob_threshold} |")
+    lines.append(f"| Validation window | {config.validation_window_type} ({VALIDATION_WINDOW_YRS}yrs) |")
+    lines.append(f"| Lambda smoothing | {config.lambda_smoothing} |")
+    lines.append(f"| Lambda ensemble K | {config.lambda_ensemble_k} |")
+    lines.append(f"| Dyn. Feature Select | {config.dynamic_feature_selection} |")
+    lines.append(f"| Online learning | {config.xgb_online_learning} |")
+    lines.append(f"| Lambda grid | {LAMBDA_GRID} |")
+    lines.append(f"| EWMA HL grid | {EWMA_HL_GRID} |")
+    lines.append(f"")
 
     return '\n'.join(lines)
 
