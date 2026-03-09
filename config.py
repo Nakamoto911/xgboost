@@ -1,32 +1,53 @@
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Any
 
-@dataclass
-class StrategyConfig:
-    name: str = "Paper Baseline"
-    
-    # --- Idea 1, 2 & 8: Walk-Forward Tuning Parameters ---
-    tuning_metric: str = "sharpe"        # Options: "sharpe", "sortino"
-    lambda_smoothing: bool = False       # Idea 2: Apply EWMA to selected optimal lambdas across periods
-    lambda_ensemble_k: int = 1           # Idea 8: If > 1, average the OOS probability forecasts of the top K lambdas
-    
-    # --- Idea 3: Window Management ---
-    validation_window_type: str = "rolling" # Options: "rolling" (fixed 5y), "expanding" (growing from 5y)
-    
-    # --- Idea 5 & 6: Signal & Execution Parameters ---
-    prob_threshold: float = 0.50         # Probability threshold for binary bearish classification
-    allocation_style: str = "binary"     # Options: "binary" (0% or 100%), "continuous" (invest 1 - P(bear))
-    
-    # --- Idea 4 & 10: Model & Feature Parameters ---
-    calculate_shap: bool = False         # Whether to calculate SHAP values (can be slow)
-    dynamic_feature_selection: bool = False # Idea 4: Drop bottom 20% of features based on validation importance
-    xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
-    xgb_params: Dict[str, Any] = field(default_factory=lambda: {
+
+def _default_xgb_params():
+    """XGBoost defaults, overridable via XGB_PARAM_* environment variables."""
+    params = {
         "max_depth": 6,
         "n_estimators": 100,
         "learning_rate": 0.3,
         "reg_alpha": 0,
         "reg_lambda": 1,
         "subsample": 1.0,
-        "colsample_bytree": 0.3,
-    })
+        "colsample_bytree": 1.0,
+    }
+    env_map = {
+        'XGB_PARAM_MAX_DEPTH': ('max_depth', int),
+        'XGB_PARAM_N_ESTIMATORS': ('n_estimators', int),
+        'XGB_PARAM_LEARNING_RATE': ('learning_rate', float),
+        'XGB_PARAM_REG_ALPHA': ('reg_alpha', float),
+        'XGB_PARAM_REG_LAMBDA': ('reg_lambda', float),
+        'XGB_PARAM_SUBSAMPLE': ('subsample', float),
+        'XGB_PARAM_COLSAMPLE_BYTREE': ('colsample_bytree', float),
+    }
+    for env_key, (param_name, cast) in env_map.items():
+        val = os.environ.get(env_key)
+        if val is not None:
+            params[param_name] = cast(val)
+    return params
+
+
+@dataclass
+class StrategyConfig:
+    name: str = "Paper Baseline"
+
+    # --- Idea 1, 2 & 8: Walk-Forward Tuning Parameters ---
+    tuning_metric: str = "sharpe"        # Options: "sharpe", "sortino"
+    lambda_smoothing: bool = False       # Idea 2: Apply EWMA to selected optimal lambdas across periods
+    lambda_ensemble_k: int = 1           # Idea 8: If > 1, average the OOS probability forecasts of the top K lambdas
+
+    # --- Idea 3: Window Management ---
+    validation_window_type: str = "rolling" # Options: "rolling" (fixed 5y), "expanding" (growing from 5y)
+
+    # --- Idea 5 & 6: Signal & Execution Parameters ---
+    prob_threshold: float = 0.50         # Probability threshold for binary bearish classification
+    allocation_style: str = "binary"     # Options: "binary" (0% or 100%), "continuous" (invest 1 - P(bear))
+
+    # --- Idea 4 & 10: Model & Feature Parameters ---
+    calculate_shap: bool = False         # Whether to calculate SHAP values (can be slow)
+    dynamic_feature_selection: bool = False # Idea 4: Drop bottom 20% of features based on validation importance
+    xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
+    xgb_params: Dict[str, Any] = field(default_factory=_default_xgb_params)

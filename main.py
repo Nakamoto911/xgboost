@@ -31,6 +31,7 @@ except ImportError:
     sys.modules['distutils'] = d
     sys.modules['distutils.version'] = dv
 
+import os
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -68,6 +69,32 @@ LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
 
 # EWMA halflife candidates for probability smoothing (paper: Section 4.2)
 EWMA_HL_GRID = [0, 2, 4, 8]
+
+# Override from environment variables (used by Diagnostics Launcher to sync with dashboard)
+if os.environ.get('XGB_TARGET_TICKER'):
+    TARGET_TICKER = os.environ['XGB_TARGET_TICKER']
+if os.environ.get('XGB_BOND_TICKER'):
+    BOND_TICKER = os.environ['XGB_BOND_TICKER']
+if os.environ.get('XGB_RISK_FREE_TICKER'):
+    RISK_FREE_TICKER = os.environ['XGB_RISK_FREE_TICKER']
+if os.environ.get('XGB_VIX_TICKER'):
+    VIX_TICKER = os.environ['XGB_VIX_TICKER']
+if os.environ.get('XGB_START_DATE_DATA'):
+    START_DATE_DATA = os.environ['XGB_START_DATE_DATA']
+if os.environ.get('XGB_OOS_START_DATE'):
+    OOS_START_DATE = os.environ['XGB_OOS_START_DATE']
+if os.environ.get('XGB_END_DATE'):
+    END_DATE = os.environ['XGB_END_DATE']
+if os.environ.get('XGB_TRANSACTION_COST'):
+    TRANSACTION_COST = float(os.environ['XGB_TRANSACTION_COST'])
+if os.environ.get('XGB_VALIDATION_WINDOW_YRS'):
+    VALIDATION_WINDOW_YRS = int(os.environ['XGB_VALIDATION_WINDOW_YRS'])
+if os.environ.get('XGB_LAMBDA_GRID'):
+    import json as _json
+    LAMBDA_GRID = _json.loads(os.environ['XGB_LAMBDA_GRID'])
+if os.environ.get('XGB_EWMA_HL_GRID'):
+    import json as _json
+    EWMA_HL_GRID = _json.loads(os.environ['XGB_EWMA_HL_GRID'])
 
 # ==============================================================================
 # 2. STATISTICAL JUMP MODEL (Implementation from scratch)
@@ -179,8 +206,6 @@ class StatisticalJumpModel:
 # ==============================================================================
 # 3. DATA FETCHING & FEATURE ENGINEERING
 # ==============================================================================
-import os
-
 def fetch_and_prepare_data():
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'data_cache.pkl')
     if os.path.exists(cache_file):

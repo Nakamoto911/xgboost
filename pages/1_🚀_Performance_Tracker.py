@@ -46,7 +46,12 @@ PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
 _defaults = {
     'start_date_input': backend.START_DATE_DATA,
     'oos_start_input': backend.OOS_START_DATE,
+    'end_date_input': backend.END_DATE,
     'target_ticker_input': backend.TARGET_TICKER,
+    'bond_ticker_input': backend.BOND_TICKER,
+    'rf_ticker_input': backend.RISK_FREE_TICKER,
+    'vix_ticker_input': backend.VIX_TICKER,
+    'transaction_cost_input': float(backend.TRANSACTION_COST),
     'val_window_input': backend.VALIDATION_WINDOW_YRS,
     'tuning_metric': "sharpe",
     'validation_window_type': "rolling",
@@ -162,13 +167,13 @@ with st.sidebar.form("config_form"):
         )
 
         bond_suffix, bond_help = get_earliest_info(backend.BOND_TICKER)
-        bond_ticker = st.text_input(f"Bond Ticker{bond_suffix}", value=backend.BOND_TICKER, help=bond_help)
-        
+        bond_ticker = st.text_input(f"Bond Ticker{bond_suffix}", value=backend.BOND_TICKER, key='bond_ticker_input', help=bond_help)
+
         rf_suffix, rf_help = get_earliest_info(backend.RISK_FREE_TICKER)
-        risk_free_ticker = st.text_input(f"Risk-Free Ticker{rf_suffix}", value=backend.RISK_FREE_TICKER, help=rf_help)
-        
+        risk_free_ticker = st.text_input(f"Risk-Free Ticker{rf_suffix}", value=backend.RISK_FREE_TICKER, key='rf_ticker_input', help=rf_help)
+
         vix_suffix, vix_help = get_earliest_info(backend.VIX_TICKER)
-        vix_ticker = st.text_input(f"VIX Ticker{vix_suffix}", value=backend.VIX_TICKER, help=vix_help)
+        vix_ticker = st.text_input(f"VIX Ticker{vix_suffix}", value=backend.VIX_TICKER, key='vix_ticker_input', help=vix_help)
 
         # Auto-calculate the latest of all earliest dates
         max_earliest = None
@@ -193,7 +198,7 @@ with st.sidebar.form("config_form"):
         start_date_data = st.text_input("Data Start Date", value=current_sd, key='start_date_input', help=f"Auto-calculated earliest date where all tickers have data: {default_start}")
         oos_val = st.session_state.get('oos_start_input', backend.OOS_START_DATE)
         oos_start_date = st.text_input("OOS Start Date", value=oos_val if oos_val else backend.OOS_START_DATE, key='oos_start_input')
-        end_date = st.text_input("End Date", value=backend.END_DATE)
+        end_date = st.text_input("End Date", value=backend.END_DATE, key='end_date_input')
 
     with st.expander("2. Feature Engineering", expanded=False):
         st.write("Feature parameters configured in code (currently using default).")
@@ -206,11 +211,12 @@ with st.sidebar.form("config_form"):
         st.number_input("Probability Threshold", min_value=0.30, max_value=0.70, step=0.05, format="%.2f", key='prob_threshold')
         st.selectbox("Allocation Style", ["binary", "continuous"], key='allocation_style')
         st.number_input("Lambda Ensemble K", min_value=1, max_value=5, key='lambda_ensemble_k')
-        transaction_cost = st.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
+        transaction_cost = st.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f", key='transaction_cost_input')
 
         grid_preset = st.selectbox(
             "Lambda Grid Preset",
-            ["JM-XGB Improved (10 points)", "Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
+            ["JM-XGB Improved (10 points)", "Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"],
+            key='lambda_grid_preset'
         )
 
         if grid_preset == "JM-XGB Improved (10 points)":
@@ -229,6 +235,7 @@ with st.sidebar.form("config_form"):
             except ValueError:
                 st.error("Invalid Lambda Grid format. Using default.")
                 backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
+        st.session_state['lambda_grid_value'] = backend.LAMBDA_GRID
 
     with st.expander("4. XGBoost Parameters", expanded=False):
         st.selectbox("Tuning Metric", ["sharpe", "sortino"], key='tuning_metric')
