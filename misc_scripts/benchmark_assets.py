@@ -168,7 +168,7 @@ LARGECAP_TICKER = '^SP500TR'  # Paper Table 3: Stock-Bond Corr uses LargeCap vs 
 DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 
 TRANSACTION_COST = 0.0005
-LAMBDA_GRID = [0.0, 3.0, 10.0, 30.0, 100.0]  # 5 candidates (speed; finer grids overfit validation window)
+LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]  # Focused mid-range (Session 4: wide grids overfit validation)
 EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
 
 # Paper-prescribed EWMA halflives per asset (from paper Section 4.2).
@@ -255,20 +255,17 @@ class StatisticalJumpModel:
             states = new_states
         return states
 
-    def predict_online(self, X, last_known_state):
+    def predict_online(self, X, last_known_state=None):
+        """Forward-only Viterbi (online) prediction matching the paper's jumpmodels library."""
         X_arr = np.array(X)
         n_samples = X_arr.shape[0]
-        states = np.zeros(n_samples, dtype=int)
-        prev_state = last_known_state
-        for t in range(n_samples):
-            dist = 0.5 * np.sum((X_arr[t, None, :] - self.means)**2, axis=1)
-            penalty = np.full(self.n_states, self.lambda_penalty)
-            penalty[prev_state] = 0.0
-            costs = dist + penalty
-            current_state = np.argmin(costs)
-            states[t] = current_state
-            prev_state = current_state
-        return states
+        loss_mx = 0.5 * np.sum((X_arr[:, None, :] - self.means[None, :, :])**2, axis=2)
+        penalty_mx = self.lambda_penalty * (1 - np.eye(self.n_states))
+        values = np.empty((n_samples, self.n_states))
+        values[0] = loss_mx[0]
+        for t in range(1, n_samples):
+            values[t] = loss_mx[t] + (values[t-1][:, np.newaxis] + penalty_mx).min(axis=0)
+        return values.argmin(axis=1)
 
 # ── Data Fetching ─────────────────────────────────────────────────────────────
 

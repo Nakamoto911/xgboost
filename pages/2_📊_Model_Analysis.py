@@ -210,25 +210,28 @@ with st.sidebar.form("config_form"):
 
         grid_preset = st.selectbox(
             "Lambda Grid Preset",
-            ["JM-XGB Improved (10 points)", "Default (Fast: 4 points)", "Expanded (Paper: 21 points)", "Custom"]
+            ["Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"]
         )
 
-        if grid_preset == "JM-XGB Improved (10 points)":
+        if grid_preset == "Focused Mid-Range (5 points)":
+            backend.LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]
+            st.caption("Using: 4.64, 10, 21.54, 46.42, 100 (default)")
+        elif grid_preset == "Focused No-100 (4 points)":
+            backend.LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42]
+            st.caption("Using: 4.64, 10, 21.54, 46.42 (best single-asset)")
+        elif grid_preset == "Legacy Wide (11 points)":
             backend.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
             st.caption("Using: 0.0 + 10 log-spaced points up to 100.0")
-        elif grid_preset == "Default (Fast: 4 points)":
-            backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
-            st.caption("Using: 1.0, 10.0, 50.0, 100.0")
-        elif grid_preset == "Expanded (Paper: 21 points)":
+        elif grid_preset == "Expanded (21 points)":
             backend.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20))
             st.caption("Using: 0.0 + 20 log-spaced points up to 100.0")
         else:
-            lambda_grid_str = st.text_input("Custom Grid (comma separated)", "1.0, 10.0, 50.0, 100.0")
+            lambda_grid_str = st.text_input("Custom Grid (comma separated)", "4.64, 10.0, 21.54, 46.42")
             try:
                 backend.LAMBDA_GRID = [float(x.strip()) for x in lambda_grid_str.split(',')]
             except ValueError:
                 st.error("Invalid Lambda Grid format. Using default.")
-                backend.LAMBDA_GRID = [1.0, 10.0, 50.0, 100.0]
+                backend.LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]
         st.session_state['lambda_grid_value'] = backend.LAMBDA_GRID
 
         ewma_grid_preset = st.selectbox(

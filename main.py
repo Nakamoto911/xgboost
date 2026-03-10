@@ -70,9 +70,10 @@ TRANSACTION_COST = 0.0005       # 5 basis points (0.05%)
 # Validation Window (Years)
 VALIDATION_WINDOW_YRS = 5
 
-# Lambda candidate grid for Jump Model (paper: 0.0 to 100.0, log-spaced)
-# Reduced from 20 to 10 candidates to limit walk-forward overfitting on single-asset backtest
-LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))
+# Lambda candidate grid for Jump Model
+# Focused mid-range grid prevents walk-forward overfitting from extreme values (0, 100).
+# Session 4 diagnosis: wide grid [0, logspace(1,100)] → Sharpe 0.54; focused → 0.85.
+LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]
 
 # EWMA halflife candidates for probability smoothing (paper: Section 4.2)
 EWMA_HL_GRID = [0, 2, 4, 8]
@@ -211,25 +212,32 @@ class StatisticalJumpModel:
             
         return states
 
-    def predict_online(self, X, last_known_state):
+    def predict_online(self, X, last_known_state=None):
         """
-        Simulates online/real-time assignment of new data points to clusters,
-        incorporating the jump penalty to prevent excessive switching.
+        Forward-only Viterbi (online) prediction matching the paper's jumpmodels library.
+
+        Runs the DP forward pass accumulating costs from t=0, then assigns each time step
+        to argmin of accumulated values. No backtracking — each prediction at time t uses
+        only data up to t. The last_known_state parameter is accepted for API compatibility
+        but ignored (matching the paper's implementation).
         """
         X_arr = np.array(X)
         n_samples = X_arr.shape[0]
-        states = np.zeros(n_samples, dtype=int)
-        prev_state = last_known_state
-        
-        for t in range(n_samples):
-            dist = 0.5 * np.sum((X_arr[t, None, :] - self.means)**2, axis=1)
-            penalty = np.full(self.n_states, self.lambda_penalty)
-            penalty[prev_state] = 0.0
-            costs = dist + penalty
-            current_state = np.argmin(costs)
-            states[t] = current_state
-            prev_state = current_state
-            
+
+        # Loss matrix: 0.5 * squared Euclidean distance to each cluster center
+        loss_mx = 0.5 * np.sum((X_arr[:, None, :] - self.means[None, :, :])**2, axis=2)  # (n_samples, n_states)
+
+        # Penalty matrix: lambda for state changes, 0 for staying
+        penalty_mx = self.lambda_penalty * (1 - np.eye(self.n_states))
+
+        # DP forward pass (accumulated costs, no backtracking)
+        values = np.empty((n_samples, self.n_states))
+        values[0] = loss_mx[0]
+        for t in range(1, n_samples):
+            values[t] = loss_mx[t] + (values[t-1][:, np.newaxis] + penalty_mx).min(axis=0)
+
+        # Online assignment: argmin of accumulated values at each time step
+        states = values.argmin(axis=1)
         return states
 
 # ==============================================================================

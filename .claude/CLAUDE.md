@@ -63,7 +63,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 
 ### Algorithm Pipeline (in `main.py`)
 1. `fetch_and_prepare_data()` -- Downloads from Yahoo Finance + FRED, engineers features (EWMA-based return/macro features), caches to `cache/data_cache.pkl`
-2. `StatisticalJumpModel` class -- 2-state regime model using alternating optimization (K-means + Viterbi). Optimized fast-path for 2 states in the Viterbi forward pass.
+2. `StatisticalJumpModel` class -- 2-state regime model using alternating optimization (K-means + Viterbi). Optimized fast-path for 2 states in the Viterbi forward pass. `predict_online()` uses forward-only Viterbi (accumulated DP costs, no backtracking) matching the paper's `jumpmodels` library.
 3. `run_period_forecast()` -- For a given date: fits JM on 11-year lookback, trains XGBClassifier on regime labels + macro features, predicts 6-month OOS window. Computes SHAP values. Results cached in `_forecast_cache` dict.
 4. `simulate_strategy()` -- Chains 6-month forecast periods. Applies EWMA smoothing to raw probabilities, thresholds at 0.5, shifts signals by 1 day (look-ahead bias prevention), applies transaction costs.
 5. `walk_forward_backtest(df, config)` -- Walk-forward loop: every 6 months tunes lambda on validation window (maximize Sharpe), then runs OOS chunk with best lambda. Returns DataFrame with `.attrs` metadata (lambda_history, lambda_dates, ewma_halflife).
@@ -82,7 +82,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - `START_DATE_DATA = '1987-01-01'` -- Data start (accommodates 11-year lookback)
 - `OOS_START_DATE = '2007-01-01'` -- Out-of-sample start (paper: 2007-2023)
 - `TRANSACTION_COST = 0.0005` -- 5 basis points
-- `LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))` -- 11 candidates (0 + log-spaced 1 to 100)
+- `LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]` -- Focused mid-range grid (Session 4: wide grids with 0 and extreme values cause walk-forward overfitting)
 - `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing (fallback for unknown tickers)
 - `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate, hl=0: EM/EAFE/HY). Used instead of auto-tuning.
 
@@ -136,7 +136,9 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 ## Known Issues / Paper Gaps
 
 - **XGBoost hyperparameters:** Now using default XGB params (max_depth=6, learning_rate=0.3, no regularization) as the paper specifies. Previous custom regularized params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) caused -0.174 Sharpe delta and made the strategy LOSE to B&H. Switching to defaults fixed this (Session 2, 2026-03-03).
-- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); our config gets ~0.71. Gap from data source (Yahoo vs Bloomberg).
+- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); we get ~0.675 with focused grid. Gap from data source (Yahoo vs Bloomberg).
+- **predict_online fixed (Session 4):** Previous greedy implementation only considered previous state cost, producing sticky regimes (18 shifts vs paper's 46). Now uses forward-only Viterbi (accumulated DP costs) matching the paper's `jumpmodels` library. Sharpe improved from 0.541 to 0.675.
+- **Lambda grid fixed (Session 4):** Wide grid [0, logspace(1,100)] caused walk-forward overfitting. Focused grid [4.64, 10, 21.54, 46.42, 100] prevents extreme lambda picks. Dashboard presets allow testing both.
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
 - **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
 - **EWMA halflife:** Auto-tuning on Yahoo data overfits validation window for some assets. Now using paper-prescribed halflives via `PAPER_EWMA_HL` dict (Session 3, 2026-03-10). Falls back to auto-tuning for tickers not in the dict.
