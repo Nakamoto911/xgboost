@@ -379,7 +379,8 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         config = StrategyConfig()
         
     xgb_key = tuple(sorted(config.xgb_params.items())) if config.xgb_params else ()
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key)
+    ablation_key = getattr(config, 'feature_ablation', 'all')
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key, ablation_key)
     if cache_key in _forecast_cache:
         cached = _forecast_cache[cache_key]
         # If SHAP requested but cached result lacks SHAP columns, recompute
@@ -438,9 +439,17 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         return result
 
     # 2. Regime Forecasting (XGBoost)
-    macro_features = ['Yield_2Y_EWMA_diff', 'Yield_Slope_EWMA_10', 'Yield_Slope_EWMA_diff_21', 
+    macro_features = ['Yield_2Y_EWMA_diff', 'Yield_Slope_EWMA_10', 'Yield_Slope_EWMA_diff_21',
                       'VIX_EWMA_log_diff', 'Stock_Bond_Corr']
-    all_features = return_features + macro_features
+
+    # Feature ablation: select feature subset for XGBoost
+    ablation = getattr(config, 'feature_ablation', 'all')
+    if ablation == 'return_only':
+        all_features = return_features[:]
+    elif ablation == 'macro_only':
+        all_features = macro_features[:]
+    else:
+        all_features = return_features + macro_features
     
     X_train_xgb = train_df[all_features].copy()
     y_train_xgb = train_df['Target_State'].copy()

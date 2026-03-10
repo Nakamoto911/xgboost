@@ -5,6 +5,50 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-10 (Session 5) - Macro Feature Ablation Study
+
+### Objective
+Isolate the impact of macro features (Yield, VIX, Stock_Bond_Corr) on XGBoost prediction quality and strategy performance by testing three feature configurations.
+
+### Changes Made
+1. **`config.py`**: Added `feature_ablation` field ("all", "return_only", "macro_only")
+2. **`main.py`**: Modified `run_period_forecast()` to filter XGBoost features based on `config.feature_ablation`. Added ablation key to `_forecast_cache` to prevent cache collisions.
+3. **`run_macro_ablation.py`** (new): Standalone ablation script with XGBoost quality metrics (accuracy, Brier score, recall) and auto-generated conclusions.
+
+### Results (^SP500TR, 2007-2026)
+
+| Config | Sharpe | Sortino | Ann Ret | Ann Vol | MDD | Δ vs B&H |
+|---|---|---|---|---|---|---|
+| All Features (Baseline) | 0.601 | 0.828 | 8.14% | 11.75% | -20.20% | +0.059 |
+| Return Features Only | 0.519 | 0.714 | 7.99% | 13.87% | -33.79% | -0.022 |
+| **Macro Features Only** | **0.724** | **1.032** | **10.73%** | 13.29% | -22.99% | **+0.183** |
+
+B&H Reference: Sharpe=0.541, Ann Ret=10.77%, MDD=-55.25%
+
+### XGBoost Prediction Quality
+
+| Config | Accuracy | Brier Score | Bear Recall | Bull Recall |
+|---|---|---|---|---|
+| All Features | 0.884 | 0.0896 | 0.774 | 0.938 |
+| Return Only | **0.911** | **0.0735** | **0.810** | **0.952** |
+| Macro Only | 0.799 | 0.1748 | 0.663 | 0.844 |
+
+### Key Findings
+- **Macro-only is best for strategy performance** (Sharpe 0.724 vs 0.601 baseline, +0.183 vs B&H)
+- **Return-only is best for XGBoost accuracy** (0.911 accuracy, 0.0735 Brier) but worst for strategy Sharpe (0.519)
+- **Paradox:** Higher XGBoost accuracy ≠ higher strategy Sharpe. Return features closely track JM labels (self-referential), but macro features provide independent crisis-detection signal.
+- **Macro-only dominates in crises:** GFC +0.740 Sharpe delta vs B&H, COVID +0.975 delta. This is where the strategy earns its alpha.
+- **Lambda stability:** Macro-only has lowest CV (0.71) — macro features produce more stable lambda selections.
+- **MDD improvement:** All configs dramatically reduce MDD vs B&H (-55.25%), but baseline (-20.20%) is best.
+- **Macro feature lift:** +0.082 Sharpe when adding macro to return features (All vs Return-only).
+
+### Implications
+- The return features fed to XGBoost are largely redundant with JM regime labels (both derived from same data). They help XGBoost match JM's classification but don't add strategy-relevant signal.
+- Macro features capture regime shifts through independent channels (yield curve, VIX, stock-bond correlation) that the JM doesn't see, providing genuine forecasting value.
+- Consider testing a "macro-only" configuration as the new default, pending multi-asset validation.
+
+---
+
 ## Session 2026-03-10 (Session 4b) - Implementing predict_online + Lambda Grid Fixes
 
 ### Changes Made

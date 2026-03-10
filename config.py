@@ -51,3 +51,6 @@ class StrategyConfig:
     dynamic_feature_selection: bool = False # Idea 4: Drop bottom 20% of features based on validation importance
     xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
     xgb_params: Dict[str, Any] = field(default_factory=_default_xgb_params)
+
+    # --- Feature Ablation ---
+    feature_ablation: str = "all"        # Options: "all" (default), "return_only", "macro_only"
