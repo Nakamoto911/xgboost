@@ -82,7 +82,8 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - `OOS_START_DATE = '2007-01-01'` -- Out-of-sample start (paper: 2007-2023)
 - `TRANSACTION_COST = 0.0005` -- 5 basis points
 - `LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 10))` -- 11 candidates (0 + log-spaced 1 to 100)
-- `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing
+- `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing (fallback for unknown tickers)
+- `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate, hl=0: EM/EAFE/HY). Used instead of auto-tuning.
 
 ### StrategyConfig (`config.py`)
 Dataclass controlling experiment variants:
@@ -134,9 +135,10 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 ## Known Issues / Paper Gaps
 
 - **XGBoost hyperparameters:** Now using default XGB params (max_depth=6, learning_rate=0.3, no regularization) as the paper specifies. Previous custom regularized params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) caused -0.174 Sharpe delta and made the strategy LOSE to B&H. Switching to defaults fixed this (Session 2, 2026-03-03).
-- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); our paper-comparable config gets ~0.56. Gap likely from data source (Yahoo vs Bloomberg).
-- **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. May affect feature quality.
+- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); our config gets ~0.71. Gap from data source (Yahoo vs Bloomberg).
+- **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
 - **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
+- **EWMA halflife:** Auto-tuning on Yahoo data overfits validation window for some assets. Now using paper-prescribed halflives via `PAPER_EWMA_HL` dict (Session 3, 2026-03-10). Falls back to auto-tuning for tickers not in the dict.
 
 ## Caching
 

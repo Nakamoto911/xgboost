@@ -8,8 +8,13 @@ import pickle
 import json
 import tempfile
 import time
+import importlib
 from datetime import datetime
 import main as backend
+
+# Force reload backend because streamlit caches imported modules!
+importlib.reload(backend)
+
 from config import StrategyConfig
 
 st.set_page_config(layout="wide")
@@ -278,6 +283,11 @@ duration_placeholder = st.sidebar.empty()
 # =============================================================================
 # Data Fetching (cached)
 # =============================================================================
+# Force clear Streamlit cache so the updated backend.fetch_and_prepare_data runs (once)
+if 'cache_cleared_v2' not in st.session_state:
+    st.cache_data.clear()
+    st.session_state.cache_cleared_v2 = True
+
 @st.cache_data
 def get_cached_data(target, bond, rf, vix, start, end):
     backend.TARGET_TICKER = target
@@ -339,6 +349,13 @@ if run_button:
         st.stop()
 
     st.write(f"Running walk-forward backtest ({backend.OOS_START_DATE} to {backend.END_DATE})  |  **{config.name}**")
+    try:
+        with open("cache/debug.txt", "w") as f:
+            f.write(f"df max: {df.index.max()}\n")
+            f.write(f"YF SP500TR length: {len(df)}\n")
+    except Exception as e:
+        pass
+
 
     with st.spinner("Running JM-XGB walk-forward backtest... This may take several minutes."):
         jm_xgb_df = backend.walk_forward_backtest(df, config)

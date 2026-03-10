@@ -238,7 +238,7 @@ class StatisticalJumpModel:
 def fetch_and_prepare_data():
     safe_ticker = TARGET_TICKER.replace('^', '').replace('=', '')
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache',
-                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}.pkl')
+                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}_{END_DATE[:7]}.pkl')
     if os.path.exists(cache_file):
         print("Loading data from local cache...")
         return pd.read_pickle(cache_file)
@@ -282,7 +282,19 @@ def fetch_and_prepare_data():
     data = data.ffill().dropna()
     
     # 2. Fetch FRED Macro data (2-Year and 10-Year Treasury Yields)
-    fred_data = web.DataReader(['DGS2', 'DGS10'], 'fred', START_DATE_DATA, END_DATE)
+    import time
+    fred_data = None
+    for attempt in range(5):
+        try:
+            fred_data = web.DataReader(['DGS2', 'DGS10'], 'fred', START_DATE_DATA, END_DATE)
+            break
+        except Exception as e:
+            print(f"Failed to fetch FRED data (attempt {attempt+1}/5): {e}")
+            time.sleep(2)
+            
+    if fred_data is None:
+        raise ValueError("Failed to download FRED data after 5 attempts.")
+        
     fred_data = fred_data.ffill().dropna()
     
     # Merge datasets

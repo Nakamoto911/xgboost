@@ -306,7 +306,18 @@ def fetch_etf_data(ticker, data_start=None):
         data = pd.concat(raw.values(), axis=1).ffill().dropna()
 
         # FRED macro data
-        fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01').ffill().dropna()
+        import time
+        fred = None
+        for attempt in range(5):
+            try:
+                fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01')
+                break
+            except Exception as e:
+                print(f"Failed to fetch FRED data (attempt {attempt+1}/5): {e}")
+                time.sleep(2)
+        if fred is None:
+            raise ValueError("Failed to download FRED data after 5 attempts.")
+        fred = fred.ffill().dropna()
         df = data.join(fred, how='inner')
 
         if len(df) < 252 * 5:
