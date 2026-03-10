@@ -55,6 +55,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 
 ### Supporting Files
 - `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
+- `refcard.md` -- **Implementation reference card** extracted from the paper. Contains all formulas, hyperparameters, feature definitions, data splits, and numerical results. Use this instead of the full paper when verifying implementation correctness. Includes an "Undisclosed" section listing gaps the paper does not resolve.
 - `misc_scripts/asset_lists.md` -- Named asset lists for multi-asset benchmark (tickers, asset classes, data_start dates). Parsed by `benchmark_assets.py`.
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
@@ -149,16 +150,22 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 
 ## Session Memory & Experiment Tracking
 
-Files in `.claude/`:
-- **MEMORY.md** - Quick reference (auto-loaded each session, keep <200 lines)
+Claude Code has an auto-memory directory that persists across conversations. The memory files are:
+- **MEMORY.md** - Quick reference index (auto-loaded each session, keep <200 lines)
 - **experiments.md** - Chronological log of experiments, findings, and changes (newest first)
 - **performance_gaps.md** - Gap analysis vs paper and improvement priorities
 
-**Instructions for Claude:** When running experiments or making improvements:
-1. Read these files at session start to understand prior context
-2. Update them after each significant finding or change (experiments completed, root causes found, improvements applied)
-3. Keep MEMORY.md as a concise index; use other files for details
-4. Ask user before major updates if unsure
+**MANDATORY for Claude:** You MUST update memory files after significant work:
+1. **At session start:** Read memory files to understand prior context before doing any work.
+2. **After experiments:** Log experiment parameters, results, and conclusions in `experiments.md`. Update `MEMORY.md` if key metrics changed.
+3. **After code changes:** Record what changed and why in `experiments.md`. Update `MEMORY.md` architecture decisions if applicable.
+4. **After findings:** Update `performance_gaps.md` if gap analysis changed. Update `MEMORY.md` current performance numbers.
+5. Keep `MEMORY.md` as a concise index (<200 lines); use topic files for details.
+6. Ask user before major restructuring of memory files.
+
+## Paper Reference
+
+When verifying implementation against the paper, use `refcard.md` (in project root) as the primary reference. It contains all formulas, hyperparameters, pipeline steps, feature definitions, data splits, and numerical results from the paper in a compact format optimized for LLM context. The "Undisclosed" section at the end lists gaps where the paper is ambiguous.
 
 ## Python Compatibility
 
