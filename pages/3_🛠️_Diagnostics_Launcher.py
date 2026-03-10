@@ -176,8 +176,8 @@ SCRIPTS = {
     }
 }
 
-# Scripts that import from main.py / config.py and benefit from env var sync
-SYNCED_SCRIPTS = {"diagnose_pipeline.py", "run_experiments.py"}
+# Scripts that benefit from env var sync with sidebar parameters
+SYNCED_SCRIPTS = {"diagnose_pipeline.py", "run_experiments.py", "misc_scripts/benchmark_assets.py"}
 
 # =============================================================================
 def get_asset_lists():

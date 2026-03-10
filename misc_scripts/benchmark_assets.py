@@ -171,6 +171,15 @@ TRANSACTION_COST = 0.0005
 LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]  # Focused mid-range (Session 4: wide grids overfit validation)
 EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
 
+# Allow env var overrides (from Diagnostics Launcher page 3)
+import json as _json
+if os.environ.get('XGB_TRANSACTION_COST'):
+    TRANSACTION_COST = float(os.environ['XGB_TRANSACTION_COST'])
+if os.environ.get('XGB_LAMBDA_GRID'):
+    LAMBDA_GRID = _json.loads(os.environ['XGB_LAMBDA_GRID'])
+if os.environ.get('XGB_EWMA_HL_GRID'):
+    EWMA_HL_GRID = _json.loads(os.environ['XGB_EWMA_HL_GRID'])
+
 # Paper-prescribed EWMA halflives per asset (from paper Section 4.2).
 # Auto-tuning on Yahoo Finance data overfits the validation window for some assets.
 # When a ticker has a known paper halflife, skip Phase 1 tuning and use it directly.
