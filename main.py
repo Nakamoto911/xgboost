@@ -371,9 +371,14 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         config = StrategyConfig()
         
     xgb_key = tuple(sorted(config.xgb_params.items())) if config.xgb_params else ()
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, config.calculate_shap, xgb_key)
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key)
     if cache_key in _forecast_cache:
-        return _forecast_cache[cache_key]
+        cached = _forecast_cache[cache_key]
+        # If SHAP requested but cached result lacks SHAP columns, recompute
+        if config.calculate_shap and cached is not None and not any(c.startswith('SHAP_') for c in cached.columns):
+            pass  # fall through to recompute
+        else:
+            return cached
 
     train_start = current_date - pd.DateOffset(years=11)
     
