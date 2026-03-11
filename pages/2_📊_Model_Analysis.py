@@ -37,6 +37,12 @@ EXPERIMENT_PRESETS = {
         name="9. Expanding + Lambda Smoothing",
         validation_window_type="expanding", lambda_smoothing=True,
     ),
+    "10. Median-Positive Lambda": StrategyConfig(
+        name="10. Median-Positive Lambda", lambda_selection="median_positive",
+    ),
+    "11. Sub-Window Consensus": StrategyConfig(
+        name="11. Sub-Window Consensus", lambda_subwindow_consensus=True,
+    ),
 }
 PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
 
@@ -54,6 +60,8 @@ _defaults = {
     'prob_threshold': 0.50,
     'allocation_style': "binary",
     'lambda_ensemble_k': 1,
+    'lambda_selection': "best",
+    'lambda_subwindow_consensus': False,
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -90,6 +98,8 @@ def on_preset_change():
     st.session_state.prob_threshold = cfg.prob_threshold
     st.session_state.allocation_style = cfg.allocation_style
     st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
+    st.session_state.lambda_selection = cfg.lambda_selection
+    st.session_state.lambda_subwindow_consensus = cfg.lambda_subwindow_consensus
     st.session_state.xgb_max_depth = 6
     st.session_state.xgb_n_estimators = 100
     st.session_state.xgb_learning_rate = 0.3
@@ -112,6 +122,8 @@ def on_strategy_param_change():
         abs(st.session_state.prob_threshold - cfg.prob_threshold) < 0.001 and
         st.session_state.allocation_style == cfg.allocation_style and
         st.session_state.lambda_ensemble_k == cfg.lambda_ensemble_k and
+        st.session_state.lambda_selection == cfg.lambda_selection and
+        st.session_state.lambda_subwindow_consensus == cfg.lambda_subwindow_consensus and
         st.session_state.xgb_max_depth == 6 and
         st.session_state.xgb_n_estimators == 100 and
         abs(st.session_state.xgb_learning_rate - 0.3) < 0.001 and
@@ -206,6 +218,10 @@ with st.sidebar.form("config_form"):
         st.number_input("Probability Threshold", min_value=0.30, max_value=0.70, step=0.05, format="%.2f", key='prob_threshold')
         st.selectbox("Allocation Style", ["binary", "continuous"], key='allocation_style')
         st.number_input("Lambda Ensemble K", min_value=1, max_value=5, key='lambda_ensemble_k')
+        st.selectbox("Lambda Selection", ["best", "median_positive"], key='lambda_selection',
+                     help="'best' = argmax(validation Sharpe). 'median_positive' = median of all lambdas with positive validation Sharpe (more robust).")
+        st.checkbox("Sub-Window Consensus", key='lambda_subwindow_consensus',
+                    help="Split validation into 3 overlapping sub-windows, find best lambda in each, take median. More robust to validation noise.")
         transaction_cost = st.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
 
         grid_preset = st.selectbox(
@@ -315,6 +331,8 @@ if run_button:
         prob_threshold=st.session_state.prob_threshold,
         allocation_style=st.session_state.allocation_style,
         lambda_ensemble_k=st.session_state.lambda_ensemble_k,
+        lambda_selection=st.session_state.lambda_selection,
+        lambda_subwindow_consensus=st.session_state.lambda_subwindow_consensus,
         xgb_params=xgb_params,
         calculate_shap=st.session_state.calculate_shap,
     )

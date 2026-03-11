@@ -603,30 +603,33 @@ def backtest_single_asset(args):
             lambda_scores = []
 
             if config.lambda_subwindow_consensus:
-                # Split validation into 3 overlapping sub-windows, find best lambda in each, take median
+                # Run simulate_strategy ONCE per lambda for full validation window (hits cache),
+                # then slice into 3 overlapping sub-windows and evaluate each independently.
                 val_duration = (current_date - val_start).days
-                sub_window_size = max(val_duration // 2, 252 * 2)
-                sub_starts = [
-                    val_start,
-                    val_start + pd.DateOffset(days=val_duration // 4),
-                    val_start + pd.DateOffset(days=val_duration // 2),
+                sub_boundaries = [
+                    (val_start, val_start + pd.DateOffset(days=val_duration // 2)),
+                    (val_start + pd.DateOffset(days=val_duration // 4), val_start + pd.DateOffset(days=3 * val_duration // 4)),
+                    (val_start + pd.DateOffset(days=val_duration // 2), current_date),
                 ]
-                sub_best_lambdas = []
-                for sw_start in sub_starts:
-                    sw_end = min(sw_start + pd.DateOffset(days=sub_window_size), current_date)
-                    sw_scores = []
-                    for lmbda in LAMBDA_GRID:
-                        val_res = simulate_strategy_fast(df, sw_start, sw_end, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
-                        if not val_res.empty:
-                            _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                sub_best_lambdas = [[] for _ in sub_boundaries]
+                for lmbda in LAMBDA_GRID:
+                    val_res = simulate_strategy_fast(df, val_start, current_date, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+                    if val_res.empty:
+                        continue
+                    for sw_idx, (sw_start, sw_end) in enumerate(sub_boundaries):
+                        sw_slice = val_res[(val_res.index >= sw_start) & (val_res.index < sw_end)]
+                        if len(sw_slice) >= 60:
+                            _, _, sharpe, sortino, _ = calculate_metrics(sw_slice['Strat_Return'], sw_slice['RF_Rate'])
                             metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
                             if not np.isnan(metric_val):
-                                sw_scores.append((metric_val, lmbda))
+                                sub_best_lambdas[sw_idx].append((metric_val, lmbda))
+                consensus_lambdas = []
+                for sw_scores in sub_best_lambdas:
                     if sw_scores:
                         sw_scores.sort(key=lambda x: x[0], reverse=True)
-                        sub_best_lambdas.append(sw_scores[0][1])
-                if sub_best_lambdas:
-                    best_lambda = float(np.median(sub_best_lambdas))
+                        consensus_lambdas.append(sw_scores[0][1])
+                if consensus_lambdas:
+                    best_lambda = float(np.median(consensus_lambdas))
                     best_lambdas = [best_lambda]
                     lambda_scores = [(0.0, best_lambda)]
                 else:

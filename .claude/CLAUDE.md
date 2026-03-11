@@ -72,8 +72,18 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - State 0 = Bullish (invest in target asset), State 1 = Bearish (rotate to risk-free). States are aligned after fitting so State 0 always has higher cumulative excess return.
 - Forecast signal is shifted +1 day before applying to returns to prevent look-ahead bias.
 - Binary 0/1 allocation is the strategy's core strength. Experiments proved continuous allocation and higher thresholds destroy performance.
-- `1_🚀_Performance_Tracker.py` sidebar has an experiment preset selector (all 9 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
+- `1_🚀_Performance_Tracker.py` and `2_📊_Model_Analysis.py` sidebars both have an experiment preset selector (all 11 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
 - The dashboard mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass data/grid configuration from sidebar controls.
+
+### Dashboard Deployment Rule (MANDATORY)
+**When any algorithm improvement is made (new StrategyConfig fields, new experiment presets, new walk-forward logic, etc.), it MUST be deployed to ALL Streamlit pages simultaneously.** Specifically:
+1. Add new `StrategyConfig` fields to `config.py`.
+2. Implement the logic in `main.py` (`walk_forward_backtest`) and `benchmark_assets.py`.
+3. Add sidebar controls for the new options in BOTH `pages/1_🚀_Performance_Tracker.py` AND `pages/2_📊_Model_Analysis.py`.
+4. Add session state defaults, `on_preset_change()` sync, `on_strategy_param_change()` detection, and `StrategyConfig()` construction in BOTH pages.
+5. Add a new experiment preset in `EXPERIMENT_PRESETS` dict (in both pages) and in `run_experiments.py` `EXPERIMENTS` list.
+6. If the new technique is the best-performing, make it the **default preset** (index=0 in the selectbox) so users get it by default.
+7. The dashboard pages share an identical `EXPERIMENT_PRESETS` dict — keep them in sync at all times.
 
 ## Configuration
 
@@ -89,16 +99,18 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 ### StrategyConfig (`config.py`)
 Dataclass controlling experiment variants:
 - `tuning_metric`: "sharpe" (default/paper) or "sortino"
-- `lambda_smoothing`: bool -- EWMA smooth lambda selection across periods (recommended: True)
+- `lambda_smoothing`: bool -- EWMA smooth lambda selection across periods
 - `lambda_ensemble_k`: int -- if > 1, average top-K lambda forecasts
 - `validation_window_type`: "rolling" (default/paper, 5yr) or "expanding"
 - `prob_threshold`: float (default 0.50, paper: 0.50)
 - `allocation_style`: "binary" (default/paper) or "continuous"
+- `lambda_selection`: "best" (default, argmax) or "median_positive" (median of positive-Sharpe lambdas, most stable CV=0.26)
+- `lambda_subwindow_consensus`: bool -- split validation into 3 overlapping sub-windows, take median best-lambda (best avg Sharpe across assets)
 - `xgb_params`: dict with XGBoost hyperparameters (default: XGBoost defaults per paper -- max_depth=6, learning_rate=0.3, no regularization)
 
 ## Experiment Framework
 
-### Available Experiments (in `run_experiments.py`)
+### Available Experiments (in `run_experiments.py` and dashboard EXPERIMENT_PRESETS)
 1. Paper Baseline (reference)
 2. Sortino Tuned
 3. Conservative Threshold (0.6)
@@ -108,6 +120,8 @@ Dataclass controlling experiment variants:
 7. Lambda Ensemble (Top 3)
 8. The Ultimate Combo
 9. Expanding + Lambda Smoothing
+10. Median-Positive Lambda (most stable, CV=0.26)
+11. Sub-Window Consensus (best avg Sharpe across multi-asset)
 
 ### Report Output
 Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:
@@ -118,8 +132,8 @@ Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:
 - Future enhancements backlog with priority/risk ratings
 
 ### Key Findings (as of 2026-03-11)
-- **LargeCap Sharpe ~0.83** vs B&H ~0.54 with dense 8pt grid (Sessions 4b+5)
-- **Multi-asset: 7/11 WIN (64%)** on Long History assets with dense grid + NAESX hl=2 (Session 5)
+- **LargeCap Sharpe 0.698** (Sub-Window Consensus) vs B&H 0.541 with dense 8pt grid (Session 9)
+- **Multi-asset baseline: 7/11 WIN (64%)**, Sub-Window Consensus: 6/11 WIN but best avg Sharpe 0.560 (Session 9)
 - **Binary 0/1 signal is essential** -- experiments #3, #4, #8 proved continuous/threshold changes destroy performance
 - **Strategy wins in crises, loses in bull markets** -- GFC: strong outperformance; Recovery/COVID: underperformance
 - **No single global lambda grid is optimal for all assets** -- different asset classes need different lambda ranges (Session 5)
