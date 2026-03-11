@@ -82,9 +82,9 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - `START_DATE_DATA = '1987-01-01'` -- Data start (accommodates 11-year lookback)
 - `OOS_START_DATE = '2007-01-01'` -- Out-of-sample start (paper: 2007-2023)
 - `TRANSACTION_COST = 0.0005` -- 5 basis points
-- `LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]` -- Focused mid-range grid (Session 4: wide grids with 0 and extreme values cause walk-forward overfitting)
+- `LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]` -- Dense 8-pt mid-range grid (Session 5: fills gaps for multi-asset; avoids low λ<4.6 that WF overpicks)
 - `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing (fallback for unknown tickers)
-- `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate, hl=0: EM/EAFE/HY). Used instead of auto-tuning.
+- `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate/NAESX, hl=0: EM/EAFE/HY). Used instead of auto-tuning.
 
 ### StrategyConfig (`config.py`)
 Dataclass controlling experiment variants:

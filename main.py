@@ -73,7 +73,7 @@ VALIDATION_WINDOW_YRS = 5
 # Lambda candidate grid for Jump Model
 # Focused mid-range grid prevents walk-forward overfitting from extreme values (0, 100).
 # Session 4 diagnosis: wide grid [0, logspace(1,100)] → Sharpe 0.54; focused → 0.85.
-LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]
+LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]  # Dense 8-pt mid-range (Session 5)
 
 # EWMA halflife candidates for probability smoothing (paper: Section 4.2)
 EWMA_HL_GRID = [0, 2, 4, 8]
@@ -85,7 +85,7 @@ PAPER_EWMA_HL = {
     # hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury
     '^SP500TR': 8, 'IVV': 8,           # LargeCap
     'IJH': 8, 'VIMSX': 8,              # MidCap
-    'IWM': 8, 'NAESX': 8,              # SmallCap
+    'IWM': 8, 'NAESX': 2,              # SmallCap (Session 5: Yahoo needs hl=2)
     'IYR': 8, 'FRESX': 8,              # REIT
     'AGG': 8, 'VBMFX': 8,              # AggBond
     'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,  # Treasury

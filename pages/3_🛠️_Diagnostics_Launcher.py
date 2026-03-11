@@ -58,12 +58,15 @@ with st.sidebar.expander("Jump Model", expanded=False):
 
     grid_preset = st.selectbox(
         "Lambda Grid Preset",
-        ["Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"],
+        ["Dense Mid-Range (8 points)", "Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"],
         key='lambda_grid_preset'
     )
-    if grid_preset == "Focused Mid-Range (5 points)":
+    if grid_preset == "Dense Mid-Range (8 points)":
+        lambda_grid = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]
+        st.caption("4.64, 10, 15, 21.54, 30, 46.42, 70, 100 (default)")
+    elif grid_preset == "Focused Mid-Range (5 points)":
         lambda_grid = [4.64, 10.0, 21.54, 46.42, 100.0]
-        st.caption("4.64, 10, 21.54, 46.42, 100 (default)")
+        st.caption("4.64, 10, 21.54, 46.42, 100")
     elif grid_preset == "Focused No-100 (4 points)":
         lambda_grid = [4.64, 10.0, 21.54, 46.42]
         st.caption("4.64, 10, 21.54, 46.42 (best single-asset)")
@@ -74,12 +77,12 @@ with st.sidebar.expander("Jump Model", expanded=False):
         lambda_grid = [0.0] + list(np.logspace(0, 2, 20))
         st.caption("0.0 + 20 log-spaced points up to 100.0")
     else:
-        lambda_grid_str = st.text_input("Custom Grid (comma separated)", "4.64, 10.0, 21.54, 46.42")
+        lambda_grid_str = st.text_input("Custom Grid (comma separated)", "4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0")
         try:
             lambda_grid = [float(x.strip()) for x in lambda_grid_str.split(',')]
         except ValueError:
             st.error("Invalid Lambda Grid format. Using default.")
-            lambda_grid = [4.64, 10.0, 21.54, 46.42, 100.0]
+            lambda_grid = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]
     st.session_state['lambda_grid_value'] = lambda_grid
 
     ewma_grid_preset = st.selectbox(
