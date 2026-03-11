@@ -601,20 +601,62 @@ def backtest_single_asset(args):
                 val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
 
             lambda_scores = []
-            for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy_fast(df, val_start, current_date, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
-                if not val_res.empty:
-                    _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
-                    metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
-                    if not np.isnan(metric_val):
-                        lambda_scores.append((metric_val, lmbda))
-                        
-            lambda_scores.sort(key=lambda x: x[0], reverse=True)
-            if not lambda_scores:
-                lambda_scores = [(0.0, LAMBDA_GRID[len(LAMBDA_GRID)//2])]
-                
-            best_lambdas = [l for _, l in lambda_scores[:max(1, config.lambda_ensemble_k)]]
-            best_lambda = best_lambdas[0]
+
+            if config.lambda_subwindow_consensus:
+                # Split validation into 3 overlapping sub-windows, find best lambda in each, take median
+                val_duration = (current_date - val_start).days
+                sub_window_size = max(val_duration // 2, 252 * 2)
+                sub_starts = [
+                    val_start,
+                    val_start + pd.DateOffset(days=val_duration // 4),
+                    val_start + pd.DateOffset(days=val_duration // 2),
+                ]
+                sub_best_lambdas = []
+                for sw_start in sub_starts:
+                    sw_end = min(sw_start + pd.DateOffset(days=sub_window_size), current_date)
+                    sw_scores = []
+                    for lmbda in LAMBDA_GRID:
+                        val_res = simulate_strategy_fast(df, sw_start, sw_end, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+                        if not val_res.empty:
+                            _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                            metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                            if not np.isnan(metric_val):
+                                sw_scores.append((metric_val, lmbda))
+                    if sw_scores:
+                        sw_scores.sort(key=lambda x: x[0], reverse=True)
+                        sub_best_lambdas.append(sw_scores[0][1])
+                if sub_best_lambdas:
+                    best_lambda = float(np.median(sub_best_lambdas))
+                    best_lambdas = [best_lambda]
+                    lambda_scores = [(0.0, best_lambda)]
+                else:
+                    best_lambda = LAMBDA_GRID[len(LAMBDA_GRID) // 2]
+                    best_lambdas = [best_lambda]
+                    lambda_scores = [(0.0, best_lambda)]
+            else:
+                for lmbda in LAMBDA_GRID:
+                    val_res = simulate_strategy_fast(df, val_start, current_date, lmbda, cache, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+                    if not val_res.empty:
+                        _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
+                        metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
+                        if not np.isnan(metric_val):
+                            lambda_scores.append((metric_val, lmbda))
+
+                lambda_scores.sort(key=lambda x: x[0], reverse=True)
+                if not lambda_scores:
+                    lambda_scores = [(0.0, LAMBDA_GRID[len(LAMBDA_GRID)//2])]
+
+                if config.lambda_selection == 'median_positive':
+                    positive_lambdas = [lam for score, lam in lambda_scores if score > 0]
+                    if positive_lambdas:
+                        best_lambda = float(np.median(positive_lambdas))
+                        best_lambdas = [best_lambda]
+                    else:
+                        best_lambdas = [l for _, l in lambda_scores[:max(1, config.lambda_ensemble_k)]]
+                        best_lambda = best_lambdas[0]
+                else:
+                    best_lambdas = [l for _, l in lambda_scores[:max(1, config.lambda_ensemble_k)]]
+                    best_lambda = best_lambdas[0]
 
             if config.lambda_smoothing and lambda_history:
                 best_lambda = (0.7 * best_lambda) + (0.3 * lambda_history[-1])

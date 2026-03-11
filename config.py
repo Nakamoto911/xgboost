@@ -52,5 +52,9 @@ class StrategyConfig:
     xgb_online_learning: bool = False    # Idea 10: Use XGBoost incremental learning (xgb_model) across chunks
     xgb_params: Dict[str, Any] = field(default_factory=_default_xgb_params)
 
+    # --- Lambda Selection Strategy ---
+    lambda_selection: str = "best"       # Options: "best" (argmax), "median_positive" (median of positive-Sharpe lambdas)
+    lambda_subwindow_consensus: bool = False  # Split validation into sub-windows, take median best-lambda
+
     # --- Feature Ablation ---
     feature_ablation: str = "all"        # Options: "all" (default), "return_only", "macro_only"

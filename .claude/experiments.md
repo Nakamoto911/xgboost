@@ -5,6 +5,70 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-11 (Session 9) - Walk-Forward Lambda Selection Robustness
+
+**Goal:** Close the gap between Walk-Forward (WF) and Oracle (best fixed lambda) results across the multi-asset universe. Test existing experiment configs + brainstorm new ideas.
+
+### Part 1: Existing Experiments on LargeCap (^SP500TR, 2007-2026)
+
+| # | Experiment | Sharpe | Delta vs B&H | Lambda CV | Notes |
+|---|---|---|---|---|---|
+| 1 | Paper Baseline | 0.696 | +0.155 | 0.74 | Reference |
+| 2 | Sortino Tuned | 0.696 | +0.155 | 0.74 | Identical to baseline (Sharpe/Sortino agree on lambda ranking) |
+| 5 | Lambda Smoothing | 0.640 | +0.099 | 0.63 | Worse Sharpe, better stability |
+| 6 | Expanding Window | 0.646 | +0.105 | **0.34** | Best stability, but lower Sharpe. Locks onto λ=70 |
+| 7 | Lambda Ensemble (Top 3) | 0.652 | +0.111 | 0.74 | Same lambda picks as baseline (prob averaging didn't help) |
+
+### Part 2: New Ideas on LargeCap
+
+| # | Experiment | Sharpe | Delta vs B&H | Lambda CV | Notes |
+|---|---|---|---|---|---|
+| 10 | Median-Positive Lambda | 0.642 | +0.101 | **0.26** | Best stability ever, but sacrifices Sharpe. Picks median of positive-Sharpe lambdas |
+| 11 | Sub-Window Consensus | 0.698 | +0.157 | 0.71 | **Best Sharpe!** GFC Sharpe 0.747 (vs 0.141 baseline). Splits validation into 3 overlapping sub-windows, takes median best-lambda |
+
+### Part 3: Multi-Asset Comparison (11 assets, 2007-2023)
+
+| Strategy | Avg Sharpe | Win Rate (vs B&H) | Avg Delta vs B&H |
+|---|---|---|---|
+| **Sub-Window Consensus** | **0.560** | 55% (6/11) | **+0.126** |
+| Baseline | 0.550 | **64% (7/11)** | +0.116 |
+| Median-Positive | 0.541 | 45% (5/11) | +0.107 |
+| Expanding Window | 0.535 | 45% (5/11) | +0.100 |
+| Expanding+Smoothing | 0.527 | 45% (5/11) | +0.092 |
+
+Per-asset detail:
+
+| Ticker | Asset | Baseline | SubWindow | Expanding | MedianPos | Exp+Smooth | Paper |
+|---|---|---|---|---|---|---|---|
+| ^SP500TR | LargeCap | 0.643 | 0.614 | 0.678 | 0.631 | 0.678 | 0.79 |
+| VIMSX | MidCap | 0.536 | 0.589 | 0.581 | 0.670 | 0.588 | 0.63 |
+| NAESX | SmallCap | 0.414 | 0.389 | 0.338 | 0.346 | 0.336 | 0.51 |
+| FDIVX | EAFE | 0.143 | 0.179 | 0.161 | 0.124 | 0.187 | 0.73 |
+| VEIEX | EM | 0.465 | 0.512 | 0.379 | 0.402 | 0.388 | 0.85 |
+| FRESX | REIT | 0.231 | 0.369 | 0.209 | 0.247 | 0.251 | 0.43 |
+| VBMFX | AggBond | 0.722 | 0.617 | 0.522 | 0.590 | 0.520 | 1.14 |
+| VUSTX | Treasury | 0.231 | 0.383 | 0.382 | 0.359 | 0.359 | 0.48 |
+| VWEHX | HighYield | 2.151 | 2.064 | 2.314 | 2.029 | 2.314 | 1.88 |
+| VWESX | Corporate | 0.496 | 0.448 | 0.214 | 0.450 | 0.234 | 1.53 |
+| GC=F | Gold | 0.022 | 0.000 | 0.101 | 0.106 | -0.058 | 0.08 |
+
+### Conclusions
+
+1. **No single WF strategy dominates across all assets.** Sub-Window Consensus has the best average but lower win rate than Baseline.
+2. **Sub-Window Consensus is the best new idea** — best avg Sharpe (0.560) and best avg delta vs B&H (+0.126). Especially strong on assets where Baseline struggles (REIT +0.138, Treasury +0.152, EM +0.047).
+3. **Sortino tuning is useless for LargeCap** — identical lambda picks as Sharpe tuning.
+4. **Expanding Window + Lambda Smoothing combinations hurt** — too much inertia, fails on regime-switching assets.
+5. **Median-Positive Lambda is the most stable** (CV=0.26) but sacrifices too much Sharpe (-0.054 vs Baseline avg).
+6. **The fundamental Oracle-vs-WF gap persists** because different asset classes need fundamentally different lambda ranges, and the 5yr validation window can't reliably distinguish them.
+7. **Code changes:** Added `lambda_selection` ("best"/"median_positive") and `lambda_subwindow_consensus` (bool) to `StrategyConfig` and implemented in both `main.py` and `benchmark_assets.py`. Added experiments 2-11 to `run_experiments.py`.
+
+### Implementation Details
+
+- **Median-Positive Lambda:** Instead of argmax(validation Sharpe), takes the median lambda among all grid candidates with positive validation Sharpe. Forces selection toward the center of the "good" lambdas.
+- **Sub-Window Consensus:** Splits the 5yr validation window into 3 overlapping sub-windows (each ~2.5yr), finds best lambda in each sub-window independently, takes the median. Reduces sensitivity to any single validation regime.
+
+---
+
 ## Session 2026-03-11 (Session 8) - JM Implementation Fix: k-means++ & Multi-Init
 
 **Goal:** Isolate why our JM-only baseline underperforms the paper's JM-only Sharpe (Table 4). Fix the underlying math/logic to match the paper's `jumpmodels` library without look-ahead bias.
