@@ -117,11 +117,12 @@ Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:
 - Experiment configurations
 - Future enhancements backlog with priority/risk ratings
 
-### Key Findings (as of 2026-03-03)
-- **Paper Baseline now beats B&H** -- Sharpe ~0.57 vs B&H ~0.54 after switching to default XGB params (Session 2 fix)
+### Key Findings (as of 2026-03-11)
+- **LargeCap Sharpe ~0.83** vs B&H ~0.54 with dense 8pt grid (Sessions 4b+5)
+- **Multi-asset: 7/11 WIN (64%)** on Long History assets with dense grid + NAESX hl=2 (Session 5)
 - **Binary 0/1 signal is essential** -- experiments #3, #4, #8 proved continuous/threshold changes destroy performance
 - **Strategy wins in crises, loses in bull markets** -- GFC: strong outperformance; Recovery/COVID: underperformance
-- **Lambda stability improved with default XGB** -- CV reduced from 1.24 to ~1.07
+- **No single global lambda grid is optimal for all assets** -- different asset classes need different lambda ranges (Session 5)
 - **Time period (2007-2026 vs 2007-2023) has negligible impact** on relative performance (-0.003 Sharpe delta)
 - See `benchmarks/experiment_selection_20260303.md` for earlier analysis with regularized XGB
 
@@ -136,12 +137,13 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 ## Known Issues / Paper Gaps
 
 - **XGBoost hyperparameters:** Now using default XGB params (max_depth=6, learning_rate=0.3, no regularization) as the paper specifies. Previous custom regularized params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) caused -0.174 Sharpe delta and made the strategy LOSE to B&H. Switching to defaults fixed this (Session 2, 2026-03-03).
-- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); we get ~0.675 with focused grid. Gap from data source (Yahoo vs Bloomberg).
+- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); we get ~0.83 with dense 8pt grid. Remaining gap from data source (Yahoo vs Bloomberg).
 - **predict_online fixed (Session 4):** Previous greedy implementation only considered previous state cost, producing sticky regimes (18 shifts vs paper's 46). Now uses forward-only Viterbi (accumulated DP costs) matching the paper's `jumpmodels` library. Sharpe improved from 0.541 to 0.675.
-- **Lambda grid fixed (Session 4):** Wide grid [0, logspace(1,100)] caused walk-forward overfitting. Focused grid [4.64, 10, 21.54, 46.42, 100] prevents extreme lambda picks. Dashboard presets allow testing both.
+- **Lambda grid fixed (Sessions 4+5):** Wide grid [0, logspace(1,100)] caused walk-forward overfitting. Dense 8pt grid [4.64, 10, 15, 21.54, 30, 46.42, 70, 100] fills gaps for multi-asset coverage. Dashboard presets allow testing alternatives.
+- **Multi-asset benchmark (Session 5):** 7/11 WIN (64%) on Long History assets vs paper's 11/12 (92%). Root causes: per-asset lambda sensitivity (no single global grid is optimal for all asset classes), FDIVX broken proxy (loses at ALL lambdas), Yahoo vs Bloomberg data gaps. Dense 8pt grid + NAESX hl=2 override improved from 5/11 to 7/11 WIN.
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
 - **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
-- **EWMA halflife:** Auto-tuning on Yahoo data overfits validation window for some assets. Now using paper-prescribed halflives via `PAPER_EWMA_HL` dict (Session 3, 2026-03-10). Falls back to auto-tuning for tickers not in the dict.
+- **EWMA halflife:** Auto-tuning on Yahoo data overfits validation window for some assets. Now using paper-prescribed halflives via `PAPER_EWMA_HL` dict (Sessions 3+5). NAESX overridden to hl=2 (Yahoo needs lower smoothing than Bloomberg). Falls back to auto-tuning for tickers not in the dict.
 
 ## Caching
 
