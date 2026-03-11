@@ -217,57 +217,89 @@ DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',        # AggBond proxies
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
 
 class StatisticalJumpModel:
-    def __init__(self, n_states=2, lambda_penalty=10.0, max_iter=20):
+    """Matches the paper's jumpmodels library: k-means++ init, n_init=10, max_iter=1000, tol=1e-8."""
+    def __init__(self, n_states=2, lambda_penalty=10.0, max_iter=1000, n_init=10, tol=1e-8):
         self.n_states = n_states
         self.lambda_penalty = lambda_penalty
         self.max_iter = max_iter
+        self.n_init = n_init
+        self.tol = tol
         self.means = None
+        self.val_ = np.inf
+
+    def _viterbi_full(self, X_arr, distances):
+        """Full Viterbi (forward + backtrack) for E-step during fitting."""
+        n_samples = X_arr.shape[0]
+        cost_matrix = np.zeros((n_samples, self.n_states))
+        back_pointers = np.zeros((n_samples, self.n_states), dtype=int)
+        cost_matrix[0] = distances[0]
+        penalty_matrix = self.lambda_penalty * (1 - np.eye(self.n_states))
+
+        for t in range(1, n_samples):
+            c00 = cost_matrix[t-1, 0]
+            c10 = cost_matrix[t-1, 1] + self.lambda_penalty
+            if c00 <= c10:
+                cost_matrix[t, 0] = c00 + distances[t, 0]
+                back_pointers[t, 0] = 0
+            else:
+                cost_matrix[t, 0] = c10 + distances[t, 0]
+                back_pointers[t, 0] = 1
+            c01 = cost_matrix[t-1, 0] + self.lambda_penalty
+            c11 = cost_matrix[t-1, 1]
+            if c01 <= c11:
+                cost_matrix[t, 1] = c01 + distances[t, 1]
+                back_pointers[t, 1] = 0
+            else:
+                cost_matrix[t, 1] = c11 + distances[t, 1]
+                back_pointers[t, 1] = 1
+
+        states = np.zeros(n_samples, dtype=int)
+        states[-1] = np.argmin(cost_matrix[-1])
+        obj_val = cost_matrix[-1, states[-1]]
+        for t in range(n_samples - 2, -1, -1):
+            states[t] = back_pointers[t+1, states[t+1]]
+        return states, obj_val
 
     def fit_predict(self, X):
+        from sklearn.cluster import kmeans_plusplus
+        from sklearn.utils import check_random_state
+
         X_arr = np.array(X)
         n_samples, n_features = X_arr.shape
-        np.random.seed(42)
-        idx = np.random.choice(n_samples, self.n_states, replace=False)
-        self.means = X_arr[idx].copy()
-        states = np.zeros(n_samples, dtype=int)
+        rng = check_random_state(42)
+        best_states = None
+        best_val = np.inf
+        best_means = None
 
-        for _ in range(self.max_iter):
-            distances = 0.5 * np.sum((X_arr[:, None, :] - self.means[None, :, :])**2, axis=2)
-            cost_matrix = np.zeros((n_samples, self.n_states))
-            back_pointers = np.zeros((n_samples, self.n_states), dtype=int)
-            cost_matrix[0] = distances[0]
+        for init_idx in range(self.n_init):
+            centers, _ = kmeans_plusplus(X_arr, self.n_states, random_state=rng)
+            means = centers.copy()
+            states = np.zeros(n_samples, dtype=int)
+            val_prev = np.inf
 
-            for t in range(1, n_samples):
-                c00 = cost_matrix[t-1, 0]
-                c10 = cost_matrix[t-1, 1] + self.lambda_penalty
-                if c00 <= c10:
-                    cost_matrix[t, 0] = c00 + distances[t, 0]
-                    back_pointers[t, 0] = 0
-                else:
-                    cost_matrix[t, 0] = c10 + distances[t, 0]
-                    back_pointers[t, 0] = 1
-                c01 = cost_matrix[t-1, 0] + self.lambda_penalty
-                c11 = cost_matrix[t-1, 1]
-                if c01 <= c11:
-                    cost_matrix[t, 1] = c01 + distances[t, 1]
-                    back_pointers[t, 1] = 0
-                else:
-                    cost_matrix[t, 1] = c11 + distances[t, 1]
-                    back_pointers[t, 1] = 1
+            for iteration in range(self.max_iter):
+                distances = 0.5 * np.sum((X_arr[:, None, :] - means[None, :, :])**2, axis=2)
+                new_states, obj_val = self._viterbi_full(X_arr, distances)
+                for k in range(self.n_states):
+                    mask = (new_states == k)
+                    if np.sum(mask) > 0:
+                        means[k] = np.mean(X_arr[mask], axis=0)
+                if np.array_equal(states, new_states) or (val_prev - obj_val <= self.tol):
+                    states = new_states
+                    break
+                val_prev = obj_val
+                states = new_states
 
-            new_states = np.zeros(n_samples, dtype=int)
-            new_states[-1] = np.argmin(cost_matrix[-1])
-            for t in range(n_samples - 2, -1, -1):
-                new_states[t] = back_pointers[t+1, new_states[t+1]]
+            distances = 0.5 * np.sum((X_arr[:, None, :] - means[None, :, :])**2, axis=2)
+            _, final_val = self._viterbi_full(X_arr, distances)
+            if final_val < best_val:
+                best_val = final_val
+                best_states = states.copy()
+                best_means = means.copy()
 
-            for k in range(self.n_states):
-                mask = (new_states == k)
-                if np.sum(mask) > 0:
-                    self.means[k] = np.mean(X_arr[mask], axis=0)
-            if np.array_equal(states, new_states):
-                break
-            states = new_states
-        return states
+        self.means = best_means
+        self.val_ = best_val
+        return best_states
 
     def predict_online(self, X, last_known_state=None):
         """Forward-only Viterbi (online) prediction matching the paper's jumpmodels library."""

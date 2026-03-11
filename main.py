@@ -133,84 +133,111 @@ class StatisticalJumpModel:
     """
     Implements a discrete 2-state Statistical Jump Model using alternating optimization
     (K-means style updates + Viterbi algorithm for state sequence with jump penalty).
+
+    Matches the paper's jumpmodels library: k-means++ init, n_init=10, max_iter=1000, tol=1e-8.
     """
-    def __init__(self, n_states=2, lambda_penalty=10.0, max_iter=20):
+    def __init__(self, n_states=2, lambda_penalty=10.0, max_iter=1000, n_init=10, tol=1e-8):
         self.n_states = n_states
         self.lambda_penalty = lambda_penalty
         self.max_iter = max_iter
+        self.n_init = n_init
+        self.tol = tol
         self.means = None
+        self.val_ = np.inf  # best objective value
+
+    def _viterbi_full(self, X_arr, distances):
+        """Full Viterbi (forward + backtrack) for E-step during fitting."""
+        n_samples = X_arr.shape[0]
+        cost_matrix = np.zeros((n_samples, self.n_states))
+        back_pointers = np.zeros((n_samples, self.n_states), dtype=int)
+        cost_matrix[0] = distances[0]
+
+        penalty_matrix = self.lambda_penalty * (1 - np.eye(self.n_states))
+
+        if self.n_states == 2:
+            for t in range(1, n_samples):
+                c00 = cost_matrix[t-1, 0]
+                c10 = cost_matrix[t-1, 1] + self.lambda_penalty
+                if c00 <= c10:
+                    cost_matrix[t, 0] = c00 + distances[t, 0]
+                    back_pointers[t, 0] = 0
+                else:
+                    cost_matrix[t, 0] = c10 + distances[t, 0]
+                    back_pointers[t, 0] = 1
+                c01 = cost_matrix[t-1, 0] + self.lambda_penalty
+                c11 = cost_matrix[t-1, 1]
+                if c01 <= c11:
+                    cost_matrix[t, 1] = c01 + distances[t, 1]
+                    back_pointers[t, 1] = 0
+                else:
+                    cost_matrix[t, 1] = c11 + distances[t, 1]
+                    back_pointers[t, 1] = 1
+        else:
+            for t in range(1, n_samples):
+                trans_costs = cost_matrix[t-1, :, None] + penalty_matrix
+                best_prev_states = np.argmin(trans_costs, axis=0)
+                cost_matrix[t] = trans_costs[best_prev_states, np.arange(self.n_states)] + distances[t]
+                back_pointers[t] = best_prev_states
+
+        # Backward pass (traceback)
+        states = np.zeros(n_samples, dtype=int)
+        states[-1] = np.argmin(cost_matrix[-1])
+        obj_val = cost_matrix[-1, states[-1]]
+        for t in range(n_samples - 2, -1, -1):
+            states[t] = back_pointers[t+1, states[t+1]]
+
+        return states, obj_val
 
     def fit_predict(self, X):
+        from sklearn.cluster import kmeans_plusplus
+        from sklearn.utils import check_random_state
+
         X_arr = np.array(X)
         n_samples, n_features = X_arr.shape
-        
-        # Initialize means randomly from the data
-        np.random.seed(42)
-        idx = np.random.choice(n_samples, self.n_states, replace=False)
-        self.means = X_arr[idx].copy()
-        
-        states = np.zeros(n_samples, dtype=int)
-        
-        for iteration in range(self.max_iter):
-            # Step 1: Viterbi decoding to find optimal state sequence given means
-            # Scaled squared L2 distance as loss (vectorized)
-            distances = 0.5 * np.sum((X_arr[:, None, :] - self.means[None, :, :])**2, axis=2)
-                
-            cost_matrix = np.zeros((n_samples, self.n_states))
-            back_pointers = np.zeros((n_samples, self.n_states), dtype=int)
-            
-            cost_matrix[0] = distances[0]
-            
-            # Forward pass
-            if self.n_states == 2:
-                # Optimized fast path for 2 states
-                for t in range(1, n_samples):
-                    c00 = cost_matrix[t-1, 0]
-                    c10 = cost_matrix[t-1, 1] + self.lambda_penalty
-                    
-                    if c00 <= c10:
-                        cost_matrix[t, 0] = c00 + distances[t, 0]
-                        back_pointers[t, 0] = 0
-                    else:
-                        cost_matrix[t, 0] = c10 + distances[t, 0]
-                        back_pointers[t, 0] = 1
-                        
-                    c01 = cost_matrix[t-1, 0] + self.lambda_penalty
-                    c11 = cost_matrix[t-1, 1]
-                    
-                    if c01 <= c11:
-                        cost_matrix[t, 1] = c01 + distances[t, 1]
-                        back_pointers[t, 1] = 0
-                    else:
-                        cost_matrix[t, 1] = c11 + distances[t, 1]
-                        back_pointers[t, 1] = 1
-            else:
-                # Generalized path for arbitrary states
-                penalty_matrix = self.lambda_penalty * (1 - np.eye(self.n_states))
-                for t in range(1, n_samples):
-                    trans_costs = cost_matrix[t-1, :, None] + penalty_matrix
-                    best_prev_states = np.argmin(trans_costs, axis=0)
-                    cost_matrix[t] = trans_costs[best_prev_states, np.arange(self.n_states)] + distances[t]
-                    back_pointers[t] = best_prev_states
-            
-            # Backward pass (traceback)
-            new_states = np.zeros(n_samples, dtype=int)
-            new_states[-1] = np.argmin(cost_matrix[-1])
-            for t in range(n_samples - 2, -1, -1):
-                new_states[t] = back_pointers[t+1, new_states[t+1]]
-                
-            # Step 2: Update means given new states
-            for k in range(self.n_states):
-                mask = (new_states == k)
-                if np.sum(mask) > 0:
-                    self.means[k] = np.mean(X_arr[mask], axis=0)
-            
-            # Check convergence
-            if np.array_equal(states, new_states):
-                break
-            states = new_states
-            
-        return states
+
+        rng = check_random_state(42)
+        best_states = None
+        best_val = np.inf
+        best_means = None
+
+        for init_idx in range(self.n_init):
+            # K-means++ initialization (matches paper's jumpmodels library)
+            centers, _ = kmeans_plusplus(X_arr, self.n_states, random_state=rng)
+            means = centers.copy()
+
+            states = np.zeros(n_samples, dtype=int)
+            val_prev = np.inf
+
+            for iteration in range(self.max_iter):
+                distances = 0.5 * np.sum((X_arr[:, None, :] - means[None, :, :])**2, axis=2)
+                new_states, obj_val = self._viterbi_full(X_arr, distances)
+
+                # Update means given new states
+                for k in range(self.n_states):
+                    mask = (new_states == k)
+                    if np.sum(mask) > 0:
+                        means[k] = np.mean(X_arr[mask], axis=0)
+
+                # Check convergence: same states AND objective improvement < tol
+                if np.array_equal(states, new_states) or (val_prev - obj_val <= self.tol):
+                    states = new_states
+                    break
+                val_prev = obj_val
+                states = new_states
+
+            # Keep best across all initializations
+            # Recompute final objective with final means
+            distances = 0.5 * np.sum((X_arr[:, None, :] - means[None, :, :])**2, axis=2)
+            _, final_val = self._viterbi_full(X_arr, distances)
+
+            if final_val < best_val:
+                best_val = final_val
+                best_states = states.copy()
+                best_means = means.copy()
+
+        self.means = best_means
+        self.val_ = best_val
+        return best_states
 
     def predict_online(self, X, last_known_state=None):
         """
@@ -400,19 +427,21 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
     # Standardize Return Features for JM
     return_features = [c for c in train_df.columns if c.startswith(('DD_', 'Avg_Ret_', 'Sortino_'))]
     X_train_jm = train_df[return_features]
-    X_train_jm = (X_train_jm - X_train_jm.mean()) / X_train_jm.std()
-    
+    jm_train_mean = X_train_jm.mean()
+    jm_train_std = X_train_jm.std()
+    X_train_jm = (X_train_jm - jm_train_mean) / jm_train_std
+
     # 1. Regime Identification (Jump Model)
     jm = StatisticalJumpModel(n_states=2, lambda_penalty=lambda_penalty)
     identified_states = jm.fit_predict(X_train_jm.values)
-    
+
     # Align states so State 0 is Bullish (higher cum excess return) and State 1 is Bearish
     cum_ret_0 = train_df['Excess_Return'][identified_states == 0].sum()
     cum_ret_1 = train_df['Excess_Return'][identified_states == 1].sum()
     if cum_ret_1 > cum_ret_0:
         identified_states = 1 - identified_states # Flip labels
         jm.means = jm.means[::-1].copy()
-        
+
     # Shift labels forward by 1 day to create prediction targets (per paper: predict s_{t+1} from x_t)
     train_df['Target_State'] = np.roll(identified_states, -1)
     train_df = train_df.iloc[:-1] # Drop last row due to shift
@@ -427,8 +456,8 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
     if not include_xgboost:
         # Simple JM Baseline: Online assignment of OOS data to fitted clusters
         X_oos_jm = oos_df[return_features]
-        # Standardize using training mean/std
-        X_oos_jm = (X_oos_jm - train_df[return_features].mean()) / train_df[return_features].std()
+        # Standardize using training mean/std (saved before train_df was trimmed)
+        X_oos_jm = (X_oos_jm - jm_train_mean) / jm_train_std
         
         # Predict day-by-day to simulate real-time tracking
         oos_states = jm.predict_online(X_oos_jm.values, last_known_state=identified_states[-1])

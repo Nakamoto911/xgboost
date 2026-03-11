@@ -63,7 +63,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 
 ### Algorithm Pipeline (in `main.py`)
 1. `fetch_and_prepare_data()` -- Downloads from Yahoo Finance + FRED, engineers features (EWMA-based return/macro features), caches to `cache/data_cache.pkl`
-2. `StatisticalJumpModel` class -- 2-state regime model using alternating optimization (K-means + Viterbi). Optimized fast-path for 2 states in the Viterbi forward pass. `predict_online()` uses forward-only Viterbi (accumulated DP costs, no backtracking) matching the paper's `jumpmodels` library.
+2. `StatisticalJumpModel` class -- 2-state regime model using alternating optimization (K-means++ init + Viterbi, n_init=10, max_iter=1000, tol=1e-8). Matches the paper's `jumpmodels` library exactly (100% state agreement, identical objective values). `predict_online()` uses forward-only Viterbi (accumulated DP costs, no backtracking).
 3. `run_period_forecast()` -- For a given date: fits JM on 11-year lookback, trains XGBClassifier on regime labels + macro features, predicts 6-month OOS window. Computes SHAP values. Results cached in `_forecast_cache` dict.
 4. `simulate_strategy()` -- Chains 6-month forecast periods. Applies EWMA smoothing to raw probabilities, thresholds at 0.5, shifts signals by 1 day (look-ahead bias prevention), applies transaction costs.
 5. `walk_forward_backtest(df, config)` -- Walk-forward loop: every 6 months tunes lambda on validation window (maximize Sharpe), then runs OOS chunk with best lambda. Returns DataFrame with `.attrs` metadata (lambda_history, lambda_dates, ewma_halflife).
@@ -137,8 +137,9 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 ## Known Issues / Paper Gaps
 
 - **XGBoost hyperparameters:** Now using default XGB params (max_depth=6, learning_rate=0.3, no regularization) as the paper specifies. Previous custom regularized params (max_depth=4, reg_alpha=1.0, reg_lambda=5.0) caused -0.174 Sharpe delta and made the strategy LOSE to B&H. Switching to defaults fixed this (Session 2, 2026-03-03).
-- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); we get ~0.83 with dense 8pt grid. Remaining gap from data source (Yahoo vs Bloomberg).
-- **predict_online fixed (Session 4):** Previous greedy implementation only considered previous state cost, producing sticky regimes (18 shifts vs paper's 46). Now uses forward-only Viterbi (accumulated DP costs) matching the paper's `jumpmodels` library. Sharpe improved from 0.541 to 0.675.
+- **Remaining Sharpe gap:** Paper reports 0.79 for LargeCap (2007-2023); we get ~0.645 with dense 8pt grid. JM-only baseline now matches paper (0.607 vs 0.59). Remaining JM-XGB gap from data source (Yahoo vs Bloomberg) and lambda grid effects.
+- **JM fit_predict fixed (Session 8):** Was using 1 random init, 20 max iters. Now uses k-means++ init, n_init=10, max_iter=1000, tol=1e-8 — matching the paper's `jumpmodels` library exactly (100% state agreement, identical objective values). JM-only Sharpe improved from 0.534 to 0.607 at λ=100.
+- **predict_online fixed (Session 4):** Previous greedy implementation only considered previous state cost, producing sticky regimes (18 shifts vs paper's 46). Now uses forward-only Viterbi (accumulated DP costs) matching the paper's `jumpmodels` library.
 - **Lambda grid fixed (Sessions 4+5):** Wide grid [0, logspace(1,100)] caused walk-forward overfitting. Dense 8pt grid [4.64, 10, 15, 21.54, 30, 46.42, 70, 100] fills gaps for multi-asset coverage. Dashboard presets allow testing alternatives.
 - **Multi-asset benchmark (Session 5):** 7/11 WIN (64%) on Long History assets vs paper's 11/12 (92%). Root causes: per-asset lambda sensitivity (no single global grid is optimal for all asset classes), FDIVX broken proxy (loses at ALL lambdas), Yahoo vs Bloomberg data gaps. Dense 8pt grid + NAESX hl=2 override improved from 5/11 to 7/11 WIN.
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
