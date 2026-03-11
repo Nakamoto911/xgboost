@@ -168,7 +168,7 @@ LARGECAP_TICKER = '^SP500TR'  # Paper Table 3: Stock-Bond Corr uses LargeCap vs 
 DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 
 TRANSACTION_COST = 0.0005
-LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42, 100.0]  # Focused mid-range (Session 4: wide grids overfit validation)
+LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]  # Dense 8-pt mid-range (Session 5: adds 15, 30, 70 to fill gaps; avoids low λ<4.6 that WF overpicks)
 EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
 
 # Allow env var overrides (from Diagnostics Launcher page 3)
@@ -180,17 +180,22 @@ if os.environ.get('XGB_LAMBDA_GRID'):
 if os.environ.get('XGB_EWMA_HL_GRID'):
     EWMA_HL_GRID = _json.loads(os.environ['XGB_EWMA_HL_GRID'])
 
-# Paper-prescribed EWMA halflives per asset (from paper Section 4.2).
-# Auto-tuning on Yahoo Finance data overfits the validation window for some assets.
-# When a ticker has a known paper halflife, skip Phase 1 tuning and use it directly.
+# Paper-prescribed EWMA halflives (from paper Section 4.2, tuned on Bloomberg data).
+# Session 5 diagnostic: full auto-tuning overfits the joint HL×lambda validation surface.
+# Instead, use paper HLs as base and override specific proxies where Yahoo data diverges
+# from Bloomberg behavior (confirmed by per-asset HL sensitivity sweeps).
 PAPER_EWMA_HL = {
-    # hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury
+    # hl=8: LargeCap, MidCap, REIT, AggBond, Treasury
     '^SP500TR': 8, 'IVV': 8,
     'IJH': 8, 'VIMSX': 8,
-    'IWM': 8, 'NAESX': 8,
+    'IWM': 8,
     'IYR': 8, 'FRESX': 8,
     'AGG': 8, 'VBMFX': 8,
     'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,
+    # Session 5 override: NAESX (Vanguard SmallCap) needs hl=2 not hl=8
+    # Diagnostic: hl=8 → Δ=-0.006 (LOSE), hl=2 → Δ=+0.142 (WIN). Mutual fund NAV
+    # smoothing differs from Bloomberg Russell 2000 TR index.
+    'NAESX': 2,
     # hl=4: Commodity, Gold
     'DBC': 4, 'PCASX': 4,
     'GLD': 4, 'GC=F': 4, 'IAU': 4,
