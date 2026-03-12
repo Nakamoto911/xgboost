@@ -270,6 +270,50 @@ class StatisticalJumpModel:
 # ==============================================================================
 # 3. DATA FETCHING & FEATURE ENGINEERING
 # ==============================================================================
+def _fetch_fred_data():
+    """Fetch FRED macro data with separate caching (ticker-independent)."""
+    import time
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    fred_cache_file = os.path.join(cache_dir, 'fred_cache.pkl')
+    if os.path.exists(fred_cache_file):
+        print("Loading FRED data from cache...")
+        return pd.read_pickle(fred_cache_file)
+
+    print("Fetching FRED data...")
+    # Try pandas_datareader first, then fall back to direct FRED CSV API
+    for attempt in range(3):
+        try:
+            fred_data = web.DataReader(['DGS2', 'DGS10'], 'fred', '1987-01-01', '2027-01-01')
+            fred_data.to_pickle(fred_cache_file)
+            return fred_data
+        except Exception as e:
+            print(f"Failed to fetch FRED data via datareader (attempt {attempt+1}/3): {e}")
+            time.sleep(3 * (attempt + 1))
+
+    # Fallback: fetch directly from FRED CSV API with longer timeout
+    print("Trying FRED CSV API fallback...")
+    import requests
+    try:
+        series_dict = {}
+        for series_id in ['DGS2', 'DGS10']:
+            url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd=1987-01-01&coed=2027-01-01"
+            resp = requests.get(url, timeout=90)
+            resp.raise_for_status()
+            from io import StringIO
+            s = pd.read_csv(StringIO(resp.text), index_col=0, parse_dates=True)
+            s.columns = [series_id]
+            s[series_id] = pd.to_numeric(s[series_id], errors='coerce')
+            series_dict[series_id] = s[series_id]
+        fred_data = pd.DataFrame(series_dict)
+        fred_data.to_pickle(fred_cache_file)
+        return fred_data
+    except Exception as e:
+        print(f"FRED CSV fallback also failed: {e}")
+
+    raise ValueError("Failed to download FRED data from all sources.")
+
+
 def fetch_and_prepare_data():
     safe_ticker = TARGET_TICKER.replace('^', '').replace('=', '')
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache',
@@ -277,12 +321,23 @@ def fetch_and_prepare_data():
     if os.path.exists(cache_file):
         print("Loading data from local cache...")
         return pd.read_pickle(cache_file)
-        
-    print("Fetching data from Yahoo Finance and FRED...")
-    
+
+    # Check for any existing cache for this ticker (different date suffix)
+    import glob
+    cache_dir = os.path.dirname(cache_file)
+    alt_caches = sorted(glob.glob(os.path.join(cache_dir, f'data_cache_{safe_ticker}_*.pkl')))
+    if alt_caches:
+        best = alt_caches[-1]  # newest by filename
+        print(f"Loading data from alternative cache: {os.path.basename(best)}")
+        return pd.read_pickle(best)
+
+    fred_data = _fetch_fred_data()
+
+    print("Fetching data from Yahoo Finance...")
+
     # 1. Fetch main assets — always include LARGECAP_TICKER for Stock-Bond Corr macro feature
     tickers = list(dict.fromkeys([TARGET_TICKER, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER]))
-    
+
     # Download individually to bypass yfinance multi-ticker download bugs
     series_list = []
     for ticker in tickers:
@@ -291,7 +346,7 @@ def fetch_and_prepare_data():
             if df_ticker.empty:
                 print(f"Warning: No data found for {ticker}")
                 continue
-                
+
             # Handle cases where 'Adj Close' might be nested (newer yfinance)
             if isinstance(df_ticker.columns, pd.MultiIndex):
                 if 'Adj Close' in df_ticker.columns.levels[0]:
@@ -305,30 +360,16 @@ def fetch_and_prepare_data():
                     series = df_ticker['Close'].rename(ticker)
                 else:
                     series = df_ticker.iloc[:, 0].rename(ticker)
-                    
+
             series_list.append(series)
         except Exception as e:
             print(f"Failed to download {ticker}: {e}")
-            
+
     if not series_list:
         raise ValueError("Failed to download any data from Yahoo Finance.")
-        
+
     data = pd.concat(series_list, axis=1)
     data = data.ffill().dropna()
-    
-    # 2. Fetch FRED Macro data (2-Year and 10-Year Treasury Yields)
-    import time
-    fred_data = None
-    for attempt in range(5):
-        try:
-            fred_data = web.DataReader(['DGS2', 'DGS10'], 'fred', START_DATE_DATA, END_DATE)
-            break
-        except Exception as e:
-            print(f"Failed to fetch FRED data (attempt {attempt+1}/5): {e}")
-            time.sleep(2)
-            
-    if fred_data is None:
-        raise ValueError("Failed to download FRED data after 5 attempts.")
         
     fred_data = fred_data.ffill().dropna()
     

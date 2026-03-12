@@ -348,16 +348,23 @@ def fetch_etf_data(ticker, data_start=None):
 
         data = pd.concat(raw.values(), axis=1).ffill().dropna()
 
-        # FRED macro data
+        # FRED macro data — use shared cache (ticker-independent)
         import time
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        fred_cache_file = os.path.join(cache_dir, f'fred_cache_{data_start[:4]}_2026-03.pkl')
         fred = None
-        for attempt in range(5):
-            try:
-                fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01')
-                break
-            except Exception as e:
-                print(f"Failed to fetch FRED data (attempt {attempt+1}/5): {e}")
-                time.sleep(2)
+        if os.path.exists(fred_cache_file):
+            fred = pd.read_pickle(fred_cache_file)
+        else:
+            for attempt in range(5):
+                try:
+                    fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01')
+                    fred.to_pickle(fred_cache_file)
+                    break
+                except Exception as e:
+                    print(f"Failed to fetch FRED data (attempt {attempt+1}/5): {e}")
+                    time.sleep(3 * (attempt + 1))
         if fred is None:
             raise ValueError("Failed to download FRED data after 5 attempts.")
         fred = fred.ffill().dropna()
