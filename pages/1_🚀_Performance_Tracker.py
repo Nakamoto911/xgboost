@@ -712,7 +712,12 @@ st.subheader(
     "1. Cumulative Wealth",
     help="**Calculated:** Compounding growth of daily returns `(1 + returns).cumprod()`.\n\n**Data:** Strategy returns (net of transaction costs) vs. benchmarks.\n\n**Interpret:** Shows the total value of investment over time. A curve that stays above the benchmark indicates outperformance."
 )
-fig_wealth = create_base_fig("Cumulative Wealth Multiplier", "Wealth Multiplier")
+pct_bear = (jm_xgb_df['Forecast_State'] == 1).mean() * 100
+num_shifts = int(jm_xgb_df['Forecast_State'].diff().abs().fillna(0).sum())
+chart_title = f"<b>{backend.TARGET_TICKER}</b><span style='font-weight:normal'>: % of Bear Market: {pct_bear:.1f}%, Number of Regime Shifts: {num_shifts}</span>"
+fig_wealth = create_base_fig(chart_title, "Wealth Multiplier (log scale)")
+fig_wealth.update_layout(title_x=0.5, title_xanchor="center")
+fig_wealth.update_yaxes(type="log", tickvals=[0.5, 0.8, 1, 2, 3, 4, 5, 10])
 
 for name, returns in strategies.items():
     if name == 'Simple JM Baseline' and not run_simple_jm_cached:
@@ -728,7 +733,7 @@ for name, returns in strategies.items():
     
     # Add ending wealth annotation
     fig_wealth.add_annotation(
-        x=wealth.index[-1], y=final_val,
+        x=wealth.index[-1], y=np.log10(final_val),
         text=f" {final_val:.2f}x",
         showarrow=False,
         xanchor="left",

@@ -25,6 +25,14 @@ _defaults = {
     'vix_ticker_input': backend.VIX_TICKER,
     'transaction_cost_input': float(backend.TRANSACTION_COST),
     'val_window_input': backend.VALIDATION_WINDOW_YRS,
+    'tuning_metric': "sharpe",
+    'validation_window_type': "rolling",
+    'lambda_smoothing': False,
+    'prob_threshold': 0.50,
+    'allocation_style': "binary",
+    'lambda_ensemble_k': 1,
+    'lambda_selection': "best",
+    'lambda_subwindow_consensus': False,
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -53,7 +61,17 @@ with st.sidebar.expander("Data Source", expanded=True):
     st.text_input("End Date", key='end_date_input')
 
 with st.sidebar.expander("Jump Model", expanded=False):
+    st.selectbox("Validation Window Type", ["rolling", "expanding"], key='validation_window_type')
     st.number_input("Validation Window (Years)", min_value=1, max_value=20, key='val_window_input')
+    st.selectbox("Tuning Metric", ["sharpe", "sortino"], key='tuning_metric')
+    st.checkbox("Lambda Smoothing", key='lambda_smoothing')
+    st.number_input("Probability Threshold", min_value=0.30, max_value=0.70, step=0.05, format="%.2f", key='prob_threshold')
+    st.selectbox("Allocation Style", ["binary", "continuous"], key='allocation_style')
+    st.number_input("Lambda Ensemble K", min_value=1, max_value=5, key='lambda_ensemble_k')
+    st.selectbox("Lambda Selection", ["best", "median_positive"], key='lambda_selection',
+                 help="'best' = argmax(validation Sharpe). 'median_positive' = median of all lambdas with positive validation Sharpe.")
+    st.checkbox("Sub-Window Consensus", key='lambda_subwindow_consensus',
+                help="Split validation into 3 overlapping sub-windows, find best lambda in each, take median.")
     st.number_input("Transaction Cost", min_value=0.0, max_value=0.01, format="%.4f", key='transaction_cost_input')
 
     grid_preset = st.selectbox(
@@ -141,6 +159,20 @@ def get_script_env():
     # Lambda & EWMA grids
     env['XGB_LAMBDA_GRID'] = json.dumps([float(x) for x in st.session_state['lambda_grid_value']])
     env['XGB_EWMA_HL_GRID'] = json.dumps([int(x) for x in st.session_state['ewma_grid_value']])
+
+    # Strategy parameters
+    strategy_mapping = {
+        'XGB_TUNING_METRIC': 'tuning_metric',
+        'XGB_VALIDATION_WINDOW_TYPE': 'validation_window_type',
+        'XGB_LAMBDA_SMOOTHING': 'lambda_smoothing',
+        'XGB_PROB_THRESHOLD': 'prob_threshold',
+        'XGB_ALLOCATION_STYLE': 'allocation_style',
+        'XGB_LAMBDA_ENSEMBLE_K': 'lambda_ensemble_k',
+        'XGB_LAMBDA_SELECTION': 'lambda_selection',
+        'XGB_LAMBDA_SUBWINDOW_CONSENSUS': 'lambda_subwindow_consensus',
+    }
+    for env_key, ss_key in strategy_mapping.items():
+        env[env_key] = str(st.session_state[ss_key])
 
     # XGBoost parameters (overrides in config.py)
     xgb_mapping = {

@@ -956,8 +956,12 @@ def main(run_simple_jm=False, fixed_lambda=None):
         end_wealth = wealth.iloc[-1]
         ax_plot.plot(wealth, label=f"{name} (Final: {end_wealth:.2f}x)")
         
-    ax_plot.set_title(f'Wealth Curves: {OOS_START_DATE} to {END_DATE}', fontsize=12)
-    ax_plot.set_ylabel('Cumulative Wealth (Multiplier)')
+    pct_bear = (jm_xgb_df['Forecast_State'] == 1).mean() * 100
+    num_shifts = int(jm_xgb_df['Forecast_State'].diff().abs().fillna(0).sum())
+    chart_title = r"$\mathbf{{" + str(TARGET_TICKER).replace('$', r'\$') + r"}}$" + f": % of Bear Market: {pct_bear:.1f}%, Number of Regime Shifts: {num_shifts}"
+    ax_plot.set_title(chart_title, fontsize=12, loc='center')
+    ax_plot.set_ylabel('Cumulative Wealth (Multiplier, log scale)')
+    ax_plot.set_yscale('log')
     
     # Shade Bear Regimes (State 1) in the background
     bear_regimes = jm_xgb_df['Forecast_State'] == 1

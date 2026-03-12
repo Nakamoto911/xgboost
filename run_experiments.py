@@ -5,7 +5,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from main import fetch_and_prepare_data, walk_forward_backtest, calculate_metrics, OOS_START_DATE, END_DATE, TARGET_TICKER, LAMBDA_GRID, EWMA_HL_GRID, PAPER_EWMA_HL, TRANSACTION_COST
-from config import StrategyConfig
+from config import StrategyConfig, _strategy_config_from_env
 
 # =============================================================================
 # Sub-period definitions for OOS breakdown
@@ -154,7 +154,8 @@ def run_experiments(configs):
 
     # Compute B&H metrics once (using Paper Baseline backtest to get aligned date range)
     print("Computing Buy & Hold baseline...")
-    baseline_df = walk_forward_backtest(df, StrategyConfig(name="_baseline"))
+    env_defaults = _strategy_config_from_env()
+    baseline_df = walk_forward_backtest(df, StrategyConfig(name="_baseline", **env_defaults))
     bh_ret, bh_vol, bh_sharpe, bh_sortino, bh_mdd = calculate_metrics(
         baseline_df['Target_Return'], baseline_df['RF_Rate']
     )

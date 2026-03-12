@@ -58,3 +58,28 @@ class StrategyConfig:
 
     # --- Feature Ablation ---
     feature_ablation: str = "all"        # Options: "all" (default), "return_only", "macro_only"
+
+
+def _strategy_config_from_env():
+    """Create a StrategyConfig with defaults overridden by XGB_* environment variables.
+
+    Used by scripts launched from Diagnostics Launcher (receives params via env vars).
+    Explicit constructor args in EXPERIMENTS list always take precedence since those
+    configs are built directly, not through this function.
+    """
+    kwargs = {}
+    _env_overrides = {
+        'XGB_TUNING_METRIC': ('tuning_metric', str),
+        'XGB_VALIDATION_WINDOW_TYPE': ('validation_window_type', str),
+        'XGB_LAMBDA_SMOOTHING': ('lambda_smoothing', lambda v: v.lower() == 'true'),
+        'XGB_PROB_THRESHOLD': ('prob_threshold', float),
+        'XGB_ALLOCATION_STYLE': ('allocation_style', str),
+        'XGB_LAMBDA_ENSEMBLE_K': ('lambda_ensemble_k', int),
+        'XGB_LAMBDA_SELECTION': ('lambda_selection', str),
+        'XGB_LAMBDA_SUBWINDOW_CONSENSUS': ('lambda_subwindow_consensus', lambda v: v.lower() == 'true'),
+    }
+    for env_key, (field_name, cast) in _env_overrides.items():
+        val = os.environ.get(env_key)
+        if val is not None:
+            kwargs[field_name] = cast(val)
+    return kwargs
