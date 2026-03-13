@@ -48,6 +48,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
   - `pages/1_🚀_Performance_Tracker.py`: Fast parameter tuning and strategy performance metrics via `st.form`. Skips heavy ML/SHAP operations.
   - `pages/2_📊_Model_Analysis.py`: Deep evaluation of the active model, SHAP values, feature charts and diagnostics.
   - `pages/3_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
+  - `pages/4_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Three sections: Raw Data Health (Yahoo + FRED), Feature Health (z-score extremes, Sortino clipping, Stock-Bond Corr), Regime Labeling Health (bear fraction, label imbalance, lambda stability). Ticker selector at top; Section 3 uses last cached backtest.
   - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
@@ -165,7 +166,8 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 - `cache/data_cache.pkl` -- Persisted fetched+engineered data (delete to re-fetch from APIs)
 - `cache/data_cache_{ticker}_{date}.pkl` -- Per-ticker/per-list caches for multi-asset benchmark (date from asset list's data_start)
 - `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
-- `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence
+- `cache/fred_cache.pkl` -- FRED Treasury yields (DGS2, DGS10), ticker-independent, shared across all backtest runs
+- `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence (also read by Data Quality Audit page for regime health checks)
 
 ## Session Memory & Experiment Tracking
 
