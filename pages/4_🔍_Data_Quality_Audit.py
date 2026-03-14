@@ -4,8 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import os
-import pickle
 import glob
+import datetime
 import importlib
 
 import main as backend
@@ -22,13 +22,26 @@ st.caption("Go/no-go checks before trusting backtest results. Reads from existin
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(PROJECT_ROOT, "cache")
 
+# Mutual fund → ETF proxy pairs (from asset_lists.md)
+PROXY_PAIRS = {
+    "VIMSX": {"etf": "IJH",  "name": "Mid-Cap 400"},
+    "NAESX": {"etf": "IWM",  "name": "Small-Cap 2000"},
+    "FDIVX": {"etf": "EFA",  "name": "MSCI EAFE"},
+    "VEIEX": {"etf": "EEM",  "name": "Emerging Markets"},
+    "VBMFX": {"etf": "AGG",  "name": "Aggregate Bond"},
+    "VUSTX": {"etf": "SPTL", "name": "Long-Term Treasury"},
+    "VWEHX": {"etf": "HYG",  "name": "High-Yield Corp"},
+    "VWESX": {"etf": "SPBO", "name": "Corporate Bond"},
+    "FRESX": {"etf": "IYR",  "name": "Real Estate"},
+    "PCASX": {"etf": "DBC",  "name": "Commodity"},
+    "GC=F":  {"etf": "GLD",  "name": "Gold"},
+}
+
 
 def _load_data_cache(ticker: str):
     """Load the data cache for a given ticker, trying multiple naming conventions."""
     safe = ticker.replace("^", "").replace("=", "")
-    # Try exact match first, then glob for any date suffix (includes _noDD variants)
     candidates = sorted(glob.glob(os.path.join(CACHE_DIR, f"data_cache_{safe}*.pkl")))
-    # Also try the legacy data_cache.pkl if ticker is ^SP500TR
     if not candidates and ticker == "^SP500TR":
         legacy = os.path.join(CACHE_DIR, "data_cache.pkl")
         if os.path.exists(legacy):
@@ -38,29 +51,18 @@ def _load_data_cache(ticker: str):
     return pd.read_pickle(candidates[-1])  # newest
 
 
-def _load_backtest_cache():
-    path = os.path.join(CACHE_DIR, "backtest_cache.pkl")
-    if not os.path.exists(path):
+def _cache_file_mtime(ticker: str) -> float | None:
+    """Return mtime of the cache file for a ticker, or None."""
+    safe = ticker.replace("^", "").replace("=", "")
+    candidates = sorted(glob.glob(os.path.join(CACHE_DIR, f"data_cache_{safe}*.pkl")))
+    if not candidates and ticker == "^SP500TR":
+        legacy = os.path.join(CACHE_DIR, "data_cache.pkl")
+        if os.path.exists(legacy):
+            candidates = [legacy]
+    if not candidates:
         return None
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    return os.path.getmtime(candidates[-1])
 
-
-# Paper-reported Bear% per asset (from paper Section 4.2 / Figure 2)
-PAPER_BEAR_PCT = {
-    "^SP500TR": 0.209, "IVV": 0.209,
-    "IJH": 0.22, "VIMSX": 0.22,
-    "IWM": 0.23, "NAESX": 0.23,
-    "IYR": 0.25, "FRESX": 0.25,
-    "AGG": 0.30, "VBMFX": 0.30,
-    "SPTL": 0.28, "VUSTX": 0.28, "TLT": 0.28, "VGLT": 0.28,
-    "DBC": 0.35, "PCASX": 0.35,
-    "GLD": 0.30, "GC=F": 0.30, "IAU": 0.30,
-    "SPBO": 0.27, "VWESX": 0.27,
-    "EEM": 0.32, "VEIEX": 0.32,
-    "EFA": 0.29, "FDIVX": 0.29,
-    "HYG": 0.26, "VWEHX": 0.26,
-}
 
 # ---------------------------------------------------------------------------
 # Discover available cached tickers
@@ -68,11 +70,9 @@ PAPER_BEAR_PCT = {
 available_tickers = []
 for f in sorted(glob.glob(os.path.join(CACHE_DIR, "data_cache_*.pkl"))):
     base = os.path.basename(f)
-    # data_cache_{ticker}_{date_stuff}.pkl  or  data_cache_{ticker}_{start}_{end}.pkl
     parts = base.replace("data_cache_", "").replace(".pkl", "").split("_")
     if parts:
         tkr = parts[0]
-        # Reverse the safe-ticker transform for common index tickers
         if tkr == "SP500TR":
             tkr = "^SP500TR"
         elif tkr == "IRX":
@@ -84,7 +84,6 @@ for f in sorted(glob.glob(os.path.join(CACHE_DIR, "data_cache_*.pkl"))):
         if tkr not in available_tickers:
             available_tickers.append(tkr)
 
-# Also check legacy cache
 if not available_tickers:
     if os.path.exists(os.path.join(CACHE_DIR, "data_cache.pkl")):
         available_tickers.append("^SP500TR")
@@ -103,134 +102,208 @@ if df is None:
     st.stop()
 
 # =========================================================================
+# CACHE FRESHNESS TABLE
+# =========================================================================
+now = datetime.datetime.now()
+
+
+def _fmt_mtime(mtime):
+    """Format mtime as age string + date, with status icon."""
+    if mtime is None:
+        return "—", "Not found", ""
+    dt = datetime.datetime.fromtimestamp(mtime)
+    age_days = (now - dt).days
+    age_str = f"{age_days}d ago" if age_days > 0 else "today"
+    status = "🟢" if age_days <= 1 else ("🟡" if age_days <= 7 else "🔴")
+    return status, age_str, dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _cache_stats(ticker: str):
+    """Return (start_date, end_date, rows, nan_pct) for a ticker's cache, or Nones."""
+    cache_df = _load_data_cache(ticker)
+    if cache_df is None or cache_df.empty:
+        return "—", "—", "—", "—"
+    start = cache_df.index.min().strftime("%Y-%m-%d")
+    end = cache_df.index.max().strftime("%Y-%m-%d")
+    rows = len(cache_df)
+    total_cells = cache_df.size
+    nan_cells = int(cache_df.isna().sum().sum())
+    nan_pct = f"{nan_cells / total_cells * 100:.1f}%" if total_cells > 0 else "—"
+    return start, end, f"{rows:,}", nan_pct
+
+
+def _fred_stats():
+    """Return (start_date, end_date, rows, nan_pct) for FRED cache."""
+    path = os.path.join(CACHE_DIR, "fred_cache.pkl")
+    if not os.path.exists(path):
+        return "—", "—", "—", "—"
+    fdf = pd.read_pickle(path)
+    if fdf.empty:
+        return "—", "—", "—", "—"
+    start = fdf.index.min().strftime("%Y-%m-%d")
+    end = fdf.index.max().strftime("%Y-%m-%d")
+    rows = len(fdf)
+    total_cells = fdf.size
+    nan_cells = int(fdf.isna().sum().sum())
+    nan_pct = f"{nan_cells / total_cells * 100:.1f}%" if total_cells > 0 else "—"
+    return start, end, f"{rows:,}", nan_pct
+
+
+# Build rows: selected ticker cache + all supporting series
+_ticker_list = [
+    (selected_ticker, "Target Asset", _cache_file_mtime(selected_ticker)),
+    (backend.BOND_TICKER, "Bond (Stock-Bond Corr)", _cache_file_mtime(backend.BOND_TICKER)),
+    (backend.RISK_FREE_TICKER, "Risk-Free Rate", _cache_file_mtime(backend.RISK_FREE_TICKER)),
+    (backend.VIX_TICKER, "VIX", _cache_file_mtime(backend.VIX_TICKER)),
+]
+
+table_rows = []
+short_lookback_warnings = []
+oos_start = pd.to_datetime(backend.OOS_START_DATE)
+
+for ticker, role, mtime in _ticker_list:
+    status, age, date_str = _fmt_mtime(mtime)
+    start, end, rows, nan_pct = _cache_stats(ticker)
+    table_rows.append({"Ticker": ticker, "Series": role, "Status": status,
+                       "Age": age, "Fetched": date_str,
+                       "Start": start, "End": end, "Rows": rows, "NaN%": nan_pct})
+    # Check lookback for target asset
+    if start != "—":
+        years_before_oos = (oos_start - pd.to_datetime(start)).days / 365.25
+        if years_before_oos < 11:
+            short_lookback_warnings.append(
+                f"**{ticker}** ({role}): only {years_before_oos:.1f}y before OOS start "
+                f"({backend.OOS_START_DATE}) — need 11y for full JM lookback")
+
+# FRED row
+fred_mtime = (os.path.getmtime(os.path.join(CACHE_DIR, "fred_cache.pkl"))
+              if os.path.exists(os.path.join(CACHE_DIR, "fred_cache.pkl")) else None)
+fred_status, fred_age, fred_date = _fmt_mtime(fred_mtime)
+fred_start, fred_end, fred_rows, fred_nan = _fred_stats()
+table_rows.append({"Ticker": "DGS2 / DGS10", "Series": "FRED Yields", "Status": fred_status,
+                   "Age": fred_age, "Fetched": fred_date,
+                   "Start": fred_start, "End": fred_end, "Rows": fred_rows, "NaN%": fred_nan})
+
+# Backtest cache row (no date range / NaN — it's not a time series)
+bt_mtime = (os.path.getmtime(os.path.join(CACHE_DIR, "backtest_cache.pkl"))
+            if os.path.exists(os.path.join(CACHE_DIR, "backtest_cache.pkl")) else None)
+bt_status, bt_age, bt_date = _fmt_mtime(bt_mtime)
+table_rows.append({"Ticker": "—", "Series": "Backtest Cache", "Status": bt_status,
+                   "Age": bt_age, "Fetched": bt_date,
+                   "Start": "—", "End": "—", "Rows": "—", "NaN%": "—"})
+
+st.dataframe(pd.DataFrame(table_rows).set_index("Ticker"),
+             use_container_width=True, hide_index=False)
+
+if short_lookback_warnings:
+    for w in short_lookback_warnings:
+        st.warning(w)
+
+
+# =========================================================================
 # SECTION 1 — Raw Data Health
 # =========================================================================
 st.header("Section 1 — Raw Data Health",
-          help="Catches Yahoo Finance and FRED download artifacts before they infect features. "
-               "Stale prices produce zero returns that corrupt EWMA features; "
-               "price adjustment errors create outliers that destabilize JM fitting; "
-               "insufficient data history degrades the 11-year lookback window; "
-               "FRED yield gaps corrupt the three yield-derived macro features.")
-
-# --- Indicator 1: Zero / Stale Return Streak ---
-st.subheader("Indicator 1 — Zero / Stale Return Streak",
-             help="Finds the longest run of consecutive days where |daily return| < 0.001%. "
-                  "Yahoo Finance mutual fund NAVs (VIMSX, NAESX, etc.) sometimes report stale prices "
-                  "that produce zero returns, which corrupt EWMA-based features downstream.\n\n"
-                  "**Expected:** 0–1 days for index tickers (^SP500TR), 0–3 days for mutual funds. "
-                  "Longer streaks are suspicious — especially mid-week runs, which indicate stale NAVs "
-                  "rather than market holidays.\n\n"
-                  "**Thresholds:** Green < 2d | Yellow 2–3d (funds) or 2d (indices) | Red > threshold.")
+          help="Stale streaks: longest run of |return| < 0.001% (stale NAVs corrupt EWMA features). "
+               "Outliers: 0.1st/99.9th percentile and days > ±10% (catches Yahoo adjustment artifacts). "
+               "Coverage: per-year completeness (JM needs 11-year lookback).")
 
 returns = df["Target_Return"] if "Target_Return" in df.columns else df.iloc[:, 0].pct_change()
-is_stale = returns.abs() < 0.00001  # |return| < 0.001%
 
-# Compute longest consecutive stale streak
+# --- Compute stale streak ---
+is_stale = returns.abs() < 0.00001
 stale_groups = (is_stale != is_stale.shift()).cumsum()
 stale_streaks = is_stale.groupby(stale_groups).agg(["sum", "first"])
 stale_only = stale_streaks[stale_streaks["first"] == True]
 longest_streak = int(stale_only["sum"].max()) if not stale_only.empty else 0
-
-# Find the date range of the longest streak
 if longest_streak > 0:
     longest_group = stale_only["sum"].idxmax()
     streak_dates = is_stale[stale_groups == longest_group].index
-    streak_start = streak_dates[0].strftime("%Y-%m-%d")
-    streak_end = streak_dates[-1].strftime("%Y-%m-%d")
+    streak_period = f"{streak_dates[0].strftime('%Y-%m-%d')} → {streak_dates[-1].strftime('%Y-%m-%d')}"
 else:
-    streak_start = streak_end = "N/A"
-
-# Threshold: index tickers > 1 day, equity/fund tickers > 3 days
-is_index = selected_ticker.startswith("^")
-threshold = 1 if is_index else 3
-status = "🔴" if longest_streak > threshold else ("🟡" if longest_streak > 1 else "🟢")
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Longest Stale Streak", f"{longest_streak} days", help="|return| < 0.001%")
-col2.metric("Streak Period", f"{streak_start} → {streak_end}")
-col3.metric("Status", f"{status} (threshold: {threshold}d)")
-
-# Also show count of all stale days
+    streak_period = "—"
 total_stale = int(is_stale.sum())
-st.caption(f"Total stale days: {total_stale} / {len(returns)} ({100*total_stale/len(returns):.2f}%)")
+is_index = selected_ticker.startswith("^")
+stale_thresh = 1 if is_index else 3
+stale_status = "🔴" if longest_streak > stale_thresh else ("🟡" if longest_streak > 1 else "🟢")
 
-# --- Indicator 2: Return Distribution Outliers ---
-st.subheader("Indicator 2 — Return Distribution Outliers",
-             help="Shows the 0.1st and 99.9th percentile of daily returns and counts days beyond ±10%. "
-                  "Catches Yahoo price adjustment artifacts like incorrect dividend reinvestment or "
-                  "stock split errors that create spurious extreme returns.\n\n"
-                  "**Expected:** Equities typically have 0.1st/99.9th percentiles within ±8%. "
-                  "Bonds within ±3%. Days > ±10% should be rare (< 5 for equities over 30+ years).\n\n"
-                  "**Thresholds:** Red if extremes exceed ±15% (equities) or ±5% (bonds/gold).")
-
+# --- Compute outliers ---
 p01 = returns.quantile(0.001)
 p999 = returns.quantile(0.999)
 extreme_days = int((returns.abs() > 0.10).sum())
-
-# Thresholds: ±15% for equities, ±5% for bonds
 is_bond = selected_ticker in backend.DD_EXCLUDE_TICKERS
 extreme_thresh = 0.05 if is_bond else 0.15
 flag_extreme = abs(p01) > extreme_thresh or abs(p999) > extreme_thresh
+outlier_status = "🔴" if flag_extreme else "🟢"
 
-col1, col2, col3 = st.columns(3)
-col1.metric("0.1st percentile", f"{p01*100:.2f}%")
-col2.metric("99.9th percentile", f"{p999*100:.2f}%")
-status2 = "🔴" if flag_extreme else "🟢"
-col3.metric(f"Days > ±10%", f"{extreme_days} {status2}")
+# --- Build summary table ---
+health_rows = [
+    {"Check": "Stale Return Streak",
+     "Value": f"{longest_streak}d (total: {total_stale}/{len(returns)}, {100*total_stale/len(returns):.2f}%)",
+     "Detail": streak_period,
+     "Status": stale_status},
+    {"Check": "Return Outliers",
+     "Value": f"P0.1={p01*100:+.2f}%  P99.9={p999*100:+.2f}%",
+     "Detail": f"{extreme_days} days > ±10% (thresh ±{extreme_thresh*100:.0f}%)",
+     "Status": outlier_status},
+]
 
-if flag_extreme:
-    st.warning(f"Extreme percentile exceeds ±{extreme_thresh*100:.0f}% threshold for this asset class.")
-
-# --- Indicator 3: Data Coverage Timeline ---
-st.subheader("Indicator 3 — Data Coverage Timeline",
-             help="Shows per-year data completeness. The JM requires an 11-year lookback window, "
-                  "so partial early years degrade the first OOS chunks.\n\n"
-                  "**Expected:** ~252 trading days per complete year. Partial years at the start/end "
-                  "of the series are normal. Mid-series gaps are a problem — they create NaN features.\n\n"
-                  "**Watch for:** Tickers like VIMSX (starts 1998), GC=F (2000), VEIEX (1994) have "
-                  "fewer than 11 years before the 2007 OOS start, meaning early JM fits use truncated windows.")
-
-df_yearly = df.groupby(df.index.year).size()
-all_years = range(df.index.year.min(), df.index.year.max() + 1)
-
-# Expected trading days per year (~252, but allow 200 as minimum for "complete")
-fig3, ax3 = plt.subplots(figsize=(14, 1.5))
-colors = []
-counts = []
-for yr in all_years:
-    n = df_yearly.get(yr, 0)
-    counts.append(n)
-    if n >= 200:
-        colors.append("#2ecc71")  # green: complete
-    elif n > 0:
-        colors.append("#f39c12")  # yellow: partial
-    else:
-        colors.append("#e74c3c")  # red: missing
-
-ax3.barh(0, counts, left=[0] + list(np.cumsum(counts[:-1])), color=colors, height=0.5, edgecolor="none")
-# Add year labels
-cum = 0
-for i, yr in enumerate(all_years):
-    if counts[i] > 0 and i % 3 == 0:  # label every 3rd year
-        ax3.text(cum + counts[i] / 2, 0, str(yr), ha="center", va="center", fontsize=7, color="white", fontweight="bold")
-    cum += counts[i]
-
-ax3.set_yticks([])
-ax3.set_xlabel("Trading Days")
-ax3.set_title(f"{selected_ticker} — Data Coverage ({df.index.year.min()}–{df.index.year.max()})", fontsize=10)
-ax3.spines[["top", "right", "left"]].set_visible(False)
-st.pyplot(fig3)
-plt.close(fig3)
-
-st.caption("Green = 200+ trading days | Yellow = partial year | Red = missing")
-
-# Count years with < 11 years of data before OOS start
+# --- Coverage check ---
 oos_start_yr = int(backend.OOS_START_DATE[:4])
 data_start_yr = df.index.year.min()
 lookback_available = oos_start_yr - data_start_yr
-if lookback_available < 11:
-    st.warning(f"Only {lookback_available} years of data before OOS start ({backend.OOS_START_DATE}). "
-               f"First OOS chunks will use shorter-than-11yr training windows, degrading JM fit quality.")
+coverage_status = "🟢" if lookback_available >= 11 else "🔴"
+health_rows.append({
+    "Check": "Lookback Coverage",
+    "Value": f"{lookback_available}y before OOS ({backend.OOS_START_DATE})",
+    "Detail": f"Need 11y; have {df.index.year.min()}–{df.index.year.max()}",
+    "Status": coverage_status,
+})
+
+# --- Gap years (mid-series missing years) ---
+df_yearly = df.groupby(df.index.year).size()
+all_years = range(df.index.year.min(), df.index.year.max() + 1)
+gap_years = [yr for yr in all_years if df_yearly.get(yr, 0) == 0]
+partial_years = [yr for yr in all_years if 0 < df_yearly.get(yr, 0) < 200]
+gap_status = "🔴" if gap_years else ("🟡" if partial_years else "🟢")
+gap_detail = ""
+if gap_years:
+    gap_detail += f"Missing: {', '.join(str(y) for y in gap_years)}. "
+if partial_years:
+    gap_detail += f"Partial (<200d): {', '.join(str(y) for y in partial_years)}"
+health_rows.append({
+    "Check": "Year Gaps",
+    "Value": f"{len(gap_years)} missing, {len(partial_years)} partial",
+    "Detail": gap_detail or "All years complete",
+    "Status": gap_status,
+})
+
+st.dataframe(pd.DataFrame(health_rows).set_index("Check"), use_container_width=True)
+
+# Compact coverage bar (keep it small)
+fig3, ax3 = plt.subplots(figsize=(14, 1.0))
+colors_cov = []
+counts_cov = []
+for yr in all_years:
+    n = df_yearly.get(yr, 0)
+    counts_cov.append(n)
+    colors_cov.append("#2ecc71" if n >= 200 else ("#f39c12" if n > 0 else "#e74c3c"))
+
+ax3.barh(0, counts_cov, left=[0] + list(np.cumsum(counts_cov[:-1])),
+         color=colors_cov, height=0.5, edgecolor="none")
+cum = 0
+for i, yr in enumerate(all_years):
+    if counts_cov[i] > 0 and i % 4 == 0:
+        ax3.text(cum + counts_cov[i] / 2, 0, str(yr), ha="center", va="center",
+                 fontsize=6, color="white", fontweight="bold")
+    cum += counts_cov[i]
+ax3.set_yticks([])
+ax3.set_xlabel("Trading Days", fontsize=8)
+ax3.spines[["top", "right", "left"]].set_visible(False)
+ax3.tick_params(axis="x", labelsize=7)
+fig3.subplots_adjust(left=0.02, right=0.98, top=0.85, bottom=0.35)
+st.pyplot(fig3)
+plt.close(fig3)
 
 # --- Indicator 3b: FRED Yield Data Health ---
 st.subheader("Indicator 3b — FRED Yield Data Health",
@@ -245,7 +318,6 @@ st.subheader("Indicator 3b — FRED Yield Data Health",
                   "Yield_Slope_EWMA_10 ranges roughly -1.0 to +3.0 (negative = inverted curve). "
                   "No large NaN gaps in the derived features.")
 
-# Try to load raw FRED cache if available
 fred_cache_path = os.path.join(CACHE_DIR, "fred_cache.pkl")
 has_raw_fred = os.path.exists(fred_cache_path)
 if has_raw_fred:
@@ -253,13 +325,11 @@ if has_raw_fred:
 else:
     fred_df = None
 
-# Derived yield features are always in the main data cache
 yield_derived = ["Yield_2Y_EWMA_diff", "Yield_Slope_EWMA_10", "Yield_Slope_EWMA_diff_21"]
 yield_raw_diff = "Yield_2Y_diff"
 has_derived = all(c in df.columns for c in yield_derived)
 
 if has_raw_fred:
-    # --- Raw FRED health ---
     st.markdown("**Raw FRED Series (from `fred_cache.pkl`)**")
 
     raw_col1, raw_col2 = st.columns(2)
@@ -273,7 +343,6 @@ if has_raw_fred:
         n_nan = int(s.isna().sum())
         n_valid = n_total - n_nan
 
-        # Stale detection: consecutive days with identical values
         is_stale_yield = (s.diff().abs() < 1e-10) & s.notna() & s.shift(1).notna()
         stale_groups_y = (is_stale_yield != is_stale_yield.shift()).cumsum()
         stale_streaks_y = is_stale_yield.groupby(stale_groups_y).agg(["sum", "first"])
@@ -289,7 +358,6 @@ if has_raw_fred:
                   help="Consecutive days with identical yield values. "
                        "1–3 days is normal (weekends/holidays after ffill). > 5 days is suspicious.")
 
-    # Range sanity check
     fig_fred, (ax_f1, ax_f2) = plt.subplots(2, 1, figsize=(14, 3.5), sharex=True)
     for ax_f, sid, color in [(ax_f1, "DGS2", "#e67e22"), (ax_f2, "DGS10", "#2980b9")]:
         if sid in fred_df.columns:
@@ -308,16 +376,13 @@ if has_raw_fred:
                "Sudden spikes to 0 or jumps > 2% in a single day indicate download artifacts.")
 
 if has_derived:
-    # --- Derived yield feature health ---
     if has_raw_fred:
         st.markdown("**Derived Yield Features (in data cache)**")
     else:
         st.markdown("**Derived Yield Features** (raw FRED cache not found — checking derived features only)")
 
-    # Stale Yield_2Y_diff: proxy for whether raw DGS2 was updating
     if yield_raw_diff in df.columns:
         y2d = df[yield_raw_diff]
-        # Zero-diff streaks: consecutive days where yield didn't change
         is_zero_diff = y2d.abs() < 1e-10
         zero_groups = (is_zero_diff != is_zero_diff.shift()).cumsum()
         zero_streaks = is_zero_diff.groupby(zero_groups).agg(["sum", "first"])
@@ -328,7 +393,6 @@ if has_derived:
         longest_zero = 0
         total_zero = 0
 
-    # NaN check on derived features
     nan_counts = {feat: int(df[feat].isna().sum()) for feat in yield_derived}
 
     fc1, fc2, fc3 = st.columns(3)
@@ -345,7 +409,6 @@ if has_derived:
                help="Should be 0 after feature engineering (NaNs are forward-filled during merge). "
                     "Any NaN here means the FRED-Yahoo date merge left gaps.")
 
-    # Derived feature ranges
     range_data = []
     expected_ranges = {
         "Yield_2Y_EWMA_diff": (-0.15, 0.15),
@@ -356,7 +419,7 @@ if has_derived:
         s = df[feat].dropna()
         lo, hi = s.min(), s.max()
         exp_lo, exp_hi = expected_ranges.get(feat, (-999, 999))
-        in_range = lo >= exp_lo * 1.5 and hi <= exp_hi * 1.5  # 50% margin
+        in_range = lo >= exp_lo * 1.5 and hi <= exp_hi * 1.5
         range_data.append({
             "Feature": feat,
             "Min": f"{lo:.4f}",
@@ -381,8 +444,84 @@ st.header("Section 2 — Feature Health",
                "anomalies there cause noisy or biased probability forecasts. "
                "Sortino clipping and Stock-Bond Correlation get their own dedicated checks.")
 
-# --- Indicator 4: Feature Z-Score Extremes ---
-st.subheader("Indicator 4 — Feature Z-Score Extremes (rolling 252-day)",
+# --- Indicator 4: Missing Data Summary ---
+st.subheader("Indicator 4 — Missing Data Summary",
+             help="Shows the exact NaN percentage for every feature and price series in the cache. "
+                  "Forward-filling can mask large data gaps — this indicator exposes the true picture.\n\n"
+                  "**Expected:** 0% NaN for price and return columns after feature engineering. "
+                  "Early rows may have NaN due to rolling window warm-up (e.g., first 252 rows for "
+                  "Stock_Bond_Corr). Features with >1% NaN outside the warm-up period warrant investigation.\n\n"
+                  "**Reading the chart:** Bars show % NaN per column. Columns are grouped by type: "
+                  "price/return, return features, macro features, and other.")
+
+# Compute NaN percentages for all columns
+nan_pct = (df.isna().sum() / len(df) * 100).sort_values(ascending=False)
+nan_pct = nan_pct[nan_pct > 0]  # only show columns with NaN
+
+if nan_pct.empty:
+    st.success(f"No NaN values in any of the {len(df.columns)} columns ({len(df)} rows).")
+else:
+    # Categorize columns
+    def _categorize(col_name):
+        if col_name in ("Target_Return", "Close", "Adj Close", "Open", "High", "Low", "Volume"):
+            return "Price/Return"
+        if col_name.startswith(("DD_", "Avg_Ret_", "Sortino_")):
+            return "Return Feature"
+        if col_name.startswith(("Yield_", "VIX_", "Stock_Bond")):
+            return "Macro Feature"
+        return "Other"
+
+    nan_df = pd.DataFrame({
+        "Column": nan_pct.index,
+        "NaN %": nan_pct.values.round(2),
+        "NaN Count": df[nan_pct.index].isna().sum().values,
+        "Category": [_categorize(c) for c in nan_pct.index],
+    })
+
+    # Color-coded bar chart
+    cat_colors = {
+        "Price/Return": "#e74c3c",
+        "Return Feature": "#3498db",
+        "Macro Feature": "#e67e22",
+        "Other": "#95a5a6",
+    }
+
+    fig_nan, ax_nan = plt.subplots(figsize=(14, max(2.5, 0.35 * len(nan_pct))))
+    bar_colors = [cat_colors.get(_categorize(c), "#95a5a6") for c in nan_pct.index]
+    y_pos = range(len(nan_pct))
+    ax_nan.barh(y_pos, nan_pct.values, color=bar_colors, edgecolor="none", height=0.7)
+    ax_nan.set_yticks(y_pos)
+    ax_nan.set_yticklabels(nan_pct.index, fontsize=8)
+    ax_nan.set_xlabel("NaN %")
+    ax_nan.set_title(f"Missing Values by Column ({len(nan_pct)} columns with NaN)", fontsize=10)
+    ax_nan.invert_yaxis()
+    ax_nan.spines[["top", "right"]].set_visible(False)
+
+    # Add percentage labels
+    for i, (val, col_name) in enumerate(zip(nan_pct.values, nan_pct.index)):
+        count = int(df[col_name].isna().sum())
+        ax_nan.text(val + 0.3, i, f"{val:.1f}% ({count})", va="center", fontsize=7)
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_patches = [Patch(color=c, label=l) for l, c in cat_colors.items()
+                      if any(_categorize(col) == l for col in nan_pct.index)]
+    if legend_patches:
+        ax_nan.legend(handles=legend_patches, fontsize=7, loc="lower right")
+
+    fig_nan.tight_layout()
+    st.pyplot(fig_nan)
+    plt.close(fig_nan)
+
+    # Flag any price/return NaN (should be zero after pipeline)
+    price_nan = nan_df[nan_df["Category"] == "Price/Return"]
+    if not price_nan.empty:
+        st.warning(f"Price/Return columns with NaN: {', '.join(price_nan['Column'].tolist())}. "
+                   "This should not happen after feature engineering — investigate the data source.")
+
+
+# --- Indicator 5: Feature Z-Score Extremes ---
+st.subheader("Indicator 5 — Feature Z-Score Extremes (rolling 252-day)",
              help="Each feature's value is z-scored against its own trailing 252-day (1-year) "
                   "rolling mean and std. Points beyond ±4σ are extreme outliers.\n\n"
                   "**Return features** (DD, Avg_Ret, Sortino) are z-scored before feeding to the JM — "
@@ -396,7 +535,7 @@ st.subheader("Indicator 4 — Feature Z-Score Extremes (rolling 252-day)",
                   "Persistent clusters of exceedances, or exceedances in calm markets, suggest data artifacts.\n\n"
                   "**Reading the charts:** Red-shaded regions show where features exceeded ±4σ. "
                   "The y-axis label shows exceedance count per feature. "
-                  "Stock_Bond_Corr is excluded here — it has its own dedicated chart (Indicator 6).")
+                  "Stock_Bond_Corr is excluded here — it has its own dedicated chart (Indicator 7).")
 
 return_features = [c for c in df.columns if c.startswith(("DD_", "Avg_Ret_", "Sortino_"))]
 macro_features = [c for c in ["Yield_2Y_EWMA_diff", "Yield_Slope_EWMA_10",
@@ -466,11 +605,10 @@ if macro_features:
     all_exceedances = pd.concat([all_exceedances, exc])
     all_total_obs = max(all_total_obs, nobs)
 elif not return_features:
-    pass  # already showed info above
+    pass
 else:
     st.info("No macro features (Yield, VIX) found in cached data.")
 
-# Combined summary table
 if not all_exceedances.empty:
     exc_table = all_exceedances[all_exceedances > 0]
     if not exc_table.empty:
@@ -482,8 +620,8 @@ if not all_exceedances.empty:
     else:
         st.success("No features exceed ±4σ in the rolling window.")
 
-# --- Indicator 5: Sortino Clipping Frequency ---
-st.subheader("Indicator 5 — Sortino Clipping Frequency",
+# --- Indicator 6: Sortino Clipping Frequency ---
+st.subheader("Indicator 6 — Sortino Clipping Frequency",
              help="Sortino ratios are clipped to [-10, 10] to prevent extreme values from dominating "
                   "JM fitting. This indicator shows how often observations hit the clip boundary.\n\n"
                   "**Expected:** < 1% clipping is normal — the boundary is generous. "
@@ -502,7 +640,7 @@ else:
     for feat in sortino_features:
         s = df[feat]
         n_total = len(s.dropna())
-        n_clipped_high = int((s >= 9.99).sum())  # ~10 boundary
+        n_clipped_high = int((s >= 9.99).sum())
         n_clipped_low = int((s <= -9.99).sum())
         n_clipped = n_clipped_high + n_clipped_low
         pct = n_clipped / n_total * 100 if n_total > 0 else 0
@@ -522,8 +660,8 @@ else:
     if any(row["% of Obs"] > 2.0 for row in clip_data):
         st.warning("Clipping exceeds 2% for one or more Sortino features — the clip boundary is materially shaping the distribution.")
 
-# --- Indicator 6: Stock-Bond Correlation Rolling Series ---
-st.subheader("Indicator 6 — Stock-Bond Correlation (252-day rolling)",
+# --- Indicator 7: Stock-Bond Correlation Rolling Series ---
+st.subheader("Indicator 7 — Stock-Bond Correlation (252-day rolling)",
              help="Rolling 252-day correlation between LargeCap returns and AggBond returns. "
                   "This is a macro feature shared across ALL assets (paper Table 3 specifies "
                   "Stock-Bond Corr always uses LargeCap vs AggBond, regardless of target asset).\n\n"
@@ -541,7 +679,6 @@ if "Stock_Bond_Corr" in df.columns:
     ax6.plot(sbc.index, sbc.values, linewidth=0.7, color="#2c3e50")
     ax6.axhline(0, color="gray", linewidth=0.5, linestyle="--")
 
-    # Week-over-week change alerts (5 trading days)
     wow_change = sbc.diff(5)
     alert_dates = wow_change[wow_change.abs() > 0.3].index
     if len(alert_dates) > 0:
@@ -567,192 +704,153 @@ else:
 
 
 # =========================================================================
-# SECTION 3 — Regime Labeling Health
+# SECTION 3 — Proxy Reliability vs. Reference Index
 # =========================================================================
-st.header("Section 3 — Regime Labeling Health",
-          help="Verifies that the JM produces meaningful, stable regime labels across the walk-forward periods. "
-               "Degenerate fits (all one state), extreme label imbalance, and erratic lambda selection "
-               "are the main failure modes. Uses the last cached backtest run.")
+st.header("Section 3 — Proxy Reliability vs. Reference Index",
+          help="The paper chains mutual funds to ETFs (e.g., VIMSX as a proxy for IJH before 2000). "
+               "If the mutual fund is a poor proxy, the model learns from corrupted pre-ETF data.\n\n"
+               "This section pairs each mutual fund with its target ETF using the overlap period "
+               "(dates where both exist) to measure proxy quality.\n\n"
+               "**Metrics:**\n"
+               "- **Daily Correlation:** Should be > 0.99 for a good proxy.\n"
+               "- **Annualized Tracking Error:** Std of daily return differences × √252. Should be < 2% for equity, < 1% for bond.\n"
+               "- **Total Return Drift:** Cumulative return difference over the overlap. Shows fee drag or tracking failure.\n\n"
+               "If a mutual fund has high tracking error or low correlation, the pre-ETF data may be teaching the model wrong patterns.")
 
-bc = _load_backtest_cache()
-if bc is None:
-    st.warning("No backtest cache found (`cache/backtest_cache.pkl`). Run a backtest from the Performance Tracker to populate it.")
-    st.stop()
+# Check which proxy pairs have both sides cached
+proxy_results = []
+proxy_pairs_available = []
 
-cache_version = bc.get("cache_version", 1)
-if cache_version >= 2:
-    bt_df = bc["jm_xgb_df"]
+for fund_ticker, info in PROXY_PAIRS.items():
+    etf_ticker = info["etf"]
+    fund_df = _load_data_cache(fund_ticker)
+    etf_df = _load_data_cache(etf_ticker)
+    if fund_df is not None and etf_df is not None:
+        proxy_pairs_available.append((fund_ticker, etf_ticker, info["name"]))
+
+if not proxy_pairs_available:
+    st.info("No proxy pairs available — need both mutual fund and ETF caches. "
+            "Run `benchmark_assets.py` for both 'Default ETFs' and 'Long History' asset lists to populate caches.")
 else:
-    st.warning("Legacy backtest cache format — please re-run the backtest to get v2 format.")
-    st.stop()
+    st.caption(f"Found {len(proxy_pairs_available)} proxy pairs with cached data.")
 
-if "JM_Target_State" not in bt_df.columns:
-    st.warning("Backtest cache does not contain JM_Target_State column. Re-run the backtest.")
-    st.stop()
+    summary_rows = []
 
-lambda_history = bc.get("lambda_history", [])
-lambda_dates_str = bc.get("lambda_dates", [])
-lambda_dates = [pd.to_datetime(d) for d in lambda_dates_str] if lambda_dates_str else []
-config_name = bc.get("config_name", "Unknown")
+    for fund_ticker, etf_ticker, pair_name in proxy_pairs_available:
+        fund_df_full = _load_data_cache(fund_ticker)
+        etf_df_full = _load_data_cache(etf_ticker)
 
-st.caption(f"Backtest config: **{config_name}** | EWMA halflife: {bc.get('best_ewma_hl', '?')}")
+        # Extract daily returns
+        fund_ret_col = "Target_Return" if "Target_Return" in fund_df_full.columns else None
+        etf_ret_col = "Target_Return" if "Target_Return" in etf_df_full.columns else None
 
-# Split backtest into 6-month chunks aligned with lambda_dates
-chunks = []
-if lambda_dates:
-    for i, d in enumerate(lambda_dates):
-        end_d = lambda_dates[i + 1] if i + 1 < len(lambda_dates) else bt_df.index[-1] + pd.Timedelta(days=1)
-        chunk = bt_df[(bt_df.index >= d) & (bt_df.index < end_d)]
-        if not chunk.empty:
-            lmbda = lambda_history[i] if i < len(lambda_history) else np.nan
-            chunks.append({"start": d, "end": end_d, "df": chunk, "lambda": lmbda})
-else:
-    # Fallback: split by 6-month intervals
-    start = bt_df.index[0]
-    while start < bt_df.index[-1]:
-        end_d = start + pd.DateOffset(months=6)
-        chunk = bt_df[(bt_df.index >= start) & (bt_df.index < end_d)]
-        if not chunk.empty:
-            chunks.append({"start": start, "end": end_d, "df": chunk, "lambda": np.nan})
-        start = end_d
+        if fund_ret_col is None or etf_ret_col is None:
+            continue
 
-if not chunks:
-    st.warning("Could not split backtest into chunks.")
-    st.stop()
+        fund_ret = fund_df_full[fund_ret_col].dropna()
+        etf_ret = etf_df_full[etf_ret_col].dropna()
 
-# --- Indicator 7: Bear Market Fraction per Period ---
-st.subheader("Indicator 7 — Bear Fraction per OOS Chunk",
-             help="For each 6-month OOS period, shows the fraction of days the JM's online Viterbi "
-                  "assigned to the Bear state (State 1). The green dashed line is the paper's reported "
-                  "overall Bear% for this asset class.\n\n"
-                  "**Expected:** The paper reports ~20.9% Bear for LargeCap overall. Individual chunks "
-                  "vary — GFC chunks (2008–2009) should be 50–80% Bear, late bull market chunks "
-                  "(2013–2014, 2017–2018) should be near 0% Bear. This variation is expected.\n\n"
-                  "**Red flags:** A chunk at exactly 0% or 100% Bear means JM assigned all days to one state "
-                  "(degenerate fit). This typically happens when lambda is too high (over-penalizing transitions) "
-                  "or the training window passed through a structural break.")
+        # Find overlap period
+        overlap_start = max(fund_ret.index.min(), etf_ret.index.min())
+        overlap_end = min(fund_ret.index.max(), etf_ret.index.max())
 
-bear_fracs = []
-chunk_labels = []
-for c in chunks:
-    jm_states = c["df"]["JM_Target_State"]
-    bear_frac = (jm_states == 1).mean()
-    bear_fracs.append(bear_frac)
-    chunk_labels.append(c["start"].strftime("%Y-%m"))
+        fund_overlap = fund_ret[(fund_ret.index >= overlap_start) & (fund_ret.index <= overlap_end)]
+        etf_overlap = etf_ret[(etf_ret.index >= overlap_start) & (etf_ret.index <= overlap_end)]
 
-paper_bear = PAPER_BEAR_PCT.get(selected_ticker, None)
-# Also check backtest cache ticker if different
-cache_ticker = bc.get("target_ticker", selected_ticker)
-if paper_bear is None:
-    paper_bear = PAPER_BEAR_PCT.get(cache_ticker, None)
+        # Align on common dates
+        common_idx = fund_overlap.index.intersection(etf_overlap.index)
+        if len(common_idx) < 60:  # need at least ~3 months of overlap
+            continue
 
-fig7, ax7 = plt.subplots(figsize=(14, 3.5))
-bar_colors = []
-for bf in bear_fracs:
-    if bf < 0.02 or bf > 0.80:
-        bar_colors.append("#e74c3c")  # red: degenerate
-    elif bf < 0.05 or bf > 0.60:
-        bar_colors.append("#f39c12")  # yellow: suspicious
-    else:
-        bar_colors.append("#3498db")  # blue: normal
+        fund_aligned = fund_overlap.loc[common_idx]
+        etf_aligned = etf_overlap.loc[common_idx]
 
-ax7.bar(range(len(bear_fracs)), bear_fracs, color=bar_colors, edgecolor="none", width=0.7)
-if paper_bear is not None:
-    ax7.axhline(paper_bear, color="#2ecc71", linewidth=1.5, linestyle="--", label=f"Paper: {paper_bear*100:.1f}%")
-    ax7.legend(fontsize=8)
-ax7.set_xticks(range(len(chunk_labels)))
-ax7.set_xticklabels(chunk_labels, rotation=45, ha="right", fontsize=7)
-ax7.set_ylabel("Bear Fraction")
-ax7.set_title("JM Bear State Fraction per 6-Month OOS Chunk", fontsize=10)
-ax7.set_ylim(0, 1)
-ax7.spines[["top", "right"]].set_visible(False)
-fig7.tight_layout()
-st.pyplot(fig7)
-plt.close(fig7)
+        # Metrics
+        daily_corr = fund_aligned.corr(etf_aligned)
+        return_diff = fund_aligned - etf_aligned
+        tracking_error_ann = return_diff.std() * np.sqrt(252) * 100  # in %
 
-# Flag degenerate chunks
-degenerate = [(chunk_labels[i], bear_fracs[i]) for i in range(len(bear_fracs)) if bear_fracs[i] < 0.02 or bear_fracs[i] > 0.80]
-if degenerate:
-    st.warning(f"Degenerate chunks (0% or 80%+ Bear): {', '.join(f'{lbl} ({bf*100:.0f}%)' for lbl, bf in degenerate)}")
+        # Cumulative return drift
+        fund_cum = (1 + fund_aligned).cumprod()
+        etf_cum = (1 + etf_aligned).cumprod()
+        total_return_drift = (fund_cum.iloc[-1] - etf_cum.iloc[-1]) / etf_cum.iloc[-1] * 100  # in %
 
-# --- Indicator 8: Regime Label Imbalance per Chunk (Training Window) ---
-st.subheader("Indicator 8 — Training Label Imbalance per Chunk",
-             help="Shows the Bull/Bear class split that XGBoost receives as training labels for each chunk. "
-                  "XGBoost trains on JM-assigned regime labels from the 11-year lookback window; "
-                  "extreme imbalance means XGB is fitting a near-constant classifier.\n\n"
-                  "**Expected:** ~75–80% Bull / 20–25% Bear for LargeCap (matching paper's overall Bear%). "
-                  "Per-chunk OOS states shown here are a proxy — actual training labels come from the "
-                  "11-year window which is more stable.\n\n"
-                  "**Red flags:** Minority class < 10% (red) means XGB can't learn meaningful discrimination. "
-                  "10–15% (yellow) is borderline — XGB may overfit to the minority class. "
-                  "This is especially common for low-lambda fits where JM produces fewer state transitions.")
-st.caption("Cannot reconstruct exact training labels from cache — using OOS JM states as proxy.")
+        # Years of overlap
+        overlap_years = (overlap_end - overlap_start).days / 365.25
 
-# We use the OOS JM_Target_State as the best available proxy since we don't store training labels.
-# The overall bear fraction across the full OOS gives a sense of label balance.
-overall_bear = (bt_df["JM_Target_State"] == 1).mean()
-overall_bull = 1 - overall_bear
+        # Status thresholds
+        is_bond_pair = fund_ticker in ("VBMFX", "VUSTX", "VWEHX", "VWESX")
+        te_thresh = 1.0 if is_bond_pair else 2.0
+        corr_status = "🟢" if daily_corr > 0.99 else ("🟡" if daily_corr > 0.95 else "🔴")
+        te_status = "🟢" if tracking_error_ann < te_thresh else ("🟡" if tracking_error_ann < te_thresh * 2 else "🔴")
+        drift_status = "🟢" if abs(total_return_drift) < 5 else ("🟡" if abs(total_return_drift) < 15 else "🔴")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Overall OOS Bull%", f"{overall_bull*100:.1f}%")
-col2.metric("Overall OOS Bear%", f"{overall_bear*100:.1f}%")
-status8 = "🔴" if overall_bear < 0.10 or overall_bull < 0.10 else "🟢"
-col3.metric("Balance Status", status8)
+        summary_rows.append({
+            "Pair": f"{fund_ticker} → {etf_ticker}",
+            "Asset Class": pair_name,
+            "Overlap": f"{overlap_start.strftime('%Y-%m')} to {overlap_end.strftime('%Y-%m')} ({overlap_years:.1f}y)",
+            "Days": len(common_idx),
+            "Correlation": f"{daily_corr:.4f} {corr_status}",
+            "Tracking Err (ann %)": f"{tracking_error_ann:.2f}% {te_status}",
+            "Return Drift": f"{total_return_drift:+.2f}% {drift_status}",
+        })
 
-# Per-chunk view
-imbalance_data = []
-for i, c in enumerate(chunks):
-    jm_states = c["df"]["JM_Target_State"]
-    bear_pct = (jm_states == 1).mean() * 100
-    bull_pct = 100 - bear_pct
-    minority = min(bear_pct, bull_pct)
-    flag = "🔴" if minority < 10 else ("🟡" if minority < 15 else "🟢")
-    imbalance_data.append({
-        "Period": chunk_labels[i],
-        "Bull%": f"{bull_pct:.1f}%",
-        "Bear%": f"{bear_pct:.1f}%",
-        "Minority%": f"{minority:.1f}%",
-        "Status": flag,
-        "λ": f"{c['lambda']:.1f}" if not np.isnan(c["lambda"]) else "?",
-    })
+        proxy_results.append({
+            "fund_ticker": fund_ticker,
+            "etf_ticker": etf_ticker,
+            "pair_name": pair_name,
+            "common_idx": common_idx,
+            "fund_aligned": fund_aligned,
+            "etf_aligned": etf_aligned,
+            "daily_corr": daily_corr,
+            "tracking_error_ann": tracking_error_ann,
+            "total_return_drift": total_return_drift,
+            "fund_cum": fund_cum,
+            "etf_cum": etf_cum,
+        })
 
-st.dataframe(pd.DataFrame(imbalance_data).set_index("Period"), use_container_width=True)
+    if summary_rows:
+        st.dataframe(pd.DataFrame(summary_rows).set_index("Pair"), use_container_width=True)
 
-# --- Indicator 9: JM Objective Value Stability ---
-st.subheader("Indicator 9 — Lambda Selection Stability",
-             help="Lambda (the JM transition penalty) is re-tuned every 6 months by maximizing Sharpe "
-                  "on the validation window. This chart shows which lambda was selected at each period.\n\n"
-                  "**Expected:** Stable strategies pick a consistent lambda (CV < 0.3). "
-                  "The Sub-Window Consensus method (Experiment 11) typically yields CV ~0.26. "
-                  "Standard argmax selection can be more erratic (CV > 0.5).\n\n"
-                  "**Interpretation:** Mean λ in the 15–50 range is typical for LargeCap. "
-                  "Large jumps (> 100% change between periods) mean the validation Sharpe landscape is flat "
-                  "or multi-modal — different lambdas look similarly good, so the selection is noise-driven. "
-                  "Lambda smoothing (Experiment 5) or Sub-Window Consensus can stabilize this.")
+        # Detailed charts for each pair
+        with st.expander("Detailed Proxy Charts", expanded=False):
+            for pr in proxy_results:
+                st.markdown(f"### {pr['fund_ticker']} vs {pr['etf_ticker']} ({pr['pair_name']})")
 
-if lambda_history and lambda_dates:
-    fig9, ax9 = plt.subplots(figsize=(14, 3))
-    ax9.plot(lambda_dates, lambda_history, marker="o", markersize=4, linewidth=1.2, color="#8e44ad")
-    ax9.fill_between(lambda_dates, lambda_history, alpha=0.15, color="#8e44ad")
-    ax9.set_ylabel("Lambda")
-    ax9.set_title("Walk-Forward Lambda Selection Over Time", fontsize=10)
-    ax9.xaxis.set_major_locator(mdates.YearLocator(2))
-    ax9.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-    ax9.spines[["top", "right"]].set_visible(False)
-    fig9.tight_layout()
-    st.pyplot(fig9)
-    plt.close(fig9)
+                fig_px, (ax_cum, ax_diff) = plt.subplots(2, 1, figsize=(14, 4.5), sharex=True,
+                                                          gridspec_kw={"height_ratios": [2, 1]})
 
-    # Stats
-    lh = np.array(lambda_history)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Mean λ", f"{lh.mean():.1f}")
-    col2.metric("Std λ", f"{lh.std():.1f}")
-    cv = lh.std() / lh.mean() if lh.mean() > 0 else 0
-    col3.metric("CV", f"{cv:.2f}")
-    # Count large jumps (> 2x change between periods)
-    diffs = np.abs(np.diff(lh))
-    large_jumps = int((diffs > lh[:-1] * 1.0).sum())  # jump > 100% of previous
-    col4.metric("Large Jumps", large_jumps)
-else:
-    st.info("No lambda history available in backtest cache.")
+                # Cumulative return comparison
+                ax_cum.plot(pr["fund_cum"].index, pr["fund_cum"].values, linewidth=0.8,
+                            color="#2980b9", label=pr["fund_ticker"])
+                ax_cum.plot(pr["etf_cum"].index, pr["etf_cum"].values, linewidth=0.8,
+                            color="#e67e22", label=pr["etf_ticker"], linestyle="--")
+                ax_cum.set_ylabel("Cumulative Return")
+                ax_cum.legend(fontsize=8)
+                ax_cum.set_title(f"Proxy Comparison: {pr['fund_ticker']} vs {pr['etf_ticker']} "
+                                 f"(corr={pr['daily_corr']:.4f}, TE={pr['tracking_error_ann']:.2f}%)",
+                                 fontsize=10)
+                ax_cum.spines[["top", "right"]].set_visible(False)
+
+                # Rolling return difference
+                ret_diff = pr["fund_aligned"] - pr["etf_aligned"]
+                rolling_diff = ret_diff.rolling(63).mean() * 252 * 100  # annualized rolling 3-month diff
+                ax_diff.plot(rolling_diff.index, rolling_diff.values, linewidth=0.7, color="#8e44ad")
+                ax_diff.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+                ax_diff.set_ylabel("Ann. Ret Diff (%)")
+                ax_diff.set_xlabel("")
+                ax_diff.spines[["top", "right"]].set_visible(False)
+                ax_diff.xaxis.set_major_locator(mdates.YearLocator(2))
+                ax_diff.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+
+                fig_px.tight_layout()
+                st.pyplot(fig_px)
+                plt.close(fig_px)
+
+    # Flag problematic proxies
+    bad_proxies = [r for r in proxy_results if r["daily_corr"] < 0.95 or r["tracking_error_ann"] > 4.0]
+    if bad_proxies:
+        st.error("Unreliable proxies detected: " +
+                 ", ".join(f"{r['fund_ticker']} (corr={r['daily_corr']:.3f}, TE={r['tracking_error_ann']:.1f}%)"
+                           for r in bad_proxies) +
+                 ". Pre-ETF data from these funds may corrupt model training.")
