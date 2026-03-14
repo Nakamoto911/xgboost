@@ -163,11 +163,19 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 
 ## Caching
 
-- `cache/data_cache.pkl` -- Persisted fetched+engineered data (delete to re-fetch from APIs)
-- `cache/data_cache_{ticker}_{date}.pkl` -- Per-ticker/per-list caches for multi-asset benchmark (date from asset list's data_start)
-- `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution
-- `cache/fred_cache.pkl` -- FRED Treasury yields (DGS2, DGS10), ticker-independent, shared across all backtest runs
-- `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence (also read by Data Quality Audit page for regime health checks)
+All data caches **auto-refresh** when stale — no manual deletion needed.
+
+### Cache Files
+- `cache/data_cache_{ticker}_{start}_{end}.pkl` -- Per-ticker fetched+engineered data. Auto-refreshes if cached end date is >7 days behind requested `END_DATE`. Old cache files for the same ticker are cleaned up when a new one is saved.
+- `cache/fred_cache.pkl` -- FRED Treasury yields (DGS2, DGS10), ticker-independent, shared across all backtest runs. Auto-refreshes if >7 days behind `END_DATE`.
+- `cache/data_cache_{ticker}_{date}_v2.pkl` -- Per-ticker caches for multi-asset benchmark (`benchmark_assets.py`). Auto-refreshes if >30 days stale.
+- `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence (also read by Data Quality Audit page).
+- `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution.
+
+### Staleness Rules
+- `main.py` (`fetch_and_prepare_data`, `_fetch_fred_data`): compares cached data end date vs `END_DATE`; re-fetches if gap >7 calendar days (tolerates weekends/holidays).
+- `benchmark_assets.py` (`fetch_etf_data`): compares cached end date vs today; re-fetches if >30 days stale. Uses dynamic `fetch_end = today + 1` instead of hard-coded dates.
+- **Note:** ^IRX and ^VIX don't have standalone caches — they're fetched inline by `fetch_and_prepare_data()` and merged into the target ticker's cache as derived columns (`RF_Rate`, `VIX_EWMA_log_diff`).
 
 ## Session Memory & Experiment Tracking
 

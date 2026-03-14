@@ -323,15 +323,23 @@ def fetch_etf_data(ticker, data_start=None):
     cache_suffix = '_noDD' if exclude_dd else ''
     cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}{cache_suffix}_v2.pkl')
     if os.path.exists(cache_file):
-        return ticker, pd.read_pickle(cache_file)
+        cached_df = pd.read_pickle(cache_file)
+        # Check staleness: re-fetch if cache is >30 days behind today
+        today = pd.Timestamp.now().normalize()
+        gap_days = (today - cached_df.index.max()).days
+        if gap_days <= 30:
+            return ticker, cached_df
+        else:
+            print(f"  {ticker}: cache {gap_days}d stale, re-fetching...")
 
     try:
         # Download ETF + auxiliary tickers.
         # Always include LARGECAP_TICKER so Stock_Bond_Corr = corr(LargeCap, AggBond) for all assets.
+        fetch_end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         tickers_to_fetch = dict.fromkeys([ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
         raw = {}
         for t in tickers_to_fetch:
-            df_t = yf.download(t, start=data_start, end='2026-03-01', auto_adjust=False, progress=False)
+            df_t = yf.download(t, start=data_start, end=fetch_end, auto_adjust=False, progress=False)
             if df_t.empty:
                 continue
             if isinstance(df_t.columns, pd.MultiIndex):
@@ -352,14 +360,15 @@ def fetch_etf_data(ticker, data_start=None):
         import time
         cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cache')
         os.makedirs(cache_dir, exist_ok=True)
-        fred_cache_file = os.path.join(cache_dir, f'fred_cache_{data_start[:4]}_2026-03.pkl')
+        fred_month = pd.Timestamp.now().strftime('%Y-%m')
+        fred_cache_file = os.path.join(cache_dir, f'fred_cache_{data_start[:4]}_{fred_month}.pkl')
         fred = None
         if os.path.exists(fred_cache_file):
             fred = pd.read_pickle(fred_cache_file)
         else:
             for attempt in range(5):
                 try:
-                    fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, '2026-03-01')
+                    fred = web.DataReader(['DGS2', 'DGS10'], 'fred', data_start, fetch_end)
                     fred.to_pickle(fred_cache_file)
                     break
                 except Exception as e:

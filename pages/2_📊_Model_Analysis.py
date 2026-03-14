@@ -295,7 +295,6 @@ duration_placeholder = st.sidebar.empty()
 # =============================================================================
 # Data Fetching (cached)
 # =============================================================================
-@st.cache_data
 def get_cached_data(target, bond, rf, vix, start, end):
     backend.TARGET_TICKER = target
     backend.BOND_TICKER = bond
@@ -411,6 +410,7 @@ if run_button:
         'lambda_history': lambda_history,
         'lambda_dates': lambda_dates,
         'run_simple_jm': run_simple_jm,
+        'target_ticker': backend.TARGET_TICKER,
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
         'backtest_duration': backtest_duration,

@@ -93,9 +93,29 @@ if not available_tickers:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Ticker selector
+# Ticker selector — sync with Performance Tracker page, fallback to last-backtested
 # ---------------------------------------------------------------------------
-selected_ticker = st.selectbox("Ticker", available_tickers, index=0)
+_default_idx = 0
+
+# Try to sync from Performance Tracker page's session state
+_synced_ticker = st.session_state.get('target_ticker_input', None)
+if _synced_ticker and _synced_ticker in available_tickers:
+    _default_idx = available_tickers.index(_synced_ticker)
+else:
+    # Fallback: use last-backtested ticker from backtest_cache.pkl
+    _bt_path = os.path.join(CACHE_DIR, "backtest_cache.pkl")
+    if os.path.exists(_bt_path):
+        try:
+            import pickle as _pkl
+            with open(_bt_path, "rb") as _f:
+                _bt = _pkl.load(_f)
+            _bt_ticker = _bt.get("target_ticker", None)
+            if _bt_ticker and _bt_ticker in available_tickers:
+                _default_idx = available_tickers.index(_bt_ticker)
+        except Exception:
+            pass
+
+selected_ticker = st.selectbox("Ticker", available_tickers, index=_default_idx, key='audit_ticker_selector')
 df = _load_data_cache(selected_ticker)
 if df is None:
     st.error(f"Could not load data cache for {selected_ticker}")
@@ -149,33 +169,29 @@ def _fred_stats():
     return start, end, f"{rows:,}", nan_pct
 
 
-# Build rows: selected ticker cache + all supporting series
-_ticker_list = [
-    (selected_ticker, "Target Asset", _cache_file_mtime(selected_ticker)),
-    (backend.BOND_TICKER, "Bond (Stock-Bond Corr)", _cache_file_mtime(backend.BOND_TICKER)),
-    (backend.RISK_FREE_TICKER, "Risk-Free Rate", _cache_file_mtime(backend.RISK_FREE_TICKER)),
-    (backend.VIX_TICKER, "VIX", _cache_file_mtime(backend.VIX_TICKER)),
-]
-
+# Build rows from the target cache.
+# main.py merges all series (bond, VIX, risk-free, FRED) INTO the target ticker's
+# single cache file. There are no standalone caches for VBMFX/^IRX/^VIX from main.py.
+# (benchmark_assets.py creates separate per-ticker caches, but those are independent.)
 table_rows = []
 short_lookback_warnings = []
 oos_start = pd.to_datetime(backend.OOS_START_DATE)
 
-for ticker, role, mtime in _ticker_list:
-    status, age, date_str = _fmt_mtime(mtime)
-    start, end, rows, nan_pct = _cache_stats(ticker)
-    table_rows.append({"Ticker": ticker, "Series": role, "Status": status,
-                       "Age": age, "Fetched": date_str,
-                       "Start": start, "End": end, "Rows": rows, "NaN%": nan_pct})
-    # Check lookback for target asset
-    if start != "—":
-        years_before_oos = (oos_start - pd.to_datetime(start)).days / 365.25
-        if years_before_oos < 11:
-            short_lookback_warnings.append(
-                f"**{ticker}** ({role}): only {years_before_oos:.1f}y before OOS start "
-                f"({backend.OOS_START_DATE}) — need 11y for full JM lookback")
+# --- Target asset row (from its cache file) ---
+target_mtime = _cache_file_mtime(selected_ticker)
+t_status, t_age, t_date = _fmt_mtime(target_mtime)
+t_start, t_end, t_rows, t_nan = _cache_stats(selected_ticker)
+table_rows.append({"Ticker": selected_ticker, "Series": "Target Asset", "Status": t_status,
+                   "Age": t_age, "Fetched": t_date,
+                   "Start": t_start, "End": t_end, "Rows": t_rows, "NaN%": t_nan})
+if t_start != "—":
+    years_before_oos = (oos_start - pd.to_datetime(t_start)).days / 365.25
+    if years_before_oos < 11:
+        short_lookback_warnings.append(
+            f"**{selected_ticker}** (Target Asset): only {years_before_oos:.1f}y before OOS start "
+            f"({backend.OOS_START_DATE}) — need 11y for full JM lookback")
 
-# FRED row
+# --- FRED row (standalone cache) ---
 fred_mtime = (os.path.getmtime(os.path.join(CACHE_DIR, "fred_cache.pkl"))
               if os.path.exists(os.path.join(CACHE_DIR, "fred_cache.pkl")) else None)
 fred_status, fred_age, fred_date = _fmt_mtime(fred_mtime)
@@ -184,7 +200,29 @@ table_rows.append({"Ticker": "DGS2 / DGS10", "Series": "FRED Yields", "Status": 
                    "Age": fred_age, "Fetched": fred_date,
                    "Start": fred_start, "End": fred_end, "Rows": fred_rows, "NaN%": fred_nan})
 
-# Backtest cache row (no date range / NaN — it's not a time series)
+# --- Inline series (merged into target cache by main.py) ---
+_inline_series = [
+    ("Stock_Bond_Corr", backend.BOND_TICKER, "Bond (Stock-Bond Corr)"),
+    ("VIX_EWMA_log_diff", backend.VIX_TICKER, "VIX"),
+    ("RF_Rate", backend.RISK_FREE_TICKER, "Risk-Free Rate"),
+]
+for col_name, ticker, role in _inline_series:
+    present = col_name in df.columns and df[col_name].notna().any()
+    if present:
+        s = df[col_name].dropna()
+        nan_ct = int(df[col_name].isna().sum())
+        nan_p = f"{nan_ct / len(df) * 100:.1f}%"
+        table_rows.append({"Ticker": ticker, "Series": role,
+                           "Status": "🟢", "Age": t_age, "Fetched": t_date,
+                           "Start": s.index.min().strftime("%Y-%m-%d"),
+                           "End": s.index.max().strftime("%Y-%m-%d"),
+                           "Rows": f"{len(s):,}", "NaN%": nan_p})
+    else:
+        table_rows.append({"Ticker": ticker, "Series": role,
+                           "Status": "🔴", "Age": "—", "Fetched": "—",
+                           "Start": "—", "End": "—", "Rows": "—", "NaN%": "—"})
+
+# --- Backtest cache row ---
 bt_mtime = (os.path.getmtime(os.path.join(CACHE_DIR, "backtest_cache.pkl"))
             if os.path.exists(os.path.join(CACHE_DIR, "backtest_cache.pkl")) else None)
 bt_status, bt_age, bt_date = _fmt_mtime(bt_mtime)
@@ -198,6 +236,14 @@ st.dataframe(pd.DataFrame(table_rows).set_index("Ticker"),
 if short_lookback_warnings:
     for w in short_lookback_warnings:
         st.warning(w)
+
+# Warn if target cache end date is stale vs today
+today = pd.Timestamp.now().normalize()
+cache_end = df.index.max()
+gap_days = (today - cache_end).days
+if gap_days > 5:  # allow weekends/holidays
+    st.warning(f"**Stale data:** Target cache ends **{cache_end.date()}** but today is **{today.date()}** "
+               f"({gap_days} calendar days behind). Re-run the backtest — caches auto-refresh when stale.")
 
 
 # =========================================================================

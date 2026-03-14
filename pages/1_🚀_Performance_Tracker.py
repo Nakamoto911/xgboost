@@ -303,14 +303,11 @@ with st.sidebar.form("config_form"):
 duration_placeholder = st.sidebar.empty()
 
 # =============================================================================
-# Data Fetching (cached)
+# Data Fetching
 # =============================================================================
-# Force clear Streamlit cache so the updated backend.fetch_and_prepare_data runs (once)
-if 'cache_cleared_v2' not in st.session_state:
-    st.cache_data.clear()
-    st.session_state.cache_cleared_v2 = True
-
-@st.cache_data
+# No @st.cache_data — let main.py's pkl-based caching + staleness logic handle it.
+# Streamlit's decorator was masking stale data by caching the first fetch result
+# even after the underlying pkl was refreshed.
 def get_cached_data(target, bond, rf, vix, start, end):
     backend.TARGET_TICKER = target
     backend.BOND_TICKER = bond
@@ -434,6 +431,7 @@ if run_button:
         'lambda_history': lambda_history,
         'lambda_dates': lambda_dates,
         'run_simple_jm': run_simple_jm,
+        'target_ticker': backend.TARGET_TICKER,
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
         'backtest_duration': backtest_duration,

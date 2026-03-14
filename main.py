@@ -277,8 +277,15 @@ def _fetch_fred_data():
     os.makedirs(cache_dir, exist_ok=True)
     fred_cache_file = os.path.join(cache_dir, 'fred_cache.pkl')
     if os.path.exists(fred_cache_file):
-        print("Loading FRED data from cache...")
-        return pd.read_pickle(fred_cache_file)
+        cached = pd.read_pickle(fred_cache_file)
+        cached_end = cached.index.max()
+        requested_end = pd.to_datetime(END_DATE)
+        gap_days = (requested_end - cached_end).days
+        if gap_days <= 7:
+            print("Loading FRED data from cache...")
+            return cached
+        else:
+            print(f"FRED cache ends {cached_end.date()}, need {END_DATE} — re-fetching...")
 
     print("Fetching FRED data...")
     # Try pandas_datareader first, then fall back to direct FRED CSV API
@@ -316,20 +323,30 @@ def _fetch_fred_data():
 
 def fetch_and_prepare_data():
     safe_ticker = TARGET_TICKER.replace('^', '').replace('=', '')
-    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache',
-                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}_{END_DATE[:7]}.pkl')
-    if os.path.exists(cache_file):
-        print("Loading data from local cache...")
-        return pd.read_pickle(cache_file)
-
-    # Check for any existing cache for this ticker (different date suffix)
     import glob
-    cache_dir = os.path.dirname(cache_file)
-    alt_caches = sorted(glob.glob(os.path.join(cache_dir, f'data_cache_{safe_ticker}_*.pkl')))
-    if alt_caches:
-        best = alt_caches[-1]  # newest by filename
-        print(f"Loading data from alternative cache: {os.path.basename(best)}")
-        return pd.read_pickle(best)
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+    cache_file = os.path.join(cache_dir,
+                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}_{END_DATE[:7]}.pkl')
+    requested_end = pd.to_datetime(END_DATE)
+
+    # Try exact match first, then any alternative cache for same ticker
+    candidates = []
+    if os.path.exists(cache_file):
+        candidates = [cache_file]
+    if not candidates:
+        candidates = sorted(glob.glob(os.path.join(cache_dir, f'data_cache_{safe_ticker}_*.pkl')))
+
+    if candidates:
+        best = candidates[-1]  # newest by filename
+        cached_df = pd.read_pickle(best)
+        cached_end = cached_df.index.max()
+        gap_days = (requested_end - cached_end).days
+        if gap_days <= 7:
+            print(f"Loading data from cache: {os.path.basename(best)}")
+            return cached_df
+        else:
+            print(f"Cache {os.path.basename(best)} ends {cached_end.date()}, "
+                  f"need {END_DATE} — re-fetching...")
 
     fred_data = _fetch_fred_data()
 
@@ -428,7 +445,20 @@ def fetch_and_prepare_data():
     features['Stock_Bond_Corr'] = largecap_returns.rolling(window=252).corr(bond_returns).fillna(0)
     
     final_df = features.dropna()
-    print(f"Saving data to local cache ({cache_file})...")
+
+    # Clean up older caches for the same ticker before saving new one
+    import glob as _glob
+    old_caches = _glob.glob(os.path.join(os.path.dirname(cache_file),
+                                          f'data_cache_{safe_ticker}_*.pkl'))
+    for old in old_caches:
+        if old != cache_file:
+            try:
+                os.remove(old)
+                print(f"Removed stale cache: {os.path.basename(old)}")
+            except OSError:
+                pass
+
+    print(f"Saving data to local cache ({os.path.basename(cache_file)})...")
     final_df.to_pickle(cache_file)
     return final_df
 
