@@ -45,11 +45,10 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 ### Entry Points
 - `main.py` (~815 lines) -- Core backtest engine. Fetches data, fits models, runs walk-forward simulation, outputs PDF report.
 - `app.py` & `pages/` -- Streamlit multi-page dashboard. `app.py` is the landing page.
-  - `pages/1_🚀_Performance_Tracker.py`: Fast parameter tuning and strategy performance metrics via `st.form`. Skips heavy ML/SHAP operations.
-  - `pages/2_📊_Model_Analysis.py`: Deep evaluation of the active model, SHAP values, feature charts and diagnostics.
-  - `pages/3_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
-  - `pages/4_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Long History proxy pairs). Ticker selector at top.
-  - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`.
+  - `pages/1_📊_Model_Analysis.py`: Full backtest portal with parameter tuning via `st.form`, performance metrics, SHAP analysis, feature charts, JM audit, XGBoost evaluation, and PDF/JSON export. Tabs: Performance & Tracking, Feature Impact Analysis, Feature Charts, JM Audit, XGBoost Eval.
+  - `pages/2_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
+  - `pages/3_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Long History proxy pairs). Ticker selector at top.
+  - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`. Experiment preset selector (all 11 experiments + Custom) auto-fills all StrategyConfig params.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
 - `misc_scripts/diagnose_pipeline.py` (~800 lines) -- Pipeline health diagnostics. Generates a minimalist MD report assessing ML model quality and regime structural integrity.
@@ -73,18 +72,17 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 - State 0 = Bullish (invest in target asset), State 1 = Bearish (rotate to risk-free). States are aligned after fitting so State 0 always has higher cumulative excess return.
 - Forecast signal is shifted +1 day before applying to returns to prevent look-ahead bias.
 - Binary 0/1 allocation is the strategy's core strength. Experiments proved continuous allocation and higher thresholds destroy performance.
-- `1_🚀_Performance_Tracker.py` and `2_📊_Model_Analysis.py` sidebars both have an experiment preset selector (all 11 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
+- `1_📊_Model_Analysis.py` sidebar has an experiment preset selector (all 11 experiments + Custom). Selecting a preset auto-fills all StrategyConfig params. The backtest uses `walk_forward_backtest()` from main.py, ensuring all config options take effect.
 - The dashboard mutates `backend.LAMBDA_GRID` and other module-level constants directly to pass data/grid configuration from sidebar controls.
 
 ### Dashboard Deployment Rule (MANDATORY)
-**When any algorithm improvement is made (new StrategyConfig fields, new experiment presets, new walk-forward logic, etc.), it MUST be deployed to ALL Streamlit pages simultaneously.** Specifically:
+**When any algorithm improvement is made (new StrategyConfig fields, new experiment presets, new walk-forward logic, etc.), it MUST be deployed to the dashboard and experiment runner.** Specifically:
 1. Add new `StrategyConfig` fields to `config.py`.
 2. Implement the logic in `main.py` (`walk_forward_backtest`) and `benchmark_assets.py`.
-3. Add sidebar controls for the new options in BOTH `pages/1_🚀_Performance_Tracker.py` AND `pages/2_📊_Model_Analysis.py`.
-4. Add session state defaults, `on_preset_change()` sync, `on_strategy_param_change()` detection, and `StrategyConfig()` construction in BOTH pages.
-5. Add a new experiment preset in `EXPERIMENT_PRESETS` dict (in both pages) and in `run_experiments.py` `EXPERIMENTS` list.
+3. Add sidebar controls for the new options in `pages/1_📊_Model_Analysis.py`.
+4. Add session state defaults, `on_preset_change()` sync, `on_strategy_param_change()` detection, and `StrategyConfig()` construction.
+5. Add a new experiment preset in `EXPERIMENT_PRESETS` dict and in `run_experiments.py` `EXPERIMENTS` list.
 6. If the new technique is the best-performing, make it the **default preset** (index=0 in the selectbox) so users get it by default.
-7. The dashboard pages share an identical `EXPERIMENT_PRESETS` dict — keep them in sync at all times.
 
 ## Configuration
 
@@ -112,17 +110,8 @@ Dataclass controlling experiment variants:
 ## Experiment Framework
 
 ### Available Experiments (in `run_experiments.py` and dashboard EXPERIMENT_PRESETS)
-1. Paper Baseline (reference)
-2. Sortino Tuned
-3. Conservative Threshold (0.6)
-4. Continuous Allocation
-5. Lambda Smoothing
-6. Expanding Window
-7. Lambda Ensemble (Top 3)
-8. The Ultimate Combo
-9. Expanding + Lambda Smoothing
-10. Median-Positive Lambda (most stable, CV=0.26)
-11. Sub-Window Consensus (best avg Sharpe across multi-asset)
+1. Paper Baseline -- reference implementation matching the paper (OOS 2007-2023, data start 1991, Dense 8pt lambda grid)
+2. Optimized (default) -- Sub-Window Consensus, Focused No-100 lambda grid, end date = yesterday
 
 ### Report Output
 Each run generates `benchmarks/experiment_report_YYYYMMDD_HHMMSS.md` containing:

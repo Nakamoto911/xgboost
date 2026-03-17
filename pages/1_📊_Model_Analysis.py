@@ -9,7 +9,12 @@ import json
 import tempfile
 import time
 from datetime import datetime
+import importlib
 import main as backend
+
+# Force reload backend because streamlit caches imported modules!
+importlib.reload(backend)
+
 from config import StrategyConfig
 
 st.set_page_config(layout="wide")
@@ -20,48 +25,48 @@ export_container = st.container()
 # =============================================================================
 # Experiment Presets
 # =============================================================================
+_yesterday = (pd.Timestamp.today() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+
 EXPERIMENT_PRESETS = {
-    "1. Paper Baseline": StrategyConfig(name="1. Paper Baseline"),
-    "2. Sortino Tuned": StrategyConfig(name="2. Sortino Tuned", tuning_metric="sortino"),
-    "3. Conservative Threshold (0.6)": StrategyConfig(name="3. Conservative Threshold (0.6)", prob_threshold=0.60),
-    "4. Continuous Allocation": StrategyConfig(name="4. Continuous Allocation", allocation_style="continuous"),
-    "5. Lambda Smoothing": StrategyConfig(name="5. Lambda Smoothing", lambda_smoothing=True),
-    "6. Expanding Window": StrategyConfig(name="6. Expanding Window", validation_window_type="expanding"),
-    "7. Lambda Ensemble (Top 3)": StrategyConfig(name="7. Lambda Ensemble (Top 3)", lambda_ensemble_k=3),
-    "8. The Ultimate Combo": StrategyConfig(
-        name="8. The Ultimate Combo",
-        tuning_metric="sortino", prob_threshold=0.55,
-        allocation_style="continuous", lambda_smoothing=True,
-    ),
-    "9. Expanding + Lambda Smoothing": StrategyConfig(
-        name="9. Expanding + Lambda Smoothing",
-        validation_window_type="expanding", lambda_smoothing=True,
-    ),
-    "10. Median-Positive Lambda": StrategyConfig(
-        name="10. Median-Positive Lambda", lambda_selection="median_positive",
-    ),
-    "11. Sub-Window Consensus": StrategyConfig(
-        name="11. Sub-Window Consensus", lambda_subwindow_consensus=True,
-    ),
+    "1. Paper Baseline": {
+        "config": StrategyConfig(name="1. Paper Baseline"),
+        "oos_start": "2007-01-01",
+        "end_date": "2023-12-31",
+        "start_date": "1991-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Dense Mid-Range (8 points)",
+    },
+    "2. Optimized": {
+        "config": StrategyConfig(name="2. Optimized", lambda_subwindow_consensus=True),
+        "oos_start": "2007-01-01",
+        "end_date": _yesterday,
+        "start_date": "1987-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Focused No-100 (4 points)",
+    },
 }
 PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
 
 # =============================================================================
 # Session State Initialization
 # =============================================================================
+_default_preset = EXPERIMENT_PRESETS["2. Optimized"]
+_default_cfg = _default_preset["config"]
 _defaults = {
-    'start_date_input': backend.START_DATE_DATA,
-    'oos_start_input': backend.OOS_START_DATE,
+    'start_date_input': _default_preset["start_date"],
+    'oos_start_input': _default_preset["oos_start"],
+    'end_date_input': _default_preset["end_date"],
     'target_ticker_input': backend.TARGET_TICKER,
-    'val_window_input': backend.VALIDATION_WINDOW_YRS,
-    'tuning_metric': "sharpe",
-    'validation_window_type': "rolling",
-    'lambda_smoothing': False,
-    'prob_threshold': 0.50,
-    'allocation_style': "binary",
-    'lambda_ensemble_k': 1,
-    'lambda_selection': "best",
-    'lambda_subwindow_consensus': False,
+    'val_window_input': _default_preset["val_window"],
+    'lambda_grid_preset': _default_preset["lambda_grid_preset"],
+    'tuning_metric': _default_cfg.tuning_metric,
+    'validation_window_type': _default_cfg.validation_window_type,
+    'lambda_smoothing': _default_cfg.lambda_smoothing,
+    'prob_threshold': _default_cfg.prob_threshold,
+    'allocation_style': _default_cfg.allocation_style,
+    'lambda_ensemble_k': _default_cfg.lambda_ensemble_k,
+    'lambda_selection': _default_cfg.lambda_selection,
+    'lambda_subwindow_consensus': _default_cfg.lambda_subwindow_consensus,
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -91,7 +96,15 @@ def on_preset_change():
     preset_name = st.session_state.experiment_preset
     if preset_name == "Custom":
         return
-    cfg = EXPERIMENT_PRESETS[preset_name]
+    preset = EXPERIMENT_PRESETS[preset_name]
+    cfg = preset["config"]
+    # Data source / dates
+    st.session_state.start_date_input = preset["start_date"]
+    st.session_state.oos_start_input = preset["oos_start"]
+    st.session_state.end_date_input = preset["end_date"]
+    st.session_state.val_window_input = preset["val_window"]
+    st.session_state.lambda_grid_preset = preset["lambda_grid_preset"]
+    # Strategy config
     st.session_state.tuning_metric = cfg.tuning_metric
     st.session_state.validation_window_type = cfg.validation_window_type
     st.session_state.lambda_smoothing = cfg.lambda_smoothing
@@ -113,9 +126,10 @@ def on_strategy_param_change():
     preset_name = st.session_state.get('experiment_preset', 'Custom')
     if preset_name == 'Custom':
         return
-    cfg = EXPERIMENT_PRESETS.get(preset_name)
-    if cfg is None:
+    preset = EXPERIMENT_PRESETS.get(preset_name)
+    if preset is None:
         return
+    cfg = preset["config"]
     if (st.session_state.tuning_metric == cfg.tuning_metric and
         st.session_state.validation_window_type == cfg.validation_window_type and
         st.session_state.lambda_smoothing == cfg.lambda_smoothing and
@@ -139,7 +153,7 @@ def on_strategy_param_change():
 # =============================================================================
 st.sidebar.header("Experiment Preset")
 st.sidebar.selectbox(
-    "Strategy", PRESET_NAMES, index=0,
+    "Strategy", PRESET_NAMES, index=1,
     key='experiment_preset', on_change=on_preset_change,
     help="Select a predefined experiment configuration. All parameters below will be filled automatically. Choose 'Custom' to set parameters manually."
 )
@@ -205,7 +219,7 @@ with st.sidebar.form("config_form"):
         start_date_data = st.text_input("Data Start Date", value=current_sd, key='start_date_input', help=f"Auto-calculated earliest date where all tickers have data: {default_start}")
         oos_val = st.session_state.get('oos_start_input', backend.OOS_START_DATE)
         oos_start_date = st.text_input("OOS Start Date", value=oos_val if oos_val else backend.OOS_START_DATE, key='oos_start_input')
-        end_date = st.text_input("End Date", value=backend.END_DATE)
+        end_date = st.text_input("End Date", key='end_date_input')
 
     with st.expander("2. Feature Engineering", expanded=False):
         st.write("Feature parameters configured in code (currently using default).")
@@ -224,9 +238,11 @@ with st.sidebar.form("config_form"):
                     help="Split validation into 3 overlapping sub-windows, find best lambda in each, take median. More robust to validation noise.")
         transaction_cost = st.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
 
+        _lambda_grid_options = ["Dense Mid-Range (8 points)", "Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"]
         grid_preset = st.selectbox(
             "Lambda Grid Preset",
-            ["Dense Mid-Range (8 points)", "Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"]
+            _lambda_grid_options,
+            key='lambda_grid_preset',
         )
 
         if grid_preset == "Dense Mid-Range (8 points)":
