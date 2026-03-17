@@ -231,7 +231,7 @@ table_rows.append({"Ticker": "—", "Series": "Backtest Cache", "Status": bt_sta
                    "Start": "—", "End": "—", "Rows": "—", "NaN%": "—"})
 
 st.dataframe(pd.DataFrame(table_rows).set_index("Ticker"),
-             use_container_width=True, hide_index=False)
+             width='stretch', hide_index=False)
 
 if short_lookback_warnings:
     for w in short_lookback_warnings:
@@ -324,7 +324,7 @@ health_rows.append({
     "Status": gap_status,
 })
 
-st.dataframe(pd.DataFrame(health_rows).set_index("Check"), use_container_width=True)
+st.dataframe(pd.DataFrame(health_rows).set_index("Check"), width='stretch')
 
 # Compact coverage bar (keep it small)
 fig3, ax3 = plt.subplots(figsize=(14, 1.0))
@@ -473,7 +473,7 @@ if has_derived:
             "Expected Range": f"[{exp_lo}, {exp_hi}]",
             "Status": "🟢" if in_range else "🟡",
         })
-    st.dataframe(pd.DataFrame(range_data).set_index("Feature"), use_container_width=True)
+    st.dataframe(pd.DataFrame(range_data).set_index("Feature"), width='stretch')
 
 elif not has_raw_fred:
     st.info("No FRED cache (`fred_cache.pkl`) and no derived yield features found in data cache. "
@@ -661,7 +661,7 @@ if not all_exceedances.empty:
         st.dataframe(
             pd.DataFrame({"Feature": exc_table.index, "±4σ Exceedances": exc_table.values,
                           "% of Obs": (exc_table.values / all_total_obs * 100).round(3)}).set_index("Feature"),
-            use_container_width=True,
+            width='stretch',
         )
     else:
         st.success("No features exceed ±4σ in the rolling window.")
@@ -701,7 +701,7 @@ else:
         })
 
     clip_df = pd.DataFrame(clip_data).set_index("Feature")
-    st.dataframe(clip_df, use_container_width=True)
+    st.dataframe(clip_df, width='stretch')
 
     if any(row["% of Obs"] > 2.0 for row in clip_data):
         st.warning("Clipping exceeds 2% for one or more Sortino features — the clip boundary is materially shaping the distribution.")
@@ -856,7 +856,7 @@ else:
         })
 
     if summary_rows:
-        st.dataframe(pd.DataFrame(summary_rows).set_index("Pair"), use_container_width=True)
+        st.dataframe(pd.DataFrame(summary_rows).set_index("Pair"), width='stretch')
 
         # Detailed charts for each pair
         with st.expander("Detailed Proxy Charts", expanded=False):
