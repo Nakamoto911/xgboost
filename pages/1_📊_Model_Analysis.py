@@ -942,28 +942,28 @@ with tab_perf:
             help="**Calculated:** Annualized Return vs. Annualized Volatility over the entire backtest period.\n\n**Data:** Strategy metrics table.\n\n**Interpret:** The 'Holy Grail' is the top-left quadrant (High Return, Low Risk). Strategies further up and to the left are mathematically superior."
         )
         
-        fig_scatter = go.Figure()
-        
+        fig_risk_return = go.Figure()
+
         for m in metrics_data:
             name = m['Strategy']
             # Parse percentage strings back to floats
             ret = float(m['Ann. Ret'].strip('%')) / 100
             vol = float(m['Ann. Vol'].strip('%')) / 100
-            
-            fig_scatter.add_trace(go.Scatter(
+
+            fig_risk_return.add_trace(go.Scatter(
                 x=[vol], y=[ret],
                 mode='markers+text',
                 name=name,
                 marker=dict(
-                    size=15, 
+                    size=15,
                     color=strategy_colors.get(name, 'gray'),
                     line=dict(width=2, color='white')
                 ),
                 text=[name.replace(' Strategy', '').replace(' Baseline', '')],
                 textposition="top center"
             ))
-            
-        fig_scatter.update_layout(
+
+        fig_risk_return.update_layout(
             template="plotly_dark",
             height=350,
             margin=dict(l=20, r=20, t=30, b=20),
@@ -975,9 +975,9 @@ with tab_perf:
         )
         # Add risk-free rate assumption line (horizontal)
         rf_mean = rf_returns.mean() * 252
-        fig_scatter.add_hline(y=rf_mean, line_dash="dot", line_color="gray", annotation_text=f"Risk-Free ({rf_mean:.1%})", annotation_position="bottom right")
-        
-        st.plotly_chart(fig_scatter, width='stretch')
+        fig_risk_return.add_hline(y=rf_mean, line_dash="dot", line_color="gray", annotation_text=f"Risk-Free ({rf_mean:.1%})", annotation_position="bottom right")
+
+        st.plotly_chart(fig_risk_return, width='stretch')
 
 # --------------------------------------------------------------------------
 with tab_features:
@@ -1496,11 +1496,11 @@ with tab_jm_audit:
         jm_xgb_df['Trailing_Vol'] = jm_xgb_df['Target_Return'].rolling(21).std() * np.sqrt(252)
         jm_xgb_df['Trailing_Ret'] = jm_xgb_df['Target_Return'].rolling(21).mean() * 252
         
-        fig_scatter = go.Figure()
-        
+        fig_jm_risk_return = go.Figure()
+
         for state, label, color in [(0, 'Bull (0)', 'deepskyblue'), (1, 'Bear (1)', 'crimson')]:
             mask = jm_xgb_df['JM_Target_State'] == state
-            fig_scatter.add_trace(go.Scatter(
+            fig_jm_risk_return.add_trace(go.Scatter(
                 x=jm_xgb_df.loc[mask, 'Trailing_Vol'],
                 y=jm_xgb_df.loc[mask, 'Trailing_Ret'],
                 mode='markers',
@@ -1509,8 +1509,8 @@ with tab_jm_audit:
                 text=[f"Date: {d.date()}" for d in jm_xgb_df.index[mask]],
                 hoverinfo="text+x+y"
             ))
-            
-        fig_scatter.update_layout(
+
+        fig_jm_risk_return.update_layout(
             title="Trailing 21-Day Risk vs Return by Regime",
             xaxis_title="Annualized Volatility (Trailing 21D)",
             yaxis_title="Annualized Return (Trailing 21D)",
@@ -1520,8 +1520,8 @@ with tab_jm_audit:
             height=450,
             margin=dict(l=20, r=20, t=50, b=20)
         )
-        
-        st.plotly_chart(fig_scatter, width='stretch')
+
+        st.plotly_chart(fig_jm_risk_return, width='stretch')
         
         # NEW: Regime History Audit Table
         st.subheader(
@@ -1635,30 +1635,30 @@ with tab_jm_audit:
         if dist_features:
             selected_dist_feat = st.selectbox("Select Feature to view Distribution", [f.replace('Feature_', '') for f in dist_features])
             
-            fig_dist = go.Figure()
+            fig_feat_dist = go.Figure()
             feat_col = f"Feature_{selected_dist_feat}"
-            
-            fig_dist.add_trace(go.Box(
-                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 0, feat_col], 
-                name="Bull (0)", 
-                marker_color="deepskyblue", 
+
+            fig_feat_dist.add_trace(go.Box(
+                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 0, feat_col],
+                name="Bull (0)",
+                marker_color="deepskyblue",
                 boxmean='sd'
             ))
-            fig_dist.add_trace(go.Box(
-                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 1, feat_col], 
-                name="Bear (1)", 
-                marker_color="crimson", 
+            fig_feat_dist.add_trace(go.Box(
+                y=jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == 1, feat_col],
+                name="Bear (1)",
+                marker_color="crimson",
                 boxmean='sd'
             ))
-            
-            fig_dist.update_layout(
+
+            fig_feat_dist.update_layout(
                 title=f"Distribution of {selected_dist_feat} by True JM Regime",
                 margin=dict(l=20, r=20, t=50, b=20),
                 yaxis_title=selected_dist_feat,
                 template="plotly_dark",
                 height=400
             )
-            st.plotly_chart(fig_dist, width='stretch')
+            st.plotly_chart(fig_feat_dist, width='stretch')
         
         # NEW: 1g. Regime Feature Scatter Plot
         st.subheader(
@@ -1999,154 +1999,124 @@ with tab_xgb_eval:
 # --------------------------------------------------------------------------
 with export_container:
     col_exp1, col_exp2 = st.columns(2)
-    
+
     dialog_func = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
-    
+
+    def _fmt_duration(secs):
+        if secs is None: return "N/A"
+        if secs >= 3600: return f"{int(secs//3600)}h {int((secs%3600)//60)}m {int(secs%60)}s"
+        if secs >= 60: return f"{int(secs//60)}m {int(secs%60)}s"
+        return f"{secs:.1f}s"
+
     def generate_export_dict():
-        df_no_shap = jm_xgb_df.drop(columns=[c for c in jm_xgb_df.columns if c.startswith('SHAP_')])
-        features = [c for c in df_no_shap.columns if c not in ["Target_Return", "RF_Rate", "Forecast_State", "Strat_Return", "Trades", "State_Prob"]]
-        
-        last_record = df_no_shap.tail(1).copy()
-        last_record.index = last_record.index.astype(str)
-        last_record_dict = last_record.reset_index().to_dict('records')
-        
-        
-        # Format the duration string dynamically
-        duration_str = "N/A"
-        if backtest_duration is not None:
-            if backtest_duration >= 3600:
-                h = int(backtest_duration // 3600)
-                m = int((backtest_duration % 3600) // 60)
-                s = int(backtest_duration % 60)
-                duration_str = f"{h}h {m}m {s}s"
-            elif backtest_duration >= 60:
-                m = int(backtest_duration // 60)
-                s = int(backtest_duration % 60)
-                duration_str = f"{m}m {s}s"
-            else:
-                duration_str = f"{backtest_duration:.2f} seconds"
-        
-        def compress_fig(fig, max_points=6):
-            if fig is None: return {}
-            compressed = {}
-            for trace in getattr(fig, 'data', []):
-                name = getattr(trace, 'name', None) or "Unnamed"
-                if getattr(trace, 'showlegend', True) is False and name == "Unnamed": 
-                    continue
-                
-                trace_type = getattr(trace, 'type', 'scatter')
-                
-                # Handling Heatmap
-                if trace_type == 'heatmap':
-                    z = getattr(trace, 'z', None)
-                    if z is not None:
-                        try:
-                            z_flat = [float(round(v, 3)) if isinstance(v, (float, np.floating)) else int(v) for row in z for v in row]
-                            compressed[name] = z_flat[:max_points*max_points]
-                        except Exception:
-                            pass
-                    continue
-                    
-                # Handling Box
-                if trace_type == 'box':
-                    y = getattr(trace, 'y', None)
-                    if y is not None and len(y) > 0:
-                        y_num = [val for val in y if isinstance(val, (int, float, np.integer, np.floating))]
-                        if y_num:
-                            compressed[name] = [
-                                float(round(np.min(y_num), 3)),
-                                float(round(np.percentile(y_num, 25), 3)),
-                                float(round(np.median(y_num), 3)),
-                                float(round(np.percentile(y_num, 75), 3)),
-                                float(round(np.max(y_num), 3))
-                            ]
-                    continue
-
-                # Handling horizontal bar charts (like SHAP summary)
-                if trace_type == 'bar' and getattr(trace, 'orientation', 'v') == 'h':
-                    x = getattr(trace, 'x', [])
-                    y = getattr(trace, 'y', [])
-                    if x is not None and y is not None:
-                        pairs = list(zip(y, x))
-                        if len(pairs) > max_points * 2:
-                            pairs = pairs[:max_points] + pairs[-max_points:]
-                        compressed[name] = {str(k): float(round(v, 3)) if isinstance(v, (float, np.floating)) else v for k, v in pairs}
-                    continue
-                
-                # Handling standard scatter/lines/bar
-                y = getattr(trace, 'y', None)
-                if y is None or len(y) == 0: 
-                    continue
-                
-                y_list = list(y)
-                y_num = [val for val in y_list if isinstance(val, (int, float, np.integer, np.floating))]
-                if not y_num:
-                    continue
-                
-                if len(y_num) > max_points:
-                    step = (len(y_num) - 1) / max(1, max_points - 1)
-                    sampled_y = [y_num[int(round(i * step))] for i in range(max_points)]
-                else:
-                    sampled_y = y_num
-                
-                sampled_y = [float(round(val, 3)) if isinstance(val, (float, np.floating)) else int(val) if isinstance(val, np.integer) else val for val in sampled_y]
-                compressed[name] = sampled_y
-                
-            return {k: v for k, v in compressed.items() if v}
-
+        """Compact JSON for LLM context — structured data, no chart blobs."""
         g = globals()
-        figs = {
-            "Wealth": g.get('fig_wealth'),
-            "Drawdown": g.get('fig_dd'),
-            "Regime_Prob": g.get('fig_prob'),
-            "Sortino": g.get('fig_sortino'),
-            "Monthly_Heatmap": g.get('fig_heatmap'),
-            "Return_Dist": g.get('fig_dist'),
-            "Risk_Return_Scatter": g.get('fig_scatter'),
-            "Trades_Lambda": g.get('fig_trades'),
-            "SHAP_TS": g.get('fig_shap_ts'),
-            "SHAP_Summary": g.get('fig_shap_summary'),
-            "Feature_Dependence": g.get('fig_dep'),
-            "SHAP_Point_in_Time": g.get('fig_point'),
-            "JM_Return_Dist": g.get('fig_box'),
-            "JM_Regime_Timeline": g.get('fig_jm_price'),
-            "JM_Periodic_Breakdown": g.get('fig_p_break'),
-            "JM_Risk_Return": g.get('fig_scatter'),
-            "XGB_Confusion_Matrix": g.get('fig_cm'),
-            "XGB_Rolling_Acc": g.get('fig_roll'),
+        has_jm = 'JM_Target_State' in jm_xgb_df.columns
+        has_shap = any(c.startswith('SHAP_') for c in jm_xgb_df.columns)
+
+        # --- Config ---
+        export = {
+            "cfg": {
+                "preset": cache_data.get('config_name', ''),
+                "tgt": backend.TARGET_TICKER,
+                "oos": f"{filter_start} to {filter_end}",
+                "lambda_grid": list(backend.LAMBDA_GRID),
+                "ewma_hl": best_ewma_hl,
+                "cost_bps": round(backend.TRANSACTION_COST * 10000),
+                "duration": _fmt_duration(backtest_duration),
+            },
+            # --- Performance metrics ---
+            "perf": [
+                {"s": m["Strategy"][:15], "ret": m["Ann. Ret"], "vol": m["Ann. Vol"],
+                 "sr": m["Sharpe"], "so": m["Sortino"], "dd": m["Max DD"], "n": m["Total Trades"]}
+                for m in metrics_data
+            ],
         }
-        
+
+        # --- Lambda history (compact) ---
+        if lambda_history:
+            lh = [round(v, 1) for v in lambda_history]
+            export["lambda"] = {"vals": lh, "mean": round(np.mean(lh), 1),
+                                "std": round(np.std(lh), 1),
+                                "cv": round(np.std(lh) / np.mean(lh), 2) if np.mean(lh) > 0 else None}
+
+        # --- Regime stats ---
+        if has_jm:
+            bear_pct = round((jm_xgb_df['Forecast_State'] == 1).mean() * 100, 1)
+            shifts = int(jm_xgb_df['Forecast_State'].diff().abs().fillna(0).sum())
+            jm_stats = {}
+            for state, label in [(0, "bull"), (1, "bear")]:
+                rets = jm_xgb_df.loc[jm_xgb_df['JM_Target_State'] == state, 'Target_Return']
+                if not rets.empty:
+                    jm_stats[label] = {"n": len(rets),
+                                       "ann_ret": f"{rets.mean()*252:.1%}",
+                                       "ann_vol": f"{rets.std()*np.sqrt(252):.1%}"}
+            export["regime"] = {"bear_pct": bear_pct, "shifts": shifts, "jm": jm_stats}
+
+        # --- XGB accuracy ---
+        if has_jm:
+            true_labels = jm_xgb_df['JM_Target_State'].shift(-1).dropna()
+            pred_labels = jm_xgb_df['Forecast_State'].loc[true_labels.index]
+            if len(true_labels) > 0:
+                from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+                export["xgb"] = {
+                    "acc": f"{accuracy_score(true_labels, pred_labels):.1%}",
+                    "prec": f"{precision_score(true_labels, pred_labels, zero_division=0):.1%}",
+                    "rec": f"{recall_score(true_labels, pred_labels, zero_division=0):.1%}",
+                    "f1": f"{f1_score(true_labels, pred_labels, zero_division=0):.2f}",
+                }
+
+        # --- SHAP top features ---
+        if has_shap:
+            shap_cols = [c for c in jm_xgb_df.columns if c.startswith('SHAP_') and c != 'SHAP_Base_Value']
+            if shap_cols:
+                mean_abs = jm_xgb_df[shap_cols].abs().mean().sort_values(ascending=False)
+                export["shap_top"] = {c.replace('SHAP_', ''): round(v, 4) for c, v in mean_abs.head(7).items()}
+
+        # --- Latest signal ---
+        last = jm_xgb_df.iloc[-1]
+        sig = {"date": str(jm_xgb_df.index[-1].date()),
+               "state": int(last['Forecast_State'])}
+        if 'State_Prob' in jm_xgb_df.columns:
+            sig["prob"] = round(float(last['State_Prob']), 3)
+        export["signal"] = sig
+
+        return export
+
+    def _collect_pdf_figs():
+        """Collect all available figures for PDF export."""
+        g = globals()
+        figs = {}
+        # Performance tab
+        for name, key in [("Cumulative Wealth", "fig_wealth"), ("Drawdown Profile", "fig_dd"),
+                          ("Rolling 1-Year Sortino", "fig_sortino"), ("Monthly Returns Heatmap", "fig_heatmap"),
+                          ("Return Distribution", "fig_dist"), ("Risk-Return Profile", "fig_risk_return")]:
+            f = g.get(key)
+            if f is not None: figs[name] = f
+        # Feature tab
+        for name, key in [("SHAP Time-Series", "fig_shap_ts"), ("SHAP Summary", "fig_shap_summary"),
+                          ("Feature Dependence", "fig_dep"), ("SHAP Point-in-Time", "fig_point")]:
+            f = g.get(key)
+            if f is not None: figs[name] = f
+        # Feature Charts tab
+        for name, key in [("Transactions & Lambda", "fig_trades")]:
+            f = g.get(key)
+            if f is not None: figs[name] = f
         fc = g.get('feature_charts', {})
         for k, v in fc.items():
-            figs[f"Feat_{k}"] = v
-
-        exported_charts = {k: compress_fig(v) for k, v in figs.items() if v is not None and compress_fig(v)}
-        
-        return {
-            "params": {
-                "tgt": backend.TARGET_TICKER, 
-                "bnd": backend.BOND_TICKER, 
-                "rf": backend.RISK_FREE_TICKER,
-                "vix": backend.VIX_TICKER,
-                "cost": backend.TRANSACTION_COST, 
-                "oos": f"{filter_start} to {filter_end}",
-                "lambda_sel": lambda_history[-1] if lambda_history else "N/A",
-                "backtest_duration": duration_str
-            },
-            "data": {
-                "rows": jm_xgb_df.shape[0], 
-                "feats": features,
-                "has_shap": any(c.startswith('SHAP_') for c in jm_xgb_df.columns)
-            },
-            "latest_row": last_record_dict[0] if len(last_record_dict) > 0 else {},
-            "outputs": [
-                {
-                    "strat": m["Strategy"][:15], "ret": m["Ann. Ret"], "vol": m["Ann. Vol"], 
-                    "sr": m["Sharpe"], "dd": m["Max DD"], "trd": m["Total Trades"]
-                } for m in metrics_data
-            ],
-            "charts": exported_charts
-        }
+            figs[f"Feature: {k}"] = v
+        # JM Audit tab
+        for name, key in [("JM Return Distribution", "fig_box"), ("JM Regime Timeline", "fig_jm_price"),
+                          ("JM Periodic Breakdown", "fig_p_break"), ("JM Risk-Return Scatter", "fig_jm_risk_return"),
+                          ("JM Feature Drift", "fig_drift")]:
+            f = g.get(key)
+            if f is not None: figs[name] = f
+        # XGB Eval tab
+        for name, key in [("Regime Probability vs Market", "fig_prob"),
+                          ("XGB Confusion Matrix", "fig_cm"), ("XGB Rolling Accuracy", "fig_roll")]:
+            f = g.get(key)
+            if f is not None: figs[name] = f
+        return figs
 
     def generate_pdf_report():
         try:
@@ -2155,108 +2125,76 @@ with export_container:
         except ImportError:
             return None
 
-        export_dict = generate_export_dict()
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
-        
-        # Title & Subtitle
+
+        # Title
         current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(200, 10, txt="XGBoost Strategy Backtest Report", ln=True, align='C')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(200, 10, txt=f"Generated on: {current_time_str}", ln=True, align='C')
         pdf.ln(5)
-        
-        # Configuration / Parameters
-        param_labels = {
-            "tgt": "Target Ticker",
-            "bnd": "Bond Ticker",
-            "rf": "Risk-Free Ticker",
-            "vix": "VIX Ticker",
-            "cost": "Transaction Cost",
-            "oos": "Out-of-Sample Period",
-            "lambda_sel": "Final Lambda Penalty",
-            "backtest_duration": "Backtest Duration"
-        }
-        
+
+        # Configuration
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(200, 10, txt="Configuration Parameters:", ln=True)
+        pdf.cell(200, 10, txt="Configuration:", ln=True)
         pdf.set_font("Arial", size=10)
-        for k, v in export_dict["params"].items():
-            label = param_labels.get(k, k)
-            pdf.cell(200, 6, txt=f"- {label}: {v}", ln=True)
+        config_label = cache_data.get('config_name', '')
+        for label, val in [
+            ("Preset", config_label),
+            ("Target Ticker", backend.TARGET_TICKER),
+            ("Bond Ticker", backend.BOND_TICKER),
+            ("Risk-Free Ticker", backend.RISK_FREE_TICKER),
+            ("VIX Ticker", backend.VIX_TICKER),
+            ("OOS Period", f"{filter_start} to {filter_end}"),
+            ("Lambda Grid", str(list(backend.LAMBDA_GRID))),
+            ("EWMA Halflife", str(best_ewma_hl)),
+            ("Transaction Cost", f"{backend.TRANSACTION_COST:.4f}"),
+            ("Duration", _fmt_duration(backtest_duration)),
+        ]:
+            pdf.cell(200, 6, txt=f"- {label}: {val}", ln=True)
         pdf.ln(5)
 
-        # Data Properties
-        data_labels = {
-            "rows": "Total Observations (Rows)",
-            "has_shap": "SHAP Values Available"
-        }
-        
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(200, 10, txt="Data Properties:", ln=True)
-        pdf.set_font("Arial", size=10)
-        for k, v in export_dict["data"].items():
-            if k != "feats":
-                label = data_labels.get(k, k)
-                pdf.cell(200, 6, txt=f"- {label}: {v}", ln=True)
-        pdf.ln(5)
-        
         # Performance Metrics
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(200, 10, txt="Performance Metrics:", ln=True)
         pdf.set_font("Arial", size=10)
-        
-        headers = ['Strategy', 'Ann. Ret', 'Ann. Vol', 'Sharpe', 'Max DD', 'Total Trades']
-        col_widths = [45, 25, 25, 25, 25, 25]
-        
+
+        headers = ['Strategy', 'Ann. Ret', 'Ann. Vol', 'Sharpe', 'Sortino', 'Max DD', 'Trades']
+        col_widths = [40, 22, 22, 20, 20, 22, 22]
+
         for i, header in enumerate(headers):
             pdf.cell(col_widths[i], 8, header, border=1, align='C')
         pdf.ln()
-        
+
         for m in metrics_data:
             pdf.cell(col_widths[0], 8, m['Strategy'][:20], border=1)
             pdf.cell(col_widths[1], 8, m['Ann. Ret'], border=1, align='C')
             pdf.cell(col_widths[2], 8, m['Ann. Vol'], border=1, align='C')
             pdf.cell(col_widths[3], 8, m['Sharpe'], border=1, align='C')
-            pdf.cell(col_widths[4], 8, m['Max DD'], border=1, align='C')
-            pdf.cell(col_widths[5], 8, m['Total Trades'], border=1, align='C')
+            pdf.cell(col_widths[4], 8, m['Sortino'], border=1, align='C')
+            pdf.cell(col_widths[5], 8, m['Max DD'], border=1, align='C')
+            pdf.cell(col_widths[6], 8, m['Total Trades'], border=1, align='C')
             pdf.ln()
         pdf.ln(5)
-        
+
         # Charts
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(200, 10, txt="Charts:", ln=True)
-        
-        figs = {
-            "Cumulative Wealth": fig_wealth,
-            "Drawdown Profile": fig_dd,
-            "Regime Probability vs Market": fig_prob,
-            "Rolling 1-Year Sortino": fig_sortino,
-            "Monthly Returns Heatmap": fig_heatmap,
-            "Return Distribution": fig_dist,
-            "Risk / Return Profile": fig_scatter,
-            "Transactions & Lambda": fig_trades,
-        }
-        
-        if 'fig_shap_ts' in locals() or 'fig_shap_ts' in globals():
-            f = globals().get('fig_shap_ts') or locals().get('fig_shap_ts')
-            if f: figs["SHAP Time-Series"] = f
-            
-        if 'fig_shap_summary' in locals() or 'fig_shap_summary' in globals():
-            f = globals().get('fig_shap_summary') or locals().get('fig_shap_summary')
-            if f: figs["SHAP Summary"] = f
-            
+
+        figs = _collect_pdf_figs()
+
         with tempfile.TemporaryDirectory() as tmpdir:
             for name, fig in figs.items():
                 if fig is not None:
-                    img_path = os.path.join(tmpdir, f"{name.replace(' ', '_')}.png")
+                    img_path = os.path.join(tmpdir, f"{name.replace(' ', '_').replace('/', '_')}.png")
                     fig_copy = go.Figure(fig)
                     fig_copy.update_layout(template="plotly_white", paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)', font=dict(color='black'))
                     try:
                         fig_copy.write_image(img_path, width=800, height=450, scale=2)
-                        
+
                         pdf.add_page()
                         pdf.set_font("Arial", 'B', 12)
                         pdf.cell(200, 10, txt=name, ln=True)
@@ -2265,14 +2203,14 @@ with export_container:
                         pdf.set_font("Arial", size=10)
                         pdf.cell(200, 10, txt=f"Could not render {name}: {str(e)}", ln=True)
                         continue
-                    
+
         return bytes(pdf.output())
 
     with col_exp1:
-        if st.button("📄 Export to PDF"):
+        if st.button("Export to PDF"):
             with st.spinner("Generating PDF Report... This may take a few moments."):
                 pdf_bytes = generate_pdf_report()
-            
+
             if pdf_bytes is None:
                 st.error("Missing dependencies. Please run `pip install fpdf2 kaleido` in your terminal and restart Streamlit.")
             else:
@@ -2295,11 +2233,11 @@ with export_container:
                 st.markdown("Copy the JSON below and share it with your LLM for auditing context.")
                 export_dict = generate_export_dict()
                 st.code(json.dumps(export_dict, separators=(',', ':')), language="json")
-                
-            if st.button("🤖 Export to LLM"):
+
+            if st.button("Export to LLM"):
                 show_export_dialog()
         else:
-            with st.expander("🤖 Export JSON"):
+            with st.expander("Export JSON"):
                 st.markdown("Copy the JSON below and share it with your LLM for auditing context.")
                 export_dict = generate_export_dict()
                 st.code(json.dumps(export_dict, separators=(',', ':')), language="json")
