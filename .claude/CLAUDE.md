@@ -38,7 +38,7 @@ python misc_scripts/diagnose_pipeline.py              # Full diagnostics
 python misc_scripts/diagnose_pipeline.py --quick      # Skip slow tests (permutation)
 ```
 
-There is no formal test framework (pytest/unittest). Tests are standalone scripts in `misc_scripts/`.
+There is no formal test framework (pytest/unittest). All tests, diagnostics, benchmarks, and debug scripts live in `misc_scripts/`. See `misc_scripts/TESTS.md` for a registry of all scripts and their purposes. **When creating a new test or diagnostic script, always place it in `misc_scripts/` and add an entry to `misc_scripts/TESTS.md`.**
 
 ## Architecture
 
@@ -56,6 +56,7 @@ There is no formal test framework (pytest/unittest). Tests are standalone script
 ### Supporting Files
 - `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
 - `refcard.md` -- **Implementation reference card** extracted from the paper. Contains all formulas, hyperparameters, feature definitions, data splits, and numerical results. Use this instead of the full paper when verifying implementation correctness. Includes an "Undisclosed" section listing gaps the paper does not resolve.
+- `misc_scripts/TESTS.md` -- **Test registry.** Documents all scripts in `misc_scripts/` with their purpose. Must be updated when adding new scripts.
 - `misc_scripts/asset_lists.md` -- Named asset lists for multi-asset benchmark (tickers, asset classes, data_start dates). Parsed by `benchmark_assets.py`.
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
