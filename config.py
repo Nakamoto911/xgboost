@@ -82,6 +82,7 @@ def _strategy_config_from_env():
         'XGB_LAMBDA_ENSEMBLE_K': ('lambda_ensemble_k', int),
         'XGB_LAMBDA_SELECTION': ('lambda_selection', str),
         'XGB_LAMBDA_SUBWINDOW_CONSENSUS': ('lambda_subwindow_consensus', lambda v: v.lower() == 'true'),
+        'XGB_EWMA_MODE': ('ewma_mode', str),
     }
     for env_key, (field_name, cast) in _env_overrides.items():
         val = os.environ.get(env_key)

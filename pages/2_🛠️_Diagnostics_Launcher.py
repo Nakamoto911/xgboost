@@ -5,7 +5,9 @@ import os
 import json
 import datetime
 import numpy as np
+import pandas as pd
 import main as backend
+from config import StrategyConfig
 
 st.set_page_config(page_title="Diagnostics Launcher", page_icon="🛠️", layout="wide")
 
@@ -13,27 +15,93 @@ st.title("🛠️ Diagnostics Launcher")
 st.markdown("Run background diagnostic scripts and generate comprehensive LLM-ready markdown reports directly from the UI.")
 
 # =============================================================================
-# Session state defaults (same as Performance Tracker, ensures keys exist)
+# Experiment Presets (keep in sync with Model Analysis page)
 # =============================================================================
+_yesterday = (pd.Timestamp.today() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+
+EXPERIMENT_PRESETS = {
+    "1. Paper Baseline": {
+        "config": StrategyConfig(name="1. Paper Baseline", ewma_mode="paper"),
+        "oos_start": "2007-01-01",
+        "end_date": "2023-12-31",
+        "start_date": "1991-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Dense Mid-Range (8 points)",
+    },
+    "2. Optimized": {
+        "config": StrategyConfig(name="2. Optimized", lambda_subwindow_consensus=True),
+        "oos_start": "2007-01-01",
+        "end_date": _yesterday,
+        "start_date": "1987-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Focused No-100 (4 points)",
+    },
+    "3. Tradable": {
+        "config": StrategyConfig(name="3. Tradable", lambda_selection="median_positive"),
+        "oos_start": "2007-01-01",
+        "end_date": _yesterday,
+        "start_date": "1991-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Expanded (21 points)",
+    },
+}
+PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
+
+def on_preset_change():
+    preset_name = st.session_state.get('diag_experiment_preset', 'Custom')
+    if preset_name == "Custom":
+        return
+    preset = EXPERIMENT_PRESETS[preset_name]
+    cfg = preset["config"]
+    st.session_state.start_date_input = preset["start_date"]
+    st.session_state.oos_start_input = preset["oos_start"]
+    st.session_state.end_date_input = preset["end_date"]
+    st.session_state.val_window_input = preset["val_window"]
+    st.session_state.lambda_grid_preset = preset["lambda_grid_preset"]
+    st.session_state.tuning_metric = cfg.tuning_metric
+    st.session_state.validation_window_type = cfg.validation_window_type
+    st.session_state.lambda_smoothing = cfg.lambda_smoothing
+    st.session_state.prob_threshold = cfg.prob_threshold
+    st.session_state.allocation_style = cfg.allocation_style
+    st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
+    st.session_state.lambda_selection = cfg.lambda_selection
+    st.session_state.lambda_subwindow_consensus = cfg.lambda_subwindow_consensus
+    st.session_state.ewma_mode = cfg.ewma_mode
+    st.session_state.execution_mode = cfg.execution_mode == 'next_open'
+    st.session_state.xgb_max_depth = 6
+    st.session_state.xgb_n_estimators = 100
+    st.session_state.xgb_learning_rate = 0.3
+    st.session_state.xgb_subsample = 1.0
+    st.session_state.xgb_colsample_bytree = 1.0
+    st.session_state.xgb_reg_alpha = 0.0
+    st.session_state.xgb_reg_lambda = 1.0
+
+# =============================================================================
+# Session state defaults
+# =============================================================================
+_default_preset = EXPERIMENT_PRESETS["2. Optimized"]
+_default_cfg = _default_preset["config"]
 _defaults = {
-    'start_date_input': backend.START_DATE_DATA,
-    'oos_start_input': backend.OOS_START_DATE,
-    'end_date_input': backend.END_DATE,
+    'start_date_input': _default_preset["start_date"],
+    'oos_start_input': _default_preset["oos_start"],
+    'end_date_input': _default_preset["end_date"],
     'target_ticker_input': backend.TARGET_TICKER,
     'bond_ticker_input': backend.BOND_TICKER,
     'rf_ticker_input': backend.RISK_FREE_TICKER,
     'vix_ticker_input': backend.VIX_TICKER,
     'transaction_cost_input': float(backend.TRANSACTION_COST),
-    'val_window_input': backend.VALIDATION_WINDOW_YRS,
-    'tuning_metric': "sharpe",
-    'validation_window_type': "rolling",
-    'lambda_smoothing': False,
-    'prob_threshold': 0.50,
-    'allocation_style': "binary",
-    'lambda_ensemble_k': 1,
-    'lambda_selection': "best",
-    'lambda_subwindow_consensus': False,
-    'execution_mode': True,
+    'val_window_input': _default_preset["val_window"],
+    'lambda_grid_preset': _default_preset["lambda_grid_preset"],
+    'tuning_metric': _default_cfg.tuning_metric,
+    'validation_window_type': _default_cfg.validation_window_type,
+    'lambda_smoothing': _default_cfg.lambda_smoothing,
+    'prob_threshold': _default_cfg.prob_threshold,
+    'allocation_style': _default_cfg.allocation_style,
+    'lambda_ensemble_k': _default_cfg.lambda_ensemble_k,
+    'lambda_selection': _default_cfg.lambda_selection,
+    'lambda_subwindow_consensus': _default_cfg.lambda_subwindow_consensus,
+    'ewma_mode': _default_cfg.ewma_mode,
+    'execution_mode': _default_cfg.execution_mode == 'next_open',
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -49,8 +117,15 @@ for key, val in _defaults.items():
 # =============================================================================
 # Sidebar: editable parameters (shared keys with Performance Tracker)
 # =============================================================================
+st.sidebar.header("Experiment Preset")
+st.sidebar.selectbox(
+    "Strategy", PRESET_NAMES, index=1,
+    key='diag_experiment_preset', on_change=on_preset_change,
+    help="Select a predefined experiment configuration. All parameters below will be filled automatically."
+)
+
 st.sidebar.header("Parameters")
-st.sidebar.caption("Shared with Performance Tracker. Changes here are reflected there and vice versa.")
+st.sidebar.caption("Shared with Model Analysis page. Changes here are reflected there and vice versa.")
 
 with st.sidebar.expander("Data Source", expanded=True):
     st.text_input("Target Ticker", key='target_ticker_input')
@@ -157,6 +232,7 @@ def get_script_env():
         'XGB_LAMBDA_ENSEMBLE_K': 'lambda_ensemble_k',
         'XGB_LAMBDA_SELECTION': 'lambda_selection',
         'XGB_LAMBDA_SUBWINDOW_CONSENSUS': 'lambda_subwindow_consensus',
+        'XGB_EWMA_MODE': 'ewma_mode',
     }
     for env_key, ss_key in strategy_mapping.items():
         env[env_key] = str(st.session_state[ss_key])
