@@ -22,7 +22,7 @@ SUB_PERIODS = [
 # All available experiment configurations
 # =============================================================================
 EXPERIMENTS = [
-    StrategyConfig(name="1. Paper Baseline"),
+    StrategyConfig(name="1. Paper Baseline", ewma_mode="paper"),
     StrategyConfig(name="2. Optimized", lambda_subwindow_consensus=True),
     StrategyConfig(name="3. Tradable", lambda_selection="median_positive"),
 ]

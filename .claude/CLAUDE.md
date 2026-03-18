@@ -93,8 +93,8 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
 - `OOS_START_DATE = '2007-01-01'` -- Out-of-sample start (paper: 2007-2023)
 - `TRANSACTION_COST = 0.0005` -- 5 basis points
 - `LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]` -- Dense 8-pt mid-range grid (Session 5: fills gaps for multi-asset; avoids low λ<4.6 that WF overpicks)
-- `EWMA_HL_GRID = [0, 2, 4, 8]` -- EWMA halflife candidates for probability smoothing (fallback for unknown tickers)
-- `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate/NAESX, hl=0: EM/EAFE/HY). Used instead of auto-tuning.
+- `EWMA_HL_GRID = [0, 1, 2, 4, 8, 12, 16]` -- Fixed auto-tune grid for EWMA halflife (not user-configurable)
+- `PAPER_EWMA_HL` -- Dict mapping tickers to paper-prescribed halflives (hl=8: equity/bond/REIT, hl=4: commodity/gold, hl=2: corporate/NAESX, hl=0: EM/EAFE/HY). Used only when `ewma_mode="paper"`.
 
 ### StrategyConfig (`config.py`)
 Dataclass controlling experiment variants:
@@ -106,6 +106,7 @@ Dataclass controlling experiment variants:
 - `allocation_style`: "binary" (default/paper) or "continuous"
 - `lambda_selection`: "best" (default, argmax) or "median_positive" (median of positive-Sharpe lambdas, most stable CV=0.26)
 - `lambda_subwindow_consensus`: bool -- split validation into 3 overlapping sub-windows, take median best-lambda (best avg Sharpe across assets)
+- `ewma_mode`: "auto" (default, tune on pre-OOS window using grid [0,1,2,4,8,12,16]) or "paper" (use PAPER_EWMA_HL dict values directly)
 - `xgb_params`: dict with XGBoost hyperparameters (default: XGBoost defaults per paper -- max_depth=6, learning_rate=0.3, no regularization)
 
 ## Experiment Framework
@@ -149,7 +150,7 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 - **Multi-asset benchmark (Session 5):** 7/11 WIN (64%) on Long History assets vs paper's 11/12 (92%). Root causes: per-asset lambda sensitivity (no single global grid is optimal for all asset classes), FDIVX broken proxy (loses at ALL lambdas), Yahoo vs Bloomberg data gaps. Dense 8pt grid + NAESX hl=2 override improved from 5/11 to 7/11 WIN.
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
 - **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
-- **EWMA halflife:** Auto-tuning on Yahoo data overfits validation window for some assets. Now using paper-prescribed halflives via `PAPER_EWMA_HL` dict (Sessions 3+5). NAESX overridden to hl=2 (Yahoo needs lower smoothing than Bloomberg). Falls back to auto-tuning for tickers not in the dict.
+- **EWMA halflife:** Controlled by `ewma_mode` on StrategyConfig. `"auto"` (default) tunes on pre-OOS window using fixed grid [0,1,2,4,8,12,16]. `"paper"` uses prescribed values from `PAPER_EWMA_HL` dict. Paper Baseline preset uses `"paper"`, all others use `"auto"`.
 
 ## Caching
 

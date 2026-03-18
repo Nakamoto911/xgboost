@@ -106,23 +106,8 @@ with st.sidebar.expander("Jump Model", expanded=False):
             lambda_grid = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]
     st.session_state['lambda_grid_value'] = lambda_grid
 
-    ewma_grid_preset = st.selectbox(
-        "EWMA Halflife Grid",
-        ["Asset-Specific (Paper: 0,2,4,8)", "Fast (0,8)", "Custom"],
-        key='ewma_grid_preset'
-    )
-    if ewma_grid_preset == "Asset-Specific (Paper: 0,2,4,8)":
-        ewma_grid = [0, 2, 4, 8]
-    elif ewma_grid_preset == "Fast (0,8)":
-        ewma_grid = [0, 8]
-    else:
-        ewma_grid_str = st.text_input("Custom EWMA Grid (comma separated)", "0, 2, 4, 8")
-        try:
-            ewma_grid = [int(x.strip()) for x in ewma_grid_str.split(',')]
-        except ValueError:
-            st.error("Invalid EWMA Grid format. Using default.")
-            ewma_grid = [0, 2, 4, 8]
-    st.session_state['ewma_grid_value'] = ewma_grid
+    st.selectbox("EWMA Halflife Mode", ["auto", "paper"], key='ewma_mode',
+                help="'auto' = tune on pre-OOS validation window. 'paper' = use paper-prescribed values per asset.")
 
 with st.sidebar.expander("XGBoost", expanded=False):
     col1, col2 = st.columns(2)
@@ -159,9 +144,8 @@ def get_script_env():
     for env_key, ss_key in mapping.items():
         env[env_key] = str(st.session_state[ss_key])
 
-    # Lambda & EWMA grids
+    # Lambda grid
     env['XGB_LAMBDA_GRID'] = json.dumps([float(x) for x in st.session_state['lambda_grid_value']])
-    env['XGB_EWMA_HL_GRID'] = json.dumps([int(x) for x in st.session_state['ewma_grid_value']])
 
     # Strategy parameters
     strategy_mapping = {

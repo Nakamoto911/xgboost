@@ -29,7 +29,7 @@ _yesterday = (pd.Timestamp.today() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
 
 EXPERIMENT_PRESETS = {
     "1. Paper Baseline": {
-        "config": StrategyConfig(name="1. Paper Baseline"),
+        "config": StrategyConfig(name="1. Paper Baseline", ewma_mode="paper"),
         "oos_start": "2007-01-01",
         "end_date": "2023-12-31",
         "start_date": "1991-01-01",
@@ -75,6 +75,7 @@ _defaults = {
     'lambda_ensemble_k': _default_cfg.lambda_ensemble_k,
     'lambda_selection': _default_cfg.lambda_selection,
     'lambda_subwindow_consensus': _default_cfg.lambda_subwindow_consensus,
+    'ewma_mode': _default_cfg.ewma_mode,
     'execution_mode': _default_cfg.execution_mode == 'next_open',
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
@@ -122,6 +123,7 @@ def on_preset_change():
     st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
     st.session_state.lambda_selection = cfg.lambda_selection
     st.session_state.lambda_subwindow_consensus = cfg.lambda_subwindow_consensus
+    st.session_state.ewma_mode = cfg.ewma_mode
     st.session_state.execution_mode = cfg.execution_mode == 'next_open'
     st.session_state.xgb_max_depth = 6
     st.session_state.xgb_n_estimators = 100
@@ -148,6 +150,7 @@ def on_strategy_param_change():
         st.session_state.lambda_ensemble_k == cfg.lambda_ensemble_k and
         st.session_state.lambda_selection == cfg.lambda_selection and
         st.session_state.lambda_subwindow_consensus == cfg.lambda_subwindow_consensus and
+        st.session_state.ewma_mode == cfg.ewma_mode and
         st.session_state.execution_mode == (cfg.execution_mode == 'next_open') and
         st.session_state.xgb_max_depth == 6 and
         st.session_state.xgb_n_estimators == 100 and
@@ -282,23 +285,8 @@ with st.sidebar.form("config_form"):
                 backend.LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]
         st.session_state['lambda_grid_value'] = backend.LAMBDA_GRID
 
-        ewma_grid_preset = st.selectbox(
-            "EWMA Halflife Grid",
-            ["Asset-Specific (Paper: 0,2,4,8)", "Fast (0,8)", "Custom"],
-            key='ewma_grid_preset'
-        )
-        if ewma_grid_preset == "Asset-Specific (Paper: 0,2,4,8)":
-            backend.EWMA_HL_GRID = [0, 2, 4, 8]
-        elif ewma_grid_preset == "Fast (0,8)":
-            backend.EWMA_HL_GRID = [0, 8]
-        else:
-            ewma_grid_str = st.text_input("Custom EWMA Grid (comma separated)", "0, 2, 4, 8")
-            try:
-                backend.EWMA_HL_GRID = [int(x.strip()) for x in ewma_grid_str.split(',')]
-            except ValueError:
-                st.error("Invalid EWMA Grid format. Using default.")
-                backend.EWMA_HL_GRID = [0, 2, 4, 8]
-        st.session_state['ewma_grid_value'] = backend.EWMA_HL_GRID
+        st.selectbox("EWMA Halflife Mode", ["auto", "paper"], key='ewma_mode',
+                    help="'auto' = tune on pre-OOS validation window (grid: 0,1,2,4,8,12,16). 'paper' = use paper-prescribed values per asset.")
 
     with st.expander("4. XGBoost Parameters", expanded=False):
         st.selectbox("Tuning Metric", ["sharpe", "sortino"], key='tuning_metric')
@@ -362,6 +350,7 @@ if run_button:
         lambda_ensemble_k=st.session_state.lambda_ensemble_k,
         lambda_selection=st.session_state.lambda_selection,
         lambda_subwindow_consensus=st.session_state.lambda_subwindow_consensus,
+        ewma_mode=st.session_state.ewma_mode,
         xgb_params=xgb_params,
         calculate_shap=st.session_state.calculate_shap,
     )
@@ -393,6 +382,8 @@ if run_button:
     lambda_history = jm_xgb_df.attrs.get('lambda_history', [])
     lambda_dates = jm_xgb_df.attrs.get('lambda_dates', [])
     best_ewma_hl = jm_xgb_df.attrs.get('ewma_halflife', 8)
+
+    st.success(f"Backtest complete. Detected EWMA halflife: **{best_ewma_hl}** (mode: {config.ewma_mode})")
 
     # Simple JM baseline (separate run if requested)
     simple_jm_df = pd.DataFrame()
@@ -518,6 +509,7 @@ if os.path.exists(_backtest_cache_path):
             label = f"Last run: {duration_str}"
             if config_label:
                 label += f" ({config_label})"
+            label += f" | EWMA hl={best_ewma_hl}"
             duration_placeholder.info(label)
     except Exception as e:
         st.error(f"Could not load cache: {e}")
@@ -676,6 +668,8 @@ for name, returns in strategies.items():
     })
 
 st.subheader("Performance Metrics")
+_config_label = cache_data.get('config_name', '')
+st.caption(f"Preset: {_config_label} | EWMA halflife: {best_ewma_hl} | Lambda grid: {len(backend.LAMBDA_GRID)} pts")
 st.dataframe(pd.DataFrame(metrics_data))
 
 # Export UI logic has been moved to the end of the file to capture generated charts.

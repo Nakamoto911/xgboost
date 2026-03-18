@@ -75,12 +75,11 @@ VALIDATION_WINDOW_YRS = 5
 # Session 4 diagnosis: wide grid [0, logspace(1,100)] → Sharpe 0.54; focused → 0.85.
 LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]  # Dense 8-pt mid-range (Session 5)
 
-# EWMA halflife candidates for probability smoothing (paper: Section 4.2)
-EWMA_HL_GRID = [0, 2, 4, 8]
+# EWMA halflife grid for auto-tuning (fixed, not user-configurable)
+EWMA_HL_GRID = [0, 1, 2, 4, 8, 12, 16]
 
 # Paper-prescribed EWMA halflives per asset (from paper Section 4.2, Table).
-# Auto-tuning on Yahoo Finance data overfits the validation window for some assets.
-# When TARGET_TICKER has a known paper halflife, skip Phase 1 tuning and use it directly.
+# Used only when ewma_mode="paper" on StrategyConfig.
 PAPER_EWMA_HL = {
     # hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury
     '^SP500TR': 8, 'IVV': 8,           # LargeCap
@@ -122,9 +121,6 @@ if os.environ.get('XGB_VALIDATION_WINDOW_YRS'):
 if os.environ.get('XGB_LAMBDA_GRID'):
     import json as _json
     LAMBDA_GRID = _json.loads(os.environ['XGB_LAMBDA_GRID'])
-if os.environ.get('XGB_EWMA_HL_GRID'):
-    import json as _json
-    EWMA_HL_GRID = _json.loads(os.environ['XGB_EWMA_HL_GRID'])
 
 # ==============================================================================
 # 2. STATISTICAL JUMP MODEL (Implementation from scratch)
@@ -717,10 +713,10 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
     _prev_booster = None
 
     # --- Phase 1: Tune EWMA halflife once on initial validation window ---
-    # Use paper-prescribed halflife if available for this ticker (avoids overfitting Yahoo data)
-    if TARGET_TICKER in PAPER_EWMA_HL:
+    if config.ewma_mode == "paper" and TARGET_TICKER in PAPER_EWMA_HL:
         best_ewma_hl = PAPER_EWMA_HL[TARGET_TICKER]
     else:
+        # Auto-tune: search fixed grid on pre-OOS validation window
         initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
         if config.validation_window_type == 'expanding':
             initial_val_start = pd.to_datetime(OOS_START_DATE) - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
@@ -898,14 +894,13 @@ def main(run_simple_jm=False, fixed_lambda=None):
     lambda_history = []
     lambda_dates = []
 
-    # --- Phase 1: Tune EWMA halflife once on initial validation window (paper Section 4.2) ---
-    # The paper selects one halflife per asset on the pre-OOS validation window, then fixes it.
+    # --- Phase 1: Auto-tune EWMA halflife on initial validation window ---
     initial_val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
     best_ewma_hl = EWMA_HL_GRID[-1]
     best_init_sharpe = -np.inf
 
     if fixed_lambda is None:
-        print(f"\nTuning EWMA halflife on initial validation window ({initial_val_start.date()} to {current_date.date()})...")
+        print(f"\nAuto-tuning EWMA halflife on initial validation window ({initial_val_start.date()} to {current_date.date()})...")
         for hl in EWMA_HL_GRID:
             for lmbda in LAMBDA_GRID:
                 val_res = simulate_strategy(df, initial_val_start, current_date, lmbda, include_xgboost=True, ewma_halflife=hl)
@@ -914,7 +909,7 @@ def main(run_simple_jm=False, fixed_lambda=None):
                     if sharpe > best_init_sharpe:
                         best_init_sharpe = sharpe
                         best_ewma_hl = hl
-        print(f"Selected EWMA halflife: {best_ewma_hl} (fixed for entire OOS period)")
+        print(f"Auto-selected EWMA halflife: {best_ewma_hl} (fixed for entire OOS period)")
 
     # --- Phase 2: Walk-forward lambda tuning (only lambda, halflife is fixed) ---
     while current_date < final_end_date:

@@ -169,7 +169,7 @@ DATA_START = '1993-01-01'  # ETFs need less lookback than ^SP500TR
 
 TRANSACTION_COST = 0.0005
 LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]  # Dense 8-pt mid-range (Session 5: adds 15, 30, 70 to fill gaps; avoids low λ<4.6 that WF overpicks)
-EWMA_HL_GRID = [0, 2, 4, 8]  # 4 candidates (asset-specific smoothing)
+EWMA_HL_GRID = [0, 1, 2, 4, 8, 12, 16]  # Fixed auto-tune grid (not user-configurable)
 
 # Allow env var overrides (from Diagnostics Launcher page 3)
 import json as _json
@@ -177,13 +177,9 @@ if os.environ.get('XGB_TRANSACTION_COST'):
     TRANSACTION_COST = float(os.environ['XGB_TRANSACTION_COST'])
 if os.environ.get('XGB_LAMBDA_GRID'):
     LAMBDA_GRID = _json.loads(os.environ['XGB_LAMBDA_GRID'])
-if os.environ.get('XGB_EWMA_HL_GRID'):
-    EWMA_HL_GRID = _json.loads(os.environ['XGB_EWMA_HL_GRID'])
 
 # Paper-prescribed EWMA halflives (from paper Section 4.2, tuned on Bloomberg data).
-# Session 5 diagnostic: full auto-tuning overfits the joint HL×lambda validation surface.
-# Instead, use paper HLs as base and override specific proxies where Yahoo data diverges
-# from Bloomberg behavior (confirmed by per-asset HL sensitivity sweeps).
+# Used only when ewma_mode="paper" on StrategyConfig.
 PAPER_EWMA_HL = {
     # hl=8: LargeCap, MidCap, REIT, AggBond, Treasury
     '^SP500TR': 8, 'IVV': 8,
@@ -583,10 +579,10 @@ def backtest_single_asset(args):
             continue
 
         # Phase 1: Tune EWMA halflife on initial validation window
-        # Use paper-prescribed halflife if available (avoids overfitting Yahoo data)
-        if ticker in PAPER_EWMA_HL:
+        if config.ewma_mode == "paper" and ticker in PAPER_EWMA_HL:
             best_ewma_hl = PAPER_EWMA_HL[ticker]
         else:
+            # Auto-tune: search fixed grid on pre-OOS validation window
             init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
             if config.validation_window_type == 'expanding':
                 init_val_start = pd.to_datetime(data_start)
@@ -897,7 +893,7 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
     lines.append(f"| Dyn. Feature Select | {config.dynamic_feature_selection} |")
     lines.append(f"| Online learning | {config.xgb_online_learning} |")
     lines.append(f"| Lambda grid | {LAMBDA_GRID} |")
-    lines.append(f"| EWMA HL grid | {EWMA_HL_GRID} |")
+    lines.append(f"| EWMA mode | {config.ewma_mode} |")
     lines.append(f"")
 
     return '\n'.join(lines)
