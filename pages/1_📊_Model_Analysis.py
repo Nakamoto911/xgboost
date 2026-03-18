@@ -697,6 +697,7 @@ def create_base_fig(title, y_title, height=500):
         height=height,
         template="plotly_dark",
         hovermode="x unified",
+        xaxis=dict(hoverformat="%Y-%m-%d"),
         margin=dict(l=20, r=20, t=60, b=40),
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
     )
@@ -1281,6 +1282,7 @@ with tab_feat_charts:
         height=400,
         template="plotly_dark",
         hovermode="x unified",
+        xaxis=dict(hoverformat="%Y-%m-%d"),
         margin=dict(l=20, r=20, t=60, b=40),
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
     )
@@ -1948,6 +1950,7 @@ with tab_xgb_eval:
                 height=500,
                 template="plotly_dark",
                 hovermode="x unified",
+                xaxis=dict(hoverformat="%Y-%m-%d"),
                 margin=dict(l=20, r=20, t=60, b=40),
                 legend=dict(orientation="h", yanchor="top", y=-0.15, x=0.5, xanchor="center", bgcolor="rgba(0,0,0,0)")
             )
