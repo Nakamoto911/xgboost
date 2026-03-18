@@ -574,8 +574,8 @@ def backtest_single_asset(args):
         oos_end_dt = pd.to_datetime(oos_end)
 
         if df.index[0] > oos_start_dt - pd.DateOffset(years=3):
-            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan})
-            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan})
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'EWMA_HL': np.nan})
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'EWMA_HL': np.nan})
             continue
 
         # Phase 1: Tune EWMA halflife on initial validation window
@@ -739,6 +739,7 @@ def backtest_single_asset(args):
             'Ticker': ticker, 'Period': period_name,
             'Strategy': 'JM-XGB', 'Ann_Ret': ret, 'Ann_Vol': vol,
             'Sharpe': sharpe, 'Sortino': sortino, 'Max_DD': mdd,
+            'EWMA_HL': best_ewma_hl,
         })
 
         # B&H metrics
@@ -748,6 +749,7 @@ def backtest_single_asset(args):
             'Ticker': ticker, 'Period': period_name,
             'Strategy': 'B&H', 'Ann_Ret': bh_ret, 'Ann_Vol': bh_vol,
             'Sharpe': bh_sharpe, 'Sortino': bh_sortino, 'Max_DD': bh_mdd,
+            'EWMA_HL': best_ewma_hl,
         })
 
     return results
@@ -755,8 +757,7 @@ def backtest_single_asset(args):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, list_name):
-    config = StrategyConfig()
+def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, list_name, config, data_start):
     """Generate a markdown report with parameters and full results."""
     lines = []
     lines.append(f"# JM-XGB Multi-Asset Benchmark Report — {list_name}")
@@ -882,18 +883,60 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
     # Parameters
     lines.append(f"## Strategy Configuration (`{config.name}`)")
     lines.append(f"")
+    lines.append(f"### Data")
+    lines.append(f"")
+    lines.append(f"| Parameter | Value |")
+    lines.append(f"|---|---|")
+    lines.append(f"| Asset list | {list_name} |")
+    lines.append(f"| Data start | {data_start} |")
+    lines.append(f"| OOS periods | {TIME_PERIODS[0][1]} → {TIME_PERIODS[-1][2]} |")
+    lines.append(f"| Transaction cost | {TRANSACTION_COST:.4f} ({TRANSACTION_COST*10000:.1f} bps) |")
+    lines.append(f"")
+    lines.append(f"### Jump Model / Walk-Forward")
+    lines.append(f"")
     lines.append(f"| Parameter | Value |")
     lines.append(f"|---|---|")
     lines.append(f"| Allocation style | {config.allocation_style} |")
     lines.append(f"| Tuning metric | {config.tuning_metric} |")
-    lines.append(f"| Binary Prob threshold | {config.prob_threshold} |")
-    lines.append(f"| Validation window | {config.validation_window_type} ({VALIDATION_WINDOW_YRS}yrs) |")
+    lines.append(f"| Prob threshold | {config.prob_threshold} |")
+    lines.append(f"| Validation window | {config.validation_window_type} ({VALIDATION_WINDOW_YRS} yrs) |")
     lines.append(f"| Lambda smoothing | {config.lambda_smoothing} |")
     lines.append(f"| Lambda ensemble K | {config.lambda_ensemble_k} |")
-    lines.append(f"| Dyn. Feature Select | {config.dynamic_feature_selection} |")
-    lines.append(f"| Online learning | {config.xgb_online_learning} |")
+    lines.append(f"| Lambda selection | {config.lambda_selection} |")
+    lines.append(f"| Sub-window consensus | {config.lambda_subwindow_consensus} |")
     lines.append(f"| Lambda grid | {LAMBDA_GRID} |")
     lines.append(f"| EWMA mode | {config.ewma_mode} |")
+    lines.append(f"")
+    lines.append(f"### XGBoost Hyperparameters")
+    lines.append(f"")
+    lines.append(f"| Parameter | Value |")
+    lines.append(f"|---|---|")
+    xgb_params = config.xgb_params or {}
+    lines.append(f"| max_depth | {xgb_params.get('max_depth', 6)} |")
+    lines.append(f"| n_estimators | {xgb_params.get('n_estimators', 100)} |")
+    lines.append(f"| learning_rate | {xgb_params.get('learning_rate', 0.3)} |")
+    lines.append(f"| subsample | {xgb_params.get('subsample', 1.0)} |")
+    lines.append(f"| colsample_bytree | {xgb_params.get('colsample_bytree', 1.0)} |")
+    lines.append(f"| reg_alpha (L1) | {xgb_params.get('reg_alpha', 0.0)} |")
+    lines.append(f"| reg_lambda (L2) | {xgb_params.get('reg_lambda', 1.0)} |")
+    lines.append(f"")
+    lines.append(f"### EWMA Halflife per Asset")
+    lines.append(f"")
+    # Extract EWMA HL from Full period results (most representative)
+    full_jm = results_df[(results_df['Period'] == 'Full (2007-2025)') & (results_df['Strategy'] == 'JM-XGB')]
+    if 'EWMA_HL' in results_df.columns and not full_jm.empty:
+        lines.append(f"| Ticker | EWMA HL | Source |")
+        lines.append(f"|---|---:|---|")
+        for ticker in tickers:
+            row = full_jm[full_jm['Ticker'] == ticker]
+            if not row.empty and not pd.isna(row.iloc[0].get('EWMA_HL')):
+                hl = int(row.iloc[0]['EWMA_HL'])
+                source = "paper" if (config.ewma_mode == "paper" and ticker in PAPER_EWMA_HL) else "auto-tuned"
+                lines.append(f"| {ticker} | {hl} | {source} |")
+            else:
+                lines.append(f"| {ticker} | N/A | — |")
+    else:
+        lines.append(f"*(EWMA HL data not available — re-run benchmark to populate)*")
     lines.append(f"")
 
     return '\n'.join(lines)
@@ -966,7 +1009,7 @@ def main():
     results_df.to_csv(csv_path, index=False)
 
     # 4. Generate and save markdown report
-    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name)
+    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name, config, data_start)
     md_path = os.path.join(BENCHMARKS_DIR, f'benchmark_report_{timestamp}.md')
     with open(md_path, 'w') as f:
         f.write(md_content)
