@@ -116,5 +116,21 @@ if __name__ == "__main__":
     # Restore original grid just in case
     main.LAMBDA_GRID = original_grid
     
+    # Preset 3: Tradable
+    cfg_tradable = StrategyConfig(
+        name="3. Tradable",
+        tuning_metric="sharpe",
+        lambda_selection="median_positive",
+        lambda_subwindow_consensus=False,
+        execution_mode="close",
+    )
+    main.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20))
+    
+    print("\nRunning Backtest for Tradable Preset...")
+    res_tradable = walk_forward_backtest(main_df, cfg_tradable)
+    
+    main.LAMBDA_GRID = original_grid
+    
     evaluate_execution(res_baseline, exec_data, "1. Paper Baseline")
     evaluate_execution(res_optimized, exec_data, "2. Optimized (4-pt Grid + SubWindow)")
+    evaluate_execution(res_tradable, exec_data, "3. Tradable (21-pt Grid + Median Positive)")

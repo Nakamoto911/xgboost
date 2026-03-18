@@ -24,6 +24,7 @@ SUB_PERIODS = [
 EXPERIMENTS = [
     StrategyConfig(name="1. Paper Baseline"),
     StrategyConfig(name="2. Optimized", lambda_subwindow_consensus=True),
+    StrategyConfig(name="3. Tradable", lambda_selection="median_positive"),
 ]
 
 
@@ -154,9 +155,23 @@ def run_experiments(configs):
     results = []
     experiment_details = {}  # stores per-experiment extras (lambda history, sub-periods)
 
+    import main
+
     for config in configs:
         print(f"\nRunning: {config.name}...")
-        res_df = walk_forward_backtest(df, config)
+        
+        # Setup strategy-specific LAMBDA_GRID
+        original_grid = main.LAMBDA_GRID
+        if config.name == "2. Optimized":
+            main.LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42] # Focused No-100 (4 points)
+        elif config.name == "3. Tradable":
+            main.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20)) # Expanded (21 points)
+            
+        try:
+            res_df = walk_forward_backtest(df, config)
+        finally:
+            main.LAMBDA_GRID = original_grid
+            
         ret, vol, sharpe, sortino, mdd = calculate_metrics(res_df['Strat_Return'], res_df['RF_Rate'])
 
         results.append({

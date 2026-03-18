@@ -44,6 +44,14 @@ EXPERIMENT_PRESETS = {
         "val_window": 5,
         "lambda_grid_preset": "Focused No-100 (4 points)",
     },
+    "3. Tradable": {
+        "config": StrategyConfig(name="3. Tradable", lambda_selection="median_positive"),
+        "oos_start": "2007-01-01",
+        "end_date": "2023-12-31",
+        "start_date": "1991-01-01",
+        "val_window": 5,
+        "lambda_grid_preset": "Expanded (21 points)",
+    },
 }
 PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
 
