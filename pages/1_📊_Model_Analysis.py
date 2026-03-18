@@ -67,6 +67,7 @@ _defaults = {
     'lambda_ensemble_k': _default_cfg.lambda_ensemble_k,
     'lambda_selection': _default_cfg.lambda_selection,
     'lambda_subwindow_consensus': _default_cfg.lambda_subwindow_consensus,
+    'execution_mode': _default_cfg.execution_mode == 'next_open',
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -113,6 +114,7 @@ def on_preset_change():
     st.session_state.lambda_ensemble_k = cfg.lambda_ensemble_k
     st.session_state.lambda_selection = cfg.lambda_selection
     st.session_state.lambda_subwindow_consensus = cfg.lambda_subwindow_consensus
+    st.session_state.execution_mode = cfg.execution_mode == 'next_open'
     st.session_state.xgb_max_depth = 6
     st.session_state.xgb_n_estimators = 100
     st.session_state.xgb_learning_rate = 0.3
@@ -138,6 +140,7 @@ def on_strategy_param_change():
         st.session_state.lambda_ensemble_k == cfg.lambda_ensemble_k and
         st.session_state.lambda_selection == cfg.lambda_selection and
         st.session_state.lambda_subwindow_consensus == cfg.lambda_subwindow_consensus and
+        st.session_state.execution_mode == (cfg.execution_mode == 'next_open') and
         st.session_state.xgb_max_depth == 6 and
         st.session_state.xgb_n_estimators == 100 and
         abs(st.session_state.xgb_learning_rate - 0.3) < 0.001 and
@@ -236,6 +239,8 @@ with st.sidebar.form("config_form"):
                      help="'best' = argmax(validation Sharpe). 'median_positive' = median of all lambdas with positive validation Sharpe (more robust).")
         st.checkbox("Sub-Window Consensus", key='lambda_subwindow_consensus',
                     help="Split validation into 3 overlapping sub-windows, find best lambda in each, take median. More robust to validation noise.")
+        st.checkbox("Realistic Next-Open Execution", key='execution_mode',
+                    help="If checked, trades execute at the next day's open instead of assumed exact close.")
         transaction_cost = st.number_input("Transaction Cost", value=float(backend.TRANSACTION_COST), format="%.4f")
 
         _lambda_grid_options = ["Dense Mid-Range (8 points)", "Focused Mid-Range (5 points)", "Focused No-100 (4 points)", "Legacy Wide (11 points)", "Expanded (21 points)", "Custom"]
@@ -345,6 +350,7 @@ if run_button:
         lambda_smoothing=st.session_state.lambda_smoothing,
         prob_threshold=st.session_state.prob_threshold,
         allocation_style=st.session_state.allocation_style,
+        execution_mode="next_open" if st.session_state.execution_mode else "close",
         lambda_ensemble_k=st.session_state.lambda_ensemble_k,
         lambda_selection=st.session_state.lambda_selection,
         lambda_subwindow_consensus=st.session_state.lambda_subwindow_consensus,

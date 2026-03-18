@@ -90,6 +90,7 @@ if __name__ == "__main__":
         tuning_metric="sharpe",
         lambda_selection="best",
         lambda_subwindow_consensus=False,
+        execution_mode="close",
         # Uses the default dense 8-pt lambda grid
     )
     
@@ -102,6 +103,7 @@ if __name__ == "__main__":
         tuning_metric="sharpe",
         lambda_selection="best",
         lambda_subwindow_consensus=True,
+        execution_mode="close",
     )
     # Mocking the 4-point grid mutation done by the dashboard
     import main

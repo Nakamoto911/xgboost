@@ -326,7 +326,7 @@ def fetch_and_prepare_data():
     import glob
     cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
     cache_file = os.path.join(cache_dir,
-                              f'data_cache_{safe_ticker}_{START_DATE_DATA[:4]}_{END_DATE[:7]}.pkl')
+                              f'data_cache_v2_{safe_ticker}_{START_DATE_DATA[:4]}_{END_DATE[:7]}.pkl')
     requested_end = pd.to_datetime(END_DATE)
 
     # Try exact match first, then any alternative cache for same ticker
@@ -334,7 +334,7 @@ def fetch_and_prepare_data():
     if os.path.exists(cache_file):
         candidates = [cache_file]
     if not candidates:
-        candidates = sorted(glob.glob(os.path.join(cache_dir, f'data_cache_{safe_ticker}_*.pkl')))
+        candidates = sorted(glob.glob(os.path.join(cache_dir, f'data_cache_v2_{safe_ticker}_*.pkl')))
 
     if candidates:
         best = candidates[-1]  # newest by filename
@@ -370,6 +370,8 @@ def fetch_and_prepare_data():
                     series = df_ticker['Adj Close'].iloc[:, 0].rename(ticker)
                 else:
                     series = df_ticker.iloc[:, 0].rename(ticker)
+                if ticker == TARGET_TICKER and 'Open' in df_ticker.columns.levels[0]:
+                    series_list.append(df_ticker['Open'].iloc[:, 0].rename('Target_Open'))
             else:
                 if 'Adj Close' in df_ticker.columns:
                     series = df_ticker['Adj Close'].rename(ticker)
@@ -377,6 +379,8 @@ def fetch_and_prepare_data():
                     series = df_ticker['Close'].rename(ticker)
                 else:
                     series = df_ticker.iloc[:, 0].rename(ticker)
+                if ticker == TARGET_TICKER and 'Open' in df_ticker.columns:
+                    series_list.append(df_ticker['Open'].rename('Target_Open'))
 
             series_list.append(series)
         except Exception as e:
@@ -399,6 +403,15 @@ def fetch_and_prepare_data():
     # Asset Returns
     target_returns = df[TARGET_TICKER].pct_change().fillna(0)
     features['Target_Return'] = target_returns
+    
+    # Intraday and overnight returns for execution slippage tracking
+    if 'Target_Open' in df.columns:
+        features['Target_Intraday_Ret'] = ((df[TARGET_TICKER] - df['Target_Open']) / df['Target_Open']).fillna(0)
+        features['Target_Overnight_Ret'] = ((df['Target_Open'] - df[TARGET_TICKER].shift(1)) / df[TARGET_TICKER].shift(1)).fillna(0)
+    else:
+        # Fallback if no Open data available
+        features['Target_Intraday_Ret'] = target_returns
+        features['Target_Overnight_Ret'] = 0.0
     
     # Risk-free daily rate (IRX is in %, e.g., 5.0 means 5%)
     features['RF_Rate'] = (df[RISK_FREE_TICKER] / 100) / 252 
@@ -449,7 +462,7 @@ def fetch_and_prepare_data():
     # Clean up older caches for the same ticker before saving new one
     import glob as _glob
     old_caches = _glob.glob(os.path.join(os.path.dirname(cache_file),
-                                          f'data_cache_{safe_ticker}_*.pkl'))
+                                          f'data_cache_v2_{safe_ticker}_*.pkl'))
     for old in old_caches:
         if old != cache_file:
             try:
@@ -534,7 +547,10 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         oos_states = jm.predict_online(X_oos_jm.values, last_known_state=identified_states[-1])
         
         oos_df['Forecast_State'] = oos_states
-        result = oos_df[['Target_Return', 'RF_Rate', 'Forecast_State']]
+        base_cols = ['Target_Return', 'RF_Rate', 'Forecast_State']
+        if 'Target_Intraday_Ret' in oos_df.columns:
+            base_cols.extend(['Target_Intraday_Ret', 'Target_Overnight_Ret'])
+        result = oos_df[base_cols]
         _forecast_cache[cache_key] = result
         return result
 
@@ -613,6 +629,8 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         oos_df[f'Feature_{col}'] = oos_df[col]
         
     cols_to_keep = ['Target_Return', 'RF_Rate', 'Raw_Prob', 'JM_Target_State'] + [f'Feature_{col}' for col in all_features]
+    if 'Target_Intraday_Ret' in oos_df.columns:
+        cols_to_keep.extend(['Target_Intraday_Ret', 'Target_Overnight_Ret'])
     
     if config.calculate_shap:
         cols_to_keep += ['SHAP_Base_Value'] + [f'SHAP_{col}' for col in all_features]
@@ -662,7 +680,21 @@ def simulate_strategy(df, start_date, end_date, lambda_penalty, config: Strategy
         alloc_target = 1.0 - trading_signals
 
     # Calculate 0/1 Strategy Returns
-    strat_returns = (alloc_target * full_res['Target_Return']) + ((1.0 - alloc_target) * full_res['RF_Rate'])
+    if getattr(config, 'execution_mode', 'close') == 'next_open' and 'Target_Intraday_Ret' in full_res.columns:
+        trade_direction = alloc_target.diff().fillna(0)
+        market_returns = full_res['Target_Return'].copy()
+        
+        # execution at Next Open
+        mask_buy = trade_direction > 0
+        mask_sell = trade_direction < 0
+        
+        market_returns = np.where(mask_buy, full_res['Target_Intraday_Ret'], market_returns)
+        market_returns = np.where(mask_sell, full_res['Target_Overnight_Ret'], market_returns)
+        
+        strat_returns = (alloc_target * market_returns) + ((1.0 - alloc_target) * full_res['RF_Rate'])
+    else:
+        strat_returns = (alloc_target * full_res['Target_Return']) + ((1.0 - alloc_target) * full_res['RF_Rate'])
+        
     trades = alloc_target.diff().abs().fillna(0)
     
     full_res['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)

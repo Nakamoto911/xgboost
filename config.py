@@ -45,6 +45,7 @@ class StrategyConfig:
     # --- Idea 5 & 6: Signal & Execution Parameters ---
     prob_threshold: float = 0.50         # Probability threshold for binary bearish classification
     allocation_style: str = "binary"     # Options: "binary" (0% or 100%), "continuous" (invest 1 - P(bear))
+    execution_mode: str = "next_open"    # Options: "close" (theoretical), "next_open" (realistic)
 
     # --- Idea 4 & 10: Model & Feature Parameters ---
     calculate_shap: bool = False         # Whether to calculate SHAP values (can be slow)
@@ -74,6 +75,7 @@ def _strategy_config_from_env():
         'XGB_LAMBDA_SMOOTHING': ('lambda_smoothing', lambda v: v.lower() == 'true'),
         'XGB_PROB_THRESHOLD': ('prob_threshold', float),
         'XGB_ALLOCATION_STYLE': ('allocation_style', str),
+        'XGB_EXECUTION_MODE': ('execution_mode', str),
         'XGB_LAMBDA_ENSEMBLE_K': ('lambda_ensemble_k', int),
         'XGB_LAMBDA_SELECTION': ('lambda_selection', str),
         'XGB_LAMBDA_SUBWINDOW_CONSENSUS': ('lambda_subwindow_consensus', lambda v: v.lower() == 'true'),

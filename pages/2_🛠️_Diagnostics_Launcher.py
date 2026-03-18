@@ -33,6 +33,7 @@ _defaults = {
     'lambda_ensemble_k': 1,
     'lambda_selection': "best",
     'lambda_subwindow_consensus': False,
+    'execution_mode': True,
     'xgb_max_depth': 6,
     'xgb_n_estimators': 100,
     'xgb_learning_rate': 0.3,
@@ -72,6 +73,8 @@ with st.sidebar.expander("Jump Model", expanded=False):
                  help="'best' = argmax(validation Sharpe). 'median_positive' = median of all lambdas with positive validation Sharpe.")
     st.checkbox("Sub-Window Consensus", key='lambda_subwindow_consensus',
                 help="Split validation into 3 overlapping sub-windows, find best lambda in each, take median.")
+    st.checkbox("Realistic Next-Open Execution", key='execution_mode',
+                help="If checked, trades execute at the next day's open instead of assumed exact close.")
     st.number_input("Transaction Cost", min_value=0.0, max_value=0.01, format="%.4f", key='transaction_cost_input')
 
     grid_preset = st.selectbox(
@@ -173,6 +176,8 @@ def get_script_env():
     }
     for env_key, ss_key in strategy_mapping.items():
         env[env_key] = str(st.session_state[ss_key])
+        
+    env['XGB_EXECUTION_MODE'] = "next_open" if st.session_state.get('execution_mode', True) else "close"
 
     # XGBoost parameters (overrides in config.py)
     xgb_mapping = {
