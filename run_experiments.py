@@ -143,9 +143,20 @@ def run_experiments(configs):
     """Run selected experiments, compare against B&H, save results."""
     start_time = time.time()
     df = fetch_and_prepare_data()
+    
+    # Identify if we have a specific end_date from the most specific config (like 3. Tradable)
+    # This ensures B&H baseline is computed using the same range as the strategies.
+    _yesterday = (pd.Timestamp.today() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    target_end = END_DATE
+    if any(c.name == "3. Tradable" for c in configs):
+        target_end = _yesterday
 
-    # Compute B&H metrics once (using Paper Baseline backtest to get aligned date range)
-    print("Computing Buy & Hold baseline...")
+
+    import main
+    original_main_end = main.END_DATE
+    main.END_DATE = target_end
+    
+    print(f"Computing Buy & Hold baseline up to {target_end}...")
     env_defaults = _strategy_config_from_env()
     baseline_df = walk_forward_backtest(df, StrategyConfig(name="_baseline", **env_defaults))
     bh_ret, bh_vol, bh_sharpe, bh_sortino, bh_mdd = calculate_metrics(
@@ -160,12 +171,16 @@ def run_experiments(configs):
     for config in configs:
         print(f"\nRunning: {config.name}...")
         
-        # Setup strategy-specific LAMBDA_GRID
+        # Setup strategy-specific LAMBDA_GRID and END_DATE
         original_grid = main.LAMBDA_GRID
         if config.name == "2. Optimized":
             main.LAMBDA_GRID = [4.64, 10.0, 21.54, 46.42] # Focused No-100 (4 points)
+            main.END_DATE = original_main_end
         elif config.name == "3. Tradable":
             main.LAMBDA_GRID = [0.0] + list(np.logspace(0, 2, 20)) # Expanded (21 points)
+            main.END_DATE = _yesterday
+        else:
+            main.END_DATE = original_main_end
             
         try:
             res_df = walk_forward_backtest(df, config)
@@ -239,14 +254,14 @@ def run_experiments(configs):
     print(f"\nRuntime: {elapsed:.1f}s")
 
     # Save report
-    save_report(results_df, experiment_details, elapsed)
+    save_report(results_df, experiment_details, elapsed, target_end)
     return results_df
 
 
 # =============================================================================
 # Report generation
 # =============================================================================
-def save_report(results_df, experiment_details, elapsed):
+def save_report(results_df, experiment_details, elapsed, target_end):
     """Save experiment results as a timestamped markdown report with full diagnostics."""
     os.makedirs("benchmarks", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -263,7 +278,7 @@ def save_report(results_df, experiment_details, elapsed):
     L.append(f"\n**Generated:** {timestamp}")
     L.append(f"**Runtime:** {elapsed:.1f}s")
     L.append(f"**Target:** {TARGET_TICKER}")
-    L.append(f"**OOS Period:** {OOS_START_DATE} to {END_DATE}")
+    L.append(f"**OOS Period:** {OOS_START_DATE} to {target_end}")
     L.append(f"**Transaction Cost:** {TRANSACTION_COST * 10000:.1f} bps")
     L.append(f"**Lambda Grid:** {len(LAMBDA_GRID)} candidates")
     L.append(f"**EWMA Grid:** {EWMA_HL_GRID}")
