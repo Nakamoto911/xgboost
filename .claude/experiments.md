@@ -5,6 +5,39 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-18 - Execution Timing Diagnostics
+
+**Goal:** Diagnose the difference between theoretical (Close price execution) and realistic (Next-Open price execution) timing for different strategy presets.
+
+### Results
+
+**PRESET: 1. Paper Baseline**
+
+| Metric               | Theoretical (Close)  | Realistic (Next-Open) | Delta |
+|----------------------|----------------------|-----------------------|-------|
+| Ann. Return          |                9.39% |                 9.21% | -0.17%|
+| Sharpe Ratio         |                0.69  |                 0.68  | -0.01 |
+| Max Drawdown         |              -20.15% |               -19.40% |  0.75%|
+| Total Trades         |                  74  |                   74  |    -  |
+
+**PRESET: 2. Optimized (4-pt Grid + SubWindow)**
+
+| Metric               | Theoretical (Close)  | Realistic (Next-Open) | Delta |
+|----------------------|----------------------|-----------------------|-------|
+| Ann. Return          |               11.66% |                11.79% |  0.12%|
+| Sharpe Ratio         |                0.85  |                 0.86  |  0.01 |
+| Max Drawdown         |              -19.28% |               -19.27% |  0.02%|
+| Total Trades         |                  70  |                   70  |    -  |
+
+### Conclusions
+- **Execution Timing Impact:** Moving from Close to Next-Open execution has a very minimal impact on performance for both presets. 
+- For the Paper Baseline, the Sharpe ratio decreases slightly by 0.01, and annualized return drops by 0.17%.
+- For the Optimized preset, the realistic Next-Open execution actually shows a marginal improvement (Sharpe +0.01, Ann. Return +0.12%).
+- Max Drawdown differences are marginal but slightly positive in both cases (drawdown is less severe).
+- **Robustness:** The strategy is robust to execution delays and does not rely on unrealistic same-day close execution to achieve its returns.
+
+---
+
 ## Session 2026-03-11 (Session 9) - Walk-Forward Lambda Selection Robustness
 
 **Goal:** Close the gap between Walk-Forward (WF) and Oracle (best fixed lambda) results across the multi-asset universe. Test existing experiment configs + brainstorm new ideas.
