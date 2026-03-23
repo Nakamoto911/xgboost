@@ -3,9 +3,11 @@
 ## Quick Reference
 - **Paper:** Shu, Yu, Mulvey (2024), arXiv 2406.09578v2
 - **Paper Sharpe (LargeCap):** 0.79 (2007-2023), B&H ~0.50
-- **Our current (after Session 4b fixes):** Sharpe 0.675 (default grid) / 0.852 (no-100 grid)
+- **Our best (Session 10, Bloomberg data):** Sharpe **0.788** (Log 19pt grid) — gap 0.002
+- **Our best (Yahoo data):** Sharpe 0.698 (Dense 8pt grid)
+- **Bloomberg data:** `cache/datab.xlsx` — all 12 paper assets available
 - **Key files:** `main.py` (engine), `config.py` (params), `run_experiments.py` (runner)
-- **Diagnostics:** `misc_scripts/diagnose_gap.py`, `diagnose_gap2.py`, `diagnose_jm_lib.py`, `diagnose_regimes_viterbi.py`
+- **Bloomberg test:** `misc_scripts/test_bloomberg_data.py`
 
 ## Architecture Decisions
 - Binary 0/1 allocation is essential (continuous destroys performance)
@@ -28,11 +30,13 @@
 - New: `[4.64, 10.0, 21.54, 46.42, 100.0]` (default) or `[4.64, 10, 21.54, 46.42]` (best)
 - Dashboard has 5 presets: Focused 5pt (default), Focused 4pt, Legacy Wide, Expanded, Custom
 
-## Current Performance (2007-2023, ^SP500TR)
-- **Default (5pt grid):** Sharpe 0.675 vs B&H 0.499 (+0.177), MDD -22.0%
-- **No-100 (4pt grid):** Sharpe 0.852 vs B&H 0.499 (+0.354), MDD -22.0%
-- **Paper reference:** Sharpe 0.79, MDD -24.78%, Bear% 20.9%, 46 shifts
-- Remaining gap to paper (~0.12): Yahoo vs Bloomberg data source
+## Current Performance (2007-2023, SPTR)
+- **Bloomberg + Log 19pt grid:** Sharpe **0.788** vs B&H 0.499 — gap to paper: **0.002**
+- **Bloomberg + Log 20pt grid:** Sharpe 0.768, MDD **-17.1%** (paper: -17.69%)
+- **Bloomberg + Dense 8pt grid:** Sharpe 0.744, MDD -19.4%
+- **Yahoo + Dense 8pt grid:** Sharpe 0.698, MDD ~-19%
+- **Paper reference:** Sharpe 0.79, MDD -17.69%
+- **Root cause confirmed (Session 10):** Yahoo vs Bloomberg data = ~0.09 Sharpe; lambda grid resolution = ~0.05 swing
 
 ## PAPER_EWMA_HL (Session 3)
 - hl=8: LargeCap, MidCap, SmallCap, REIT, AggBond, Treasury

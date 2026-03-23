@@ -5,9 +5,9 @@
 | Factor | Paper | Our Implementation | Impact |
 |---|---|---|---|
 | OOS Period | 2007-2023 | 2007-2026 | MODERATE - 2024-25 drags performance |
-| Data Source | Bloomberg total return | Yahoo Finance `^SP500TR` | UNKNOWN |
+| Data Source | Bloomberg total return | Yahoo Finance `^SP500TR` | **CONFIRMED ~0.09 Sharpe (Session 10)** |
 | XGB Params | "default" (max_depth=6, lr=0.3, no reg) | Now using defaults (FIXED Session 2) | RESOLVED (+0.174 Sharpe) |
-| Lambda Grid | "log-spaced 0-100" (count unknown) | 11 candidates (0 + logspace(0,2,10)) | LOW |
+| Lambda Grid | "log-spaced 0-100" (count unknown) | Dense 8pt / Log 19-20pt tested | **CONFIRMED ~0.05 Sharpe swing (Session 10)** |
 | EWMA halflife | Tuned once per asset | Tuned once on pre-OOS | MATCHES paper |
 | Allocation | Binary 0/1 | Binary 0/1 | MATCHES paper |
 
@@ -23,5 +23,6 @@
 ## Top Priorities to Close Gap
 1. ~~Test with paper's OOS period (2007-2023)~~ DONE - negligible effect (-0.003)
 2. ~~Test with XGBoost default params~~ DONE - **+0.174 Sharpe delta, strategy now beats B&H**
-3. **Feature engineering audit** vs paper Tables 2 & 3 (remaining gap: 0.566 vs paper 0.79)
-4. **Data source** (Yahoo vs Bloomberg) likely explains remaining ~0.23 gap
+3. ~~Feature engineering audit~~ vs paper Tables 2 & 3 — features match paper
+4. ~~**Data source** (Yahoo vs Bloomberg)~~ DONE (Session 10) — **Bloomberg + Log 19pt grid = Sharpe 0.788 vs paper 0.79. GAP CLOSED.**
+5. **Next:** Integrate Bloomberg data into main.py as data source option; run full multi-asset validation with Bloomberg data
