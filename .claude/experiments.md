@@ -5,6 +5,146 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-23 (Session 14) - Full 12-Asset Bloomberg Baseline + REIT Oracle Sweep
+
+**Goal:** Run baseline (n_est=100, 8pt grid, ewma_mode="paper") across all 12 Bloomberg assets. Determine win/loss vs B&H and vs paper Sharpe. Also run REIT fixed-λ oracle sweep to diagnose regime identification problem (Bear 38.6% vs paper 18.4%).
+
+### Full 12-Asset Results (Bloomberg, 2007-2023, n_est=100, 8pt grid)
+
+B&H Sharpe sanity checks all pass (≤0.01 from paper values).
+
+| Asset | B&H (p) | Our S | Paper S | Gap | Bear% | Shifts | hl | λ̄ | vs B&H |
+|---|---|---|---|---|---|---|---|---|---|
+| LargeCap | 0.499 (0.50) | 0.691 | 0.79 | -0.099 | 23.1% | 54 | 8 | 44.6 | ✓ WIN |
+| MidCap | 0.453 (0.45) | 0.475 | 0.59 | -0.115 | 29.9% | 56 | 8 | 26.7 | ✓ WIN |
+| SmallCap | 0.356 (0.36) | 0.472 | 0.51 | -0.038 | 30.8% | 72 | 8 | 14.2 | ✓ WIN |
+| EAFE | 0.206 (0.20) | 0.508 | 0.56 | -0.052 | 41.9% | 342 | 0 | 7.2 | ✓ WIN |
+| EM | 0.199 (0.20) | 0.701 | 0.85 | -0.149 | 51.5% | 316 | 0 | 12.6 | ✓ WIN |
+| REIT | 0.270 (0.27) | 0.303 | 0.56 | **-0.257** | 38.6% | 58 | 8 | 61.3 | ✓ WIN (barely) |
+| AggBond | 0.468 (0.46) | **0.685** | 0.67 | **+0.015** | 41.2% | 67 | 8 | 58.4 | ✓ WIN |
+| Treasury | 0.266 (0.26) | 0.334 | 0.38 | -0.046 | 57.2% | 63 | 8 | 44.6 | ✓ WIN |
+| HighYield | 0.673 (0.67) | **2.339** | 1.88 | **+0.459** | 46.9% | 206 | 0 | 14.2 | ✓ WIN |
+| Corporate | 0.542 (0.54) | **0.833** | 0.76 | **+0.073** | 47.7% | 124 | 2 | 55.6 | ✓ WIN |
+| Commodity | 0.034 (0.03) | 0.277 | 0.23 | +0.047 | 32.4% | 104 | 4 | 38.2 | ✓ WIN |
+| Gold | 0.427 (0.43) | 0.195 | 0.31 | -0.115 | **76.6%** | 87 | 4 | 42.0 | ✗ LOSE |
+
+**Win vs B&H: 11/12 (92%) — matches paper exactly.** Only Gold loses to B&H (same as paper).
+
+**Average Sharpe gap vs paper: −0.023** across 12 assets. HighYield (+0.459) compensates for many negatives.
+
+### Key Patterns by Asset Group
+
+**hl=0 assets (EAFE, EM, HighYield) — extreme regime instability:**
+- λ̄ very low (7–14), shifts enormous (206–342)
+- Walk-forward validation favors low λ (frequent switching) for these assets
+- HighYield somehow thrives at low λ (S=2.339 vs paper 1.88); EAFE and EM slightly underperform
+
+**hl=8 equity (LargeCap, MidCap, SmallCap, REIT):**
+- REIT worst gap (-0.257): Bear 38.6% vs paper 18.4% (regime identification failure)
+- Others reasonable: SmallCap gap only -0.038, MidCap -0.115
+
+**Fixed income (AggBond, Treasury, Corporate):**
+- Best replication group. AggBond (+0.015), Corporate (+0.073) beat paper. Treasury small gap (-0.046).
+- DD exclusion for AggBond/Treasury/Corporate correctly implemented.
+
+**hl=4 (Commodity, Gold):**
+- Commodity slightly beats paper (+0.047)
+- Gold very poor: Bear=76.6% (strategy almost always bearish on gold → misses all gold bull runs)
+
+### REIT Oracle λ Sweep — Regime Identification Diagnosis
+
+Fixed-λ sweep from λ=4.64 to λ=300 for REIT (DJUSRET, hl=8). Paper targets: S=0.56, Bear=18.4%, Shifts=46.
+
+| λ | JM S | XGB S | XGB add | Bear% | Shifts |
+|---|---|---|---|---|---|
+| 4.64 | -0.071 | 0.151 | +0.222 | 42.6% | 106 |
+| 25.00 | 0.162 | 0.201 | +0.040 | 41.0% | 82 |
+| 60.00 | 0.219 | 0.279 | +0.060 | 37.7% | 42 |
+| 80.00 | 0.192 | **0.387** | +0.196 | 38.8% | 30 |
+| **100.00** | 0.360 | **0.401** | +0.040 | 39.1% | 34 |
+| 150.00 | 0.210 | 0.349 | +0.139 | 31.5% | 23 |
+| 200.00 | 0.162 | 0.198 | +0.036 | **25.2%** | 25 |
+| 300.00 | -0.043 | 0.127 | +0.170 | 25.7% | 33 |
+
+**Best oracle: λ=100, S=0.401, MDD=-22.2%** — still -0.159 below paper's 0.56.
+
+**Critical finding: Bear% never approaches 18.4% at any λ.** Even at λ=300, Bear=25.7% (7pp above paper). This proves the gap is NOT a lambda grid issue — it's a **fundamental data or feature quality problem** with our DJUSRET data.
+
+- λ=40-50: XGB Sharpe turns negative (-0.061, -0.033) — XGB actively hurts in this range for REIT, unlike LargeCap where λ=45 is oracle
+- JM-only best: 0.360 at λ=100 vs paper JM-only 0.39 — even JM alone underperforms
+- REIT walk-forward result (S=0.303, λ̄=61) is actually reasonable given the oracle is only 0.401
+
+**Root cause hypothesis:** The DJUSRET data in our Bloomberg file may have quality/splice issues around the 1991-1992 regime (refcard: "Prior to 1992-01-03: Dow Jones Equity REIT TR (REIT index)"). Our data starts 1991-12-31 — right at the splice boundary. Feature distributions may differ from the paper's Bloomberg pull, causing the JM to persistently identify more bear periods.
+
+### Conclusions
+
+1. **11/12 assets beat B&H** — matches the paper's exact win/loss pattern. Core result is replicated.
+2. **Average gap of −0.023 Sharpe** is acceptable given data/version differences.
+3. **Problem assets**: REIT (regime identification, Bear 38.6% vs 18.4%), Gold (Bear 76.6%), EM/EAFE (extreme λ instability at hl=0).
+4. **Strong assets**: HighYield (2.339 vs 1.88), Corporate (0.833 vs 0.76), AggBond (0.685 vs 0.67).
+5. **The 8pt grid is not suitable for all assets** — confirmed again. hl=0 assets need a different λ range.
+
+**Files created:** `misc_scripts/test_bbg_assets.py` — parameterized Bloomberg asset tester (all 12 assets + REIT oracle mode).
+
+---
+
+## Session 2026-03-23 (Session 13) - n_est=200 Generalization: REIT & AggBond (Bloomberg)
+
+**Goal:** Check whether n_estimators=200 (found to improve LargeCap by +0.079 Sharpe) generalizes to other assets. Tested on Bloomberg data: REIT (DJUSRET, DD included, hl=8) and AggBond (LBUSTRUU, DD excluded, hl=8). 8pt grid, ewma_mode="paper", 2007-2023.
+
+### AggBond (LBUSTRUU) — Excellent Replication
+
+B&H Sharpe: 0.468 (paper: 0.46) ✓
+
+| Config | Sharpe | vs Paper | MDD | Bear% | Shifts | λ̄ |
+|---|---|---|---|---|---|---|
+| **Paper target** | **0.67** | | **-6.30%** | **41.5%** | **97** | |
+| n_est=100 [baseline] | **0.685** | **+0.015** | **-6.3%** | **41.2%** | 67 | 58.4 |
+| n_est=200 | 0.639 | -0.031 | -6.6% | 44.8% | 79 | 33.8 |
+| n_est=300 | 0.628 | -0.042 | -9.2% | 42.1% | 69 | 54.5 |
+| exact + n_est=200 | 0.577 | -0.093 | -6.7% | 38.7% | 79 | 39.5 |
+
+**Key findings:**
+- Baseline (n_est=100) matches paper perfectly: Sharpe +0.015, MDD -6.3% vs -6.30%, Bear 41.2% vs 41.5%
+- **n_est=200 hurts AggBond** (0.685 → 0.639, −0.046). Opposite of LargeCap.
+- Shifts (67) still below paper (97) — lambda tuning selects stable λ but paper had more volatile regimes.
+- DD exclusion implemented correctly (6 features confirmed).
+
+### REIT (DJUSRET) — Major Gap, Regime Problem
+
+B&H Sharpe: 0.270 (paper: 0.27) ✓
+
+| Config | Sharpe | vs Paper | MDD | Bear% | Shifts | λ̄ |
+|---|---|---|---|---|---|---|
+| **Paper target** | **0.56** | | **-32.70%** | **18.4%** | **46** | |
+| n_est=100 [baseline] | 0.303 | -0.257 | -31.7% | 38.6% | 58 | 61.3 |
+| n_est=200 | 0.274 | -0.286 | -29.8% | 38.9% | 60 | 62.6 |
+| n_est=300 | 0.285 | -0.275 | -30.5% | 42.3% | 70 | 50.4 |
+| exact + n_est=200 | 0.248 | -0.312 | -23.2% | 42.5% | 78 | 43.6 |
+
+**Key findings:**
+- Massive gap: -0.257 for baseline (vs -0.099 for LargeCap Bloomberg).
+- **Bear% is 38.6% vs paper's 18.4%** — the JM identifies twice as many bear periods. Regime identification is fundamentally different from the paper. This is the root cause of the performance gap.
+- **n_est=200 hurts REIT too** (0.303 → 0.274, −0.029).
+- MDD (-31.7%) is close to paper (-32.70%), but for the wrong reason (too bearish = avoids drawdowns but misses bull returns).
+- REIT Bear/Shift mismatch is an existing known issue (multi-asset benchmark Session 5/9).
+
+### Overall Conclusion on n_estimators=200
+
+| Asset | n_est=100 | n_est=200 | Delta | Verdict |
+|---|---|---|---|---|
+| LargeCap Bloomberg | 0.691 | 0.770 | **+0.079** | ✓ Helps |
+| AggBond Bloomberg | 0.685 | 0.639 | **-0.046** | ✗ Hurts |
+| REIT Bloomberg | 0.303 | 0.274 | **-0.029** | ✗ Hurts |
+
+**n_estimators=200 is NOT a universal improvement.** It helps LargeCap (where oracle λ is well-defined and XGB signal is strong) but hurts assets where the strategy is already well-calibrated or has regime identification issues. **Do NOT adopt n_est=200 as a global default.**
+
+REIT's poor result is unrelated to n_estimators — it is a regime identification problem (Bear 38.6% vs 18.4%) that likely stems from lambda grid sensitivity for the REIT asset class (high volatility = JM assigns many bear periods). This is a known multi-asset gap (Session 5/9).
+
+**Files created:** `misc_scripts/test_bbg_assets.py` — parameterized Bloomberg asset tester.
+
+---
+
 ## Session 2026-03-23 (Session 12) - Gap Root Cause Analysis: Lambda Grid + XGBoost Params
 
 **Goal:** Find why walk-forward Sharpe is 0.691 (8pt grid) vs paper's 0.790 on Bloomberg SPTR. Three hypotheses tested: (E) fixed-lambda XGB sweep (oracle analysis), (D) predict_online last_known_state DP init, (A) XGBoost tree_method + n_estimators variants. Data: Bloomberg `cache/DATA PAUL.xlsx`, ewma_mode="paper" hl=8, 2007-2023.
@@ -150,6 +290,87 @@ B&H Sharpe: 0.270 (paper: 0.27) ✓
 REIT's poor result is unrelated to n_estimators — it is a regime identification problem (Bear 38.6% vs 18.4%) that likely stems from lambda grid sensitivity for the REIT asset class (high volatility = JM assigns many bear periods). This is a known multi-asset gap (Session 5/9).
 
 **Files created:** `misc_scripts/test_bbg_assets.py` — parameterized Bloomberg asset tester.
+
+---
+
+## Session 2026-03-23 (Session 14) - Full 12-Asset Bloomberg Baseline + REIT Oracle Sweep
+
+**Goal:** Run baseline (n_est=100, 8pt grid, ewma_mode="paper") across all 12 Bloomberg assets. Determine win/loss vs B&H and vs paper Sharpe. Also run REIT fixed-λ oracle sweep to diagnose regime identification problem (Bear 38.6% vs paper 18.4%).
+
+### Full 12-Asset Results (Bloomberg, 2007-2023, n_est=100, 8pt grid)
+
+B&H Sharpe sanity checks all pass (≤0.01 from paper values).
+
+| Asset | B&H (p) | Our S | Paper S | Gap | Bear% | Shifts | hl | λ̄ | vs B&H |
+|---|---|---|---|---|---|---|---|---|---|
+| LargeCap | 0.499 (0.50) | 0.691 | 0.79 | -0.099 | 23.1% | 54 | 8 | 44.6 | ✓ WIN |
+| MidCap | 0.453 (0.45) | 0.475 | 0.59 | -0.115 | 29.9% | 56 | 8 | 26.7 | ✓ WIN |
+| SmallCap | 0.356 (0.36) | 0.472 | 0.51 | -0.038 | 30.8% | 72 | 8 | 14.2 | ✓ WIN |
+| EAFE | 0.206 (0.20) | 0.508 | 0.56 | -0.052 | 41.9% | 342 | 0 | 7.2 | ✓ WIN |
+| EM | 0.199 (0.20) | 0.701 | 0.85 | -0.149 | 51.5% | 316 | 0 | 12.6 | ✓ WIN |
+| REIT | 0.270 (0.27) | 0.303 | 0.56 | **-0.257** | 38.6% | 58 | 8 | 61.3 | ✓ WIN (barely) |
+| AggBond | 0.468 (0.46) | **0.685** | 0.67 | **+0.015** | 41.2% | 67 | 8 | 58.4 | ✓ WIN |
+| Treasury | 0.266 (0.26) | 0.334 | 0.38 | -0.046 | 57.2% | 63 | 8 | 44.6 | ✓ WIN |
+| HighYield | 0.673 (0.67) | **2.339** | 1.88 | **+0.459** | 46.9% | 206 | 0 | 14.2 | ✓ WIN |
+| Corporate | 0.542 (0.54) | **0.833** | 0.76 | **+0.073** | 47.7% | 124 | 2 | 55.6 | ✓ WIN |
+| Commodity | 0.034 (0.03) | 0.277 | 0.23 | +0.047 | 32.4% | 104 | 4 | 38.2 | ✓ WIN |
+| Gold | 0.427 (0.43) | 0.195 | 0.31 | -0.115 | **76.6%** | 87 | 4 | 42.0 | ✗ LOSE |
+
+**Win vs B&H: 11/12 (92%) — matches paper exactly.** Only Gold loses to B&H (same as paper).
+
+**Average Sharpe gap vs paper: −0.023** across 12 assets. HighYield (+0.459) compensates for many negatives.
+
+### Key Patterns by Asset Group
+
+**hl=0 assets (EAFE, EM, HighYield) — extreme regime instability:**
+- λ̄ very low (7–14), shifts enormous (206–342)
+- Walk-forward validation favors low λ (frequent switching) for these assets
+- HighYield somehow thrives at low λ (S=2.339 vs paper 1.88); EAFE and EM slightly underperform
+
+**hl=8 equity (LargeCap, MidCap, SmallCap, REIT):**
+- REIT worst gap (-0.257): Bear 38.6% vs paper 18.4% (regime identification failure)
+- Others reasonable: SmallCap gap only -0.038, MidCap -0.115
+
+**Fixed income (AggBond, Treasury, Corporate):**
+- Best replication group. AggBond (+0.015), Corporate (+0.073) beat paper. Treasury small gap (-0.046).
+- DD exclusion for AggBond/Treasury/Corporate correctly implemented.
+
+**hl=4 (Commodity, Gold):**
+- Commodity slightly beats paper (+0.047)
+- Gold very poor: Bear=76.6% (strategy almost always bearish on gold → misses all gold bull runs)
+
+### REIT Oracle λ Sweep — Regime Identification Diagnosis
+
+Fixed-λ sweep from λ=4.64 to λ=300 for REIT (DJUSRET, hl=8). Paper targets: S=0.56, Bear=18.4%, Shifts=46.
+
+| λ | JM S | XGB S | XGB add | Bear% | Shifts |
+|---|---|---|---|---|---|
+| 4.64 | -0.071 | 0.151 | +0.222 | 42.6% | 106 |
+| 25.00 | 0.162 | 0.201 | +0.040 | 41.0% | 82 |
+| 60.00 | 0.219 | 0.279 | +0.060 | 37.7% | 42 |
+| 80.00 | 0.192 | **0.387** | +0.196 | 38.8% | 30 |
+| **100.00** | 0.360 | **0.401** | +0.040 | 39.1% | 34 |
+| 150.00 | 0.210 | 0.349 | +0.139 | 31.5% | 23 |
+| 200.00 | 0.162 | 0.198 | +0.036 | **25.2%** | 25 |
+| 300.00 | -0.043 | 0.127 | +0.170 | 25.7% | 33 |
+
+**Best oracle: λ=100, S=0.401, MDD=-22.2%** — still -0.159 below paper's 0.56.
+
+**Critical finding: Bear% never approaches 18.4% at any λ.** Even at λ=300, Bear=25.7% (7pp above paper). This proves the gap is NOT a lambda grid issue — it's a **fundamental data or feature quality problem** with our DJUSRET data.
+
+- λ=40-50: XGB Sharpe turns negative (-0.061, -0.033) — XGB actively hurts in this range for REIT, unlike LargeCap where λ=45 is oracle
+- JM-only best: 0.360 at λ=100 vs paper JM-only 0.39 — even JM alone underperforms
+- REIT walk-forward result (S=0.303, λ̄=61) is actually reasonable given the oracle is only 0.401
+
+**Root cause hypothesis:** The DJUSRET data in our Bloomberg file may have quality/splice issues around the 1991-1992 regime (refcard: "Prior to 1992-01-03: Dow Jones Equity REIT TR (REIT index)"). Our data starts 1991-12-31 — right at the splice boundary. Feature distributions may differ from the paper's Bloomberg pull, causing the JM to persistently identify more bear periods.
+
+### Conclusions
+
+1. **11/12 assets beat B&H** — matches the paper's exact win/loss pattern. Core result is replicated.
+2. **Average gap of −0.023 Sharpe** is acceptable given data/version differences.
+3. **Problem assets**: REIT (regime identification, Bear 38.6% vs 18.4%), Gold (Bear 76.6%), EM/EAFE (extreme λ instability at hl=0).
+4. **Strong assets**: HighYield (2.339 vs 1.88), Corporate (0.833 vs 0.76), AggBond (0.685 vs 0.67).
+5. **The 8pt grid is not suitable for all assets** — confirmed again. hl=0 assets need a different λ range.
 
 ---
 
