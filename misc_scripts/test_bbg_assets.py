@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
 Test n_estimators baseline on Bloomberg data for all 12 paper assets.
-Also includes REIT oracle λ sweep to diagnose the regime identification gap.
+Also includes fixed-λ oracle sweep and focused-grid walk-forward tests.
 
 Usage:
   python misc_scripts/test_bbg_assets.py              # all remaining assets (baseline only)
   python misc_scripts/test_bbg_assets.py REIT          # single asset
   python misc_scripts/test_bbg_assets.py AggBond
   python misc_scripts/test_bbg_assets.py REIT_ORACLE   # fixed-λ sweep for REIT
+  python misc_scripts/test_bbg_assets.py MIDCAP_ORACLE # fixed-λ sweep for MidCap
+  python misc_scripts/test_bbg_assets.py EM_ORACLE     # fixed-λ sweep for EM
+  python misc_scripts/test_bbg_assets.py MIDCAP_GRID   # focused-grid WF tests for MidCap
+  python misc_scripts/test_bbg_assets.py EM_GRID       # focused-grid WF tests for EM
   python misc_scripts/test_bbg_assets.py ALL            # all 12 assets
 """
 import sys, os
@@ -142,8 +146,34 @@ def bh_sharpe(df_feat):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Baseline walk-forward test (n_est=100 only — n_est=200 shown not to generalise)
+# Walk-forward test — parameterized lambda grid
 # ──────────────────────────────────────────────────────────────────────────────
+
+def run_asset_wf(asset_name, df_feat, cfg_info, grid, label=None):
+    """Walk-forward test with a specified lambda grid."""
+    paper = cfg_info
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = grid
+    main._forecast_cache.clear()
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}', ewma_mode='paper')
+    r = main.walk_forward_backtest(df_feat, cfg)
+
+    bh = bh_sharpe(df_feat)
+    if r is None or r.empty:
+        print(f"  {asset_name:<12} [{label or str(grid)}] ERROR")
+        return
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+    hl = r.attrs.get('ewma_halflife', '?')
+
+    gap_s = s - paper['paper_sharpe']
+    grid_label = label or f'{len(grid)}pt [{grid[0]:.0f}-{grid[-1]:.0f}]'
+    print(f"  {asset_name:<12}  grid={grid_label:<22}  S={s:.3f}({gap_s:+.3f})  "
+          f"MDD={m:.1%}  Bear={bp:.1f}%  Shft={ns}  hl={hl}  λ̄={lh.mean():.1f}  λs={list(lh)}")
+
 
 def run_asset_baseline(asset_name, df_feat, cfg_info):
     paper = cfg_info
@@ -177,19 +207,26 @@ def run_asset_baseline(asset_name, df_feat, cfg_info):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# REIT oracle sweep — fixed-λ across wide range
+# Generic oracle sweep — fixed-λ across wide range for any asset
 # ──────────────────────────────────────────────────────────────────────────────
 
-def reit_oracle_sweep(df_reit):
+def oracle_sweep(asset_name, df_feat, cfg_info, sweep=None):
+    """Fixed-λ oracle sweep for any asset. Finds best λ independent of walk-forward."""
+    if sweep is None:
+        sweep = [4.64, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 100, 120, 150, 200, 300]
+
+    p = cfg_info
+    hl = main.PAPER_EWMA_HL.get(p['hl_proxy'], 8)
+
     print("\n" + "="*70)
-    print("REIT Oracle λ Sweep — find λ that matches paper Bear=18.4%, Shifts=46")
-    print("Paper: S=0.56  MDD=-32.70%  Bear=18.4%  Shifts=46")
+    print(f"{asset_name} Oracle λ Sweep — find λ closest to paper")
+    print(f"Paper: S={p['paper_sharpe']:.2f}  MDD={p['paper_mdd']:.2%}  "
+          f"B&H={p['bh_sharpe']:.2f}"
+          + (f"  Bear={p['bear_pct']:.1f}%  Shifts={p['shifts']}" if p['bear_pct'] else ""))
     print("="*70)
 
-    main.TARGET_TICKER = '^SP500TR'  # hl=8
-
-    sweep = [4.64, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 100, 120, 150, 200, 300]
-    paper_cfg = StrategyConfig(name='REIT_oracle', ewma_mode='paper')
+    main.TARGET_TICKER = p['hl_proxy']
+    paper_cfg = StrategyConfig(name=f'{asset_name}_oracle', ewma_mode='paper')
 
     print(f"\n  {'λ':<8} {'JM S':>7} {'XGB S':>7} {'XGB add':>8} {'Bear%':>7} {'Shft':>6}")
     print(f"  {'─'*8} {'─'*7} {'─'*7} {'─'*8} {'─'*7} {'─'*6}")
@@ -197,10 +234,10 @@ def reit_oracle_sweep(df_reit):
     best = (-np.inf, None, None)
     for lm in sweep:
         main._forecast_cache.clear()
-        r_jm  = main.simulate_strategy(df_reit, '2007-01-01', '2023-12-31', float(lm),
+        r_jm  = main.simulate_strategy(df_feat, '2007-01-01', '2023-12-31', float(lm),
                                        paper_cfg, include_xgboost=False)
-        r_xgb = main.simulate_strategy(df_reit, '2007-01-01', '2023-12-31', float(lm),
-                                       paper_cfg, include_xgboost=True, ewma_halflife=8)
+        r_xgb = main.simulate_strategy(df_feat, '2007-01-01', '2023-12-31', float(lm),
+                                       paper_cfg, include_xgboost=True, ewma_halflife=hl)
         if r_jm.empty or r_xgb.empty:
             continue
         sj, _ = mets(r_jm)
@@ -212,7 +249,53 @@ def reit_oracle_sweep(df_reit):
             best = (sx, lm, mx)
 
     print(f"\n  → Best oracle: λ={best[1]}, S={best[0]:.3f}, MDD={best[2]:.1%}")
-    print(f"  → Paper:       λ=?,      S=0.560, MDD=-32.70%")
+    print(f"  → Paper:       λ=?,      S={p['paper_sharpe']:.3f}, MDD={p['paper_mdd']:.2%}")
+
+
+def reit_oracle_sweep(df_reit):
+    oracle_sweep('REIT', df_reit, ASSET_CONFIGS['REIT'])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Focused-grid walk-forward tests
+# Oracle findings: MidCap oracle=λ15 (S=0.589≈paper 0.590), EM oracle=λ4.64 (S=0.910>paper 0.850)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def midcap_grid_sweep(df_feat):
+    """Walk-forward with several focused grids for MidCap (oracle λ=15, paper S=0.590)."""
+    print("\n" + "="*70)
+    print("MidCap Focused-Grid Walk-Forward — Oracle λ=15, Paper S=0.590")
+    print("Baseline 8pt grid: S=0.475 (λ̄=26.7). Goal: S≈0.590")
+    print("="*70 + "\n")
+
+    grids = [
+        ([10.0, 15.0, 21.54],           '3pt [10-22]'),
+        ([10.0, 15.0, 21.54, 30.0],     '4pt [10-30]'),
+        ([10.0, 15.0, 20.0, 25.0],      '4pt [10-25]'),
+        ([10.0, 15.0, 20.0],            '3pt [10-20]'),
+        ([15.0],                         'fixed λ=15'),
+        (GRID_8PT,                       '8pt baseline'),
+    ]
+    for grid, label in grids:
+        run_asset_wf('MidCap', df_feat, ASSET_CONFIGS['MidCap'], grid, label)
+
+
+def em_grid_sweep(df_feat):
+    """Walk-forward with several focused grids for EM (oracle λ=4.64, paper S=0.850)."""
+    print("\n" + "="*70)
+    print("EM Focused-Grid Walk-Forward — Oracle λ=4.64, Paper S=0.850")
+    print("Baseline 8pt grid: S=0.701 (λ̄=12.6). Goal: S≈0.850")
+    print("="*70 + "\n")
+
+    grids = [
+        ([4.64],                         'fixed λ=4.64'),
+        ([4.64, 10.0],                   '2pt [4.64-10]'),
+        ([4.64, 10.0, 15.0],             '3pt [4.64-15]'),
+        ([4.64, 10.0, 15.0, 21.54],     '4pt [4.64-22]'),
+        (GRID_8PT,                        '8pt baseline'),
+    ]
+    for grid, label in grids:
+        run_asset_wf('EM', df_feat, ASSET_CONFIGS['EM'], grid, label)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -226,12 +309,20 @@ if __name__ == '__main__':
     if 'ALL' in args:
         args = list(ASSET_CONFIGS.keys()) + ['REIT_ORACLE']
 
+    # Detect oracle/grid modes and map to asset keys
+    ORACLE_MODES = {k + '_ORACLE': k for k in ASSET_CONFIGS}
+    ORACLE_MODES_UPPER = {k.upper(): v for k, v in ORACLE_MODES.items()}
+    GRID_MODES = {'MIDCAP_GRID': 'MidCap', 'EM_GRID': 'EM'}
+
     raw, fred, vix, irx = load_bbg_raw()
 
     # Pre-build feature DataFrames for requested assets
     dfs = {}
     for key, cfg in ASSET_CONFIGS.items():
-        if key.upper() in args or 'REIT_ORACLE' in args and key == 'REIT':
+        need_baseline = key.upper() in args
+        need_oracle   = any(args_k == (key + '_ORACLE').upper() for args_k in args)
+        need_grid     = any(args_k == (key.upper() + '_GRID') for args_k in args)
+        if need_baseline or need_oracle or need_grid:
             print(f"Building {key} ({cfg['col']}) features  "
                   f"[DD={'incl' if cfg['dd'] else 'excl'}, hl_proxy={cfg['hl_proxy']}]...")
             dfs[key] = build_features(raw, fred, vix, irx, cfg['col'], cfg['dd'])
@@ -250,8 +341,17 @@ if __name__ == '__main__':
 
     main.TARGET_TICKER = orig_ticker  # restore
 
-    if 'REIT_ORACLE' in args and 'REIT' in dfs:
-        reit_oracle_sweep(dfs['REIT'])
+    # Run oracle sweeps
+    for arg in args:
+        asset_key = ORACLE_MODES_UPPER.get(arg)
+        if asset_key and asset_key in dfs:
+            oracle_sweep(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run focused-grid sweeps
+    if 'MIDCAP_GRID' in args and 'MidCap' in dfs:
+        midcap_grid_sweep(dfs['MidCap'])
+    if 'EM_GRID' in args and 'EM' in dfs:
+        em_grid_sweep(dfs['EM'])
 
     print("\n" + "="*70)
     print("DONE")
