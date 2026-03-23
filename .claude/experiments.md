@@ -5,6 +5,64 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-23 (Session 11) - λ=0 Investigation & Paper Replication Audit
+
+**Goal:** Verify whether including λ=0 in the lambda grid (as implied by paper's "log-uniform 0.0 to 100.0") could close the remaining gap to paper. Audit bear period statistics (% bear, # shifts, bear start/end dates) against paper Figure 2. Data: `cache/DATA PAUL.xlsx` (Bloomberg, same 12 assets).
+
+### Key Finding 1: λ=0 Never Selected by Walk-Forward
+
+Adding λ=0 to any grid has **zero effect**. Walk-forward validation never selects λ=0 because it would generate extremely frequent regime switches, yielding poor validation Sharpe. Proof: "[0]+Log18pt [1-100]" and "Log 18pt [1-100]" produce **identical** lambda histories, Sharpe, and MDD.
+
+### Lambda Grid Sweep Results (Bloomberg SPTR, 2007-2023, ewma_mode="paper" hl=8)
+
+B&H baseline: Sharpe=0.499 (paper: 0.50), MDD=-55.3% (paper: -55.25%) ✓
+
+| Grid | Sharpe | ΔSharpe | MDD | ΔMDD | Bear% | Shifts |
+|---|---|---|---|---|---|---|
+| **Paper target** | **0.790** | | **-17.69%** | | **20.9%** | **46** |
+| Log 19pt [1-100] | 0.697 | -0.093 | -21.6% | -3.9% | 27.4% | 64 |
+| [0]+Log19pt → 20 total | 0.697 | -0.093 | -21.6% | -3.9% | 27.4% | 64 |
+| 8pt dense [4.64-100] | 0.691 | -0.099 | -20.9% | -3.2% | 23.1% | **54** |
+| [0]+Log19pt [0.1-100] | 0.681 | -0.109 | -20.4% | -2.7% | **22.8%** | 70 |
+| [0]+Log17pt → 18 total | 0.660 | -0.130 | **-18.4%** | **-0.7%** | 28.2% | 78 |
+| Log 20pt [1-100] | 0.636 | -0.154 | -19.7% | -2.0% | 30.1% | 80 |
+| Log 18pt [1-100] | 0.570 | -0.220 | -21.8% | -4.1% | 26.4% | 76 |
+| [0]+Log18pt → 19 total | 0.570 | -0.220 | -21.8% | -4.1% | 26.4% | 76 |
+| Log 21pt [1-100] | 0.497 | -0.293 | -24.4% | -6.8% | 30.2% | 82 |
+
+*[0]+Log18pt and Log 18pt produce identical results — confirms λ=0 is never selected.*
+
+### Key Finding 2: Session 10 Results Cannot Be Reproduced
+
+Session 10 reported Log 19pt → Sharpe 0.788 (gap -0.002 to paper). Today same grid gives 0.697 (gap -0.093). Root cause: Session 10 used `cache/datab.xlsx` which no longer exists; current runs use `cache/DATA PAUL.xlsx`. B&H Sharpe is identical (0.499) so SPTR price data is equivalent, but macro features (FRED yields, VIX) may have changed between sessions. **Session 10 result of 0.788 should be treated as unverified.**
+
+### Key Finding 3: Regime Stats vs Paper Figure 2
+
+Paper Figure 2: LargeCap 20.9% bear, 46 regime shifts.
+- **8pt dense grid gives closest match**: 23.1% bear (+2.2pp), 54 shifts (+8)
+- Higher-density grids select lower lambdas more often → more volatile regimes → bear% 26-30%, shifts 64-94
+- None of the tested grids match paper's exact (20.9%, 46) simultaneously with good Sharpe
+- Bear period dates not yet compared in detail (paper's Figure 2 axes are approximate)
+
+### Key Finding 4: No Grid Matches Both Sharpe AND MDD
+
+- Best Sharpe: 0.697 (Log 19pt, MDD -21.6% vs paper -17.69%)
+- Best MDD: -18.4% ([0]+Log17pt, Sharpe 0.660 vs paper 0.79)
+- No tested grid simultaneously achieves Sharpe ≥ 0.75 and MDD ≥ -18%
+
+### Conclusions
+
+1. **λ=0 hypothesis rejected**: Walk-forward never selects λ=0. The paper's "0.0 to 100.0" likely means 0.0 is a range bound, not a grid point. Or λ=0 is included but irrelevant.
+2. **Bloomberg data confirmed correct** (B&H matches paper perfectly).
+3. **Best achievable Sharpe: ~0.70** with Bloomberg data — ~0.09 below paper's 0.79.
+4. **8pt grid is still the most paper-like** in regime stats (54 shifts vs 46, 23.1% bear vs 20.9%).
+5. **Remaining gap (0.09 Sharpe)** is unexplained — possible causes: exact lambda grid resolution, XGBoost version differences, slight EWM implementation differences, or undisclosed paper details.
+6. **Accurate conclusion for paper replication**: Bloomberg data closes ~0.09 of the ~0.15 Yahoo gap. True remaining gap is ~0.09, not the 0.002 reported in Session 10.
+
+**Files modified:** `misc_scripts/test_bloomberg_data.py` — added grid sweep, regime stats, bear period analysis, λ=0 variants. Also fixed filename: `datab.xlsx` → `DATA PAUL.xlsx`.
+
+---
+
 ## Session 2026-03-23 (Session 10) - Bloomberg Data Validation
 
 **Goal:** Test whether Yahoo vs Bloomberg data was the root cause of the remaining Sharpe gap vs paper. User provided original Bloomberg data at `cache/datab.xlsx` containing all 12 paper assets.
