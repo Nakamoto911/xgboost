@@ -54,6 +54,13 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 |---|---|
 | `run_macro_ablation.py` | Macro feature ablation: compares all features vs return-only vs macro-only XGBoost configurations. |
 
+## Bloomberg Replication
+
+| Script | Purpose |
+|---|---|
+| `test_bloomberg_data.py` | Bloomberg SPTR data validation: grid sweep (λ=0 variants, regime stats), bear period analysis, λ=0 hypothesis test. Uses `cache/DATA PAUL.xlsx`. |
+| `investigate_gap.py` | Systematic investigation of remaining 0.09 Sharpe gap vs paper. Tests: XGBoost tree_method (A), lambda grid fine sweep N=20-32 (B), sub-window consensus + finer grids (C), predict_online DP initialization (D), fixed-λ XGB decomposition (E), Sortino clipping (F), per-period EWMA smoothing (G). |
+
 ## Data Checks
 
 | Script | Purpose |

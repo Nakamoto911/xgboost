@@ -5,6 +5,97 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-23 (Session 12) - Gap Root Cause Analysis: Lambda Grid + XGBoost Params
+
+**Goal:** Find why walk-forward Sharpe is 0.691 (8pt grid) vs paper's 0.790 on Bloomberg SPTR. Three hypotheses tested: (E) fixed-lambda XGB sweep (oracle analysis), (D) predict_online last_known_state DP init, (A) XGBoost tree_method + n_estimators variants. Data: Bloomberg `cache/DATA PAUL.xlsx`, ewma_mode="paper" hl=8, 2007-2023.
+
+### Test E: Fixed-Lambda XGB Sweep — Oracle Analysis
+
+At each fixed λ (no walk-forward), ran JM-only and JM-XGB:
+
+| λ | JM Sharpe | XGB Sharpe | XGB add | Bear% | Shifts |
+|---|---|---|---|---|---|
+| 4.64 | 0.347 | 0.717 | +0.370 | 30.9% | 80 |
+| 10.00 | 0.471 | 0.690 | +0.218 | 28.7% | 82 |
+| 15.00 | 0.491 | 0.588 | +0.096 | 26.7% | 78 |
+| 21.54 | 0.479 | 0.590 | +0.111 | 25.4% | 70 |
+| 30.00 | 0.557 | 0.494 | **-0.063** | 22.3% | 72 |
+| **46.42** | 0.437 | **0.787** | +0.350 | 19.3% | 36 |
+| 70.00 | 0.581 | 0.642 | +0.061 | 18.2% | 38 |
+| 100.00 | 0.612 | 0.607 | -0.005 | 25.8% | 34 |
+
+Extended scan (λ=30-100 finer steps): **λ=45 → S=0.788, Bear=21.0%, Shifts=44** (matches paper exactly!). λ=50 → 0.780.
+
+**Key finding:** There is a sharp Sharpe peak at λ=45±5. Outside this range XGB degrades significantly. Walk-forward with 8pt grid occasionally picks λ=4.64/10/15 which are terrible OOS (0.588-0.690) despite passing validation. The XGB model at oracle λ is correct — gap is purely λ selection.
+
+### Focused Lambda Grid Tests (walk-forward with various [40-70] grids)
+
+| Grid | Sharpe | ΔPaper | MDD | Bear% | Shifts | λ̄ |
+|---|---|---|---|---|---|---|
+| **Paper target** | **0.790** | | **-17.69%** | **20.9%** | **46** | |
+| Narrow [40,42,44,45,46,48,50,55,60,70] | **0.832** | **+0.042** | -19.3% | 21.8% | 40 | 50.7 |
+| Dense-45 [35,40,42,44,45,46,47,50,55,70,100] | 0.825 | +0.035 | -19.3% | 21.4% | 40 | — |
+| Focused [30,40,45,46.42,50,60,70,100] | 0.757 | -0.033 | — | — | — | — |
+| Original 8pt [4.64-100] | 0.691 | -0.099 | -20.9% | 23.1% | 54 | 44.6 |
+
+Lambda picks reveal exactly why the grids differ:
+- **Original 8pt** picks include: `[70,100,100,100,70,70,70,`**`4.6,4.6,4.6,4.6,4.6`**`,46.4,...]` — periods 8-12 all pick λ=4.64 (terrible OOS) because it looks good on validation
+- **Narrow [40-70]** picks stay in [42-70] throughout — never touches the destructive λ<40 range → **S=0.832**
+- **Focused sweet spot [30,40,45,46.42,50,60,70,100]** picks include 70-100 early then 46-50 later → 0.757 (worse: still allows large λ=100 in early periods)
+
+**Key finding:** Narrow grid beats paper (0.832) because it prevents walk-forward from ever selecting λ<40 which are catastrophically bad OOS. However, **this is likely SPTR-specific** — multi-asset assets need λ outside [40-70].
+
+### Test D: predict_online Last-Known-State DP Initialization
+
+Modified `predict_online()` to add λ penalty to transitioning away from the last training-window state at period start (hypothesis: period-boundary bias). Result: **no effect** on walk-forward Sharpe. The standard DP initialization is correct.
+
+### Test A: XGBoost Parameters (tree_method, n_estimators, max_depth)
+
+Reference: 8pt grid / default hist / n_est=100 → S=0.691. All runs with Bloomberg data + 8pt grid + ewma_mode="paper":
+
+| Config | Sharpe | ΔPaper | MDD | Bear% | Shifts | λ̄ |
+|---|---|---|---|---|---|---|
+| **Paper target** | **0.790** | | **-17.69%** | **20.9%** | **46** | |
+| default (hist) n_est=100 [reference] | 0.691 | -0.099 | -20.9% | 23.1% | 54 | 44.6 |
+| tree_method=exact n_est=100 | 0.713 | -0.077 | -21.3% | 27.8% | 60 | 37.3 |
+| exact + 19pt grid | 0.701 | -0.089 | -19.9% | 29.4% | 72 | 18.9 |
+| **exact + n_est=200** | **0.760** | **-0.030** | **-17.8%** | 25.2% | 50 | 48.1 |
+| exact + n_est=500 | 0.714 | -0.076 | -20.3% | 28.1% | 64 | 40.7 |
+| **default + n_est=200** | **0.770** | **-0.020** | -19.8% | 23.9% | 52 | 42.1 |
+| max_depth=4 | 0.620 | -0.170 | -22.0% | 25.4% | 66 | 40.5 |
+| max_depth=4 + exact | 0.733 | -0.057 | -20.4% | 23.2% | 64 | 33.2 |
+
+**Key findings:**
+1. **n_estimators=200 is a major improvement**: default+n_est=200 → **0.770** (only -0.020 from paper). This is the single biggest improvement found.
+2. **exact + n_est=200 → 0.760, MDD=-17.8%** — nearly matches paper's MDD of -17.69%!
+3. **tree_method=exact alone** adds +0.022 (XGB 3.2 default is 'hist'; paper likely used older version with 'exact' default)
+4. **max_depth=4 is significantly worse** (0.620) — confirms max_depth=6 is correct
+5. Paper says "all XGBoost defaults" but n_estimators=200 would explain the gap. XGBoost version undisclosed (refcard §Undisclosed).
+
+XGBoost version in test environment: **3.2.0** (default tree_method='hist' since XGBoost 2.0).
+
+### Overall Gap Decomposition (Bloomberg SPTR, 2007-2023)
+
+| Factor | Sharpe improvement | Notes |
+|---|---|---|
+| Baseline (8pt, default) | 0.691 | Starting point this session |
+| + n_estimators=200 | +0.079 → 0.770 | Single biggest factor found |
+| + focused λ grid [40-70] | +0.141 → 0.832 | Likely SPTR-specific overfitting |
+| + exact tree_method (alone) | +0.022 → 0.713 | Modest, inconsistent with n_est=200 |
+| Oracle λ=45 (no WF) | → 0.787 | Upper bound: perfect grid would match paper |
+
+### Conclusions
+
+1. **Gap root cause confirmed**: Walk-forward λ selection with 8pt grid explains most of the 0.099 gap. At oracle λ=45, XGB matches paper (0.787-0.788).
+2. **n_estimators=200 is the most actionable finding**: adds +0.079 Sharpe without changing walk-forward. Suggests paper may have used n_estimators=200 (not the XGBoost default of 100).
+3. **Focused [40-70] grid beats paper** on Bloomberg SPTR, but is likely SPTR-specific — not safe for multi-asset use.
+4. **Remaining gap with n_est=200 + 8pt grid: -0.020** — very close to paper. With focused grid + n_est=200, would likely exceed paper.
+5. **Next steps**: Test n_estimators=200 on Yahoo data (main.py default) and multi-asset benchmark to see if it generalizes before adopting as default.
+
+**Files modified/created:** `misc_scripts/investigate_gap.py` — three hypothesis tests (E, D, A). Completed as background task.
+
+---
+
 ## Session 2026-03-23 (Session 11) - λ=0 Investigation & Paper Replication Audit
 
 **Goal:** Verify whether including λ=0 in the lambda grid (as implied by paper's "log-uniform 0.0 to 100.0") could close the remaining gap to paper. Audit bear period statistics (% bear, # shifts, bear start/end dates) against paper Figure 2. Data: `cache/DATA PAUL.xlsx` (Bloomberg, same 12 assets).
