@@ -49,24 +49,27 @@ All results: 2007-2023, Bloomberg SPTR data (`DATA PAUL.xlsx`), 8pt grid [4.64, 
 - REIT: −0.126 — data quality (Bear%=40.6% vs paper 18.4%), not fixable
 - Gold: −0.052 — structural (Bear%=69%), not fixable
 
-### JM-XGB Strategy (baseline 8pt, n_est=100)
+### JM-XGB Strategy — Bloomberg Data (8pt grid, paper HL, n_est=100)
 
-| Asset | Paper Sharpe | Paper MDD | Our Baseline Sharpe | Our Baseline MDD | Gap |
-|---|---|---|---|---|---|
-| LargeCap | 0.79 | −17.0% | **0.691** | −18.9% | −0.099 |
-| MidCap | 0.59 | −30.4% | **0.481** | −33.0% | −0.109 |
-| SmallCap | 0.57 | −40.2% | **0.543** | −38.0% | −0.027 |
-| REIT | 0.55 | −54.1% | **0.430** | −57.3% | −0.120 |
-| EAFE | 0.37 | −52.4% | **0.280** | −48.5% | −0.090 |
-| EM | 0.85 | −44.0% | **0.701** | −52.0% | −0.149 |
-| AggBond | 0.67 | −7.9% | **0.685** | −7.0% | +0.015 ✓ |
-| Treasury | 0.37 | −6.5% | **0.334** | −5.2% | −0.036 |
-| Corporate | 0.76 | −12.5% | **0.833** | −11.0% | +0.073 ✓ |
-| Commodity | 0.53 | −57.8% | **0.277** | −63.0% | −0.253 |
-| Gold | 0.13 | −57.5% | **0.106** | −54.0% | −0.024 |
-| HighYield | 1.88 | −20.5% | **2.339** | −21.0% | +0.459 ✓ |
+Paper values from Table 4 (refcard). Baseline = TC=5bps. TC=0 = gross-of-TC (paper methodology, S19).
 
-**Baseline score: 11/12 beat B&H (92% = matches paper). Avg gap vs paper: −0.023 Sharpe.**
+| Asset | Paper S | Baseline S (gap) | TC=0 S (gap) | Root Cause of Remaining Gap |
+|---|---|---|---|---|
+| LargeCap | 0.79 | 0.691 (−0.099) | **0.743** (−0.047) | WF λ noise (oracle=0.787≈paper) |
+| MidCap | 0.59 | 0.481 (−0.109) | **0.537** (−0.053) | WF λ noise (oracle=0.589≈paper) |
+| SmallCap | 0.51 | 0.472 (−0.038) | **0.486** (−0.024) | Minor WF noise |
+| EAFE | 0.56 | 0.508 (−0.052) | **0.650** (+0.090) ✓ | TC explains all — beats paper |
+| EM | 0.85 | 0.701 (−0.149) | **0.808** (−0.042) | Regime quality (Bear%=52%) |
+| REIT | 0.56 | 0.303 (−0.257) | **0.314** (−0.246) | Data quality (Bear%=38.6% vs 18.4%) |
+| AggBond | 0.67 | 0.685 (+0.015) ✓ | **0.733** (+0.063) ✓ | Already beats paper |
+| Treasury | 0.38 | 0.334 (−0.046) | **0.369** (−0.011) | TC explains nearly all |
+| HighYield | 1.88 | 2.339 (+0.459) ✓ | **2.599** (+0.719) ✓ | Massively beats paper |
+| Corporate | 0.76 | 0.833 (+0.073) ✓ | **0.953** (+0.193) ✓ | Already beats paper |
+| Commodity | 0.23 | 0.277 (+0.047) ✓ | **0.299** (+0.069) ✓ | Already beats paper |
+| Gold | 0.31 | 0.195 (−0.115) | **0.188** (−0.122) | Structural (Bear%=76%) |
+
+**Score TC=0: 10/12 within ±0.055 Sharpe of paper (or better).** Only REIT (data quality) and Gold (structural) remain significantly below.
+**Score vs B&H: 11/12 beat B&H (92%, both TC conditions) — matches paper.**
 
 ### JM-XGB Per-Asset Best Results
 
