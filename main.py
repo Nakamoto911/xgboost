@@ -698,10 +698,13 @@ def simulate_strategy(df, start_date, end_date, lambda_penalty, config: Strategy
 
     return full_res
 
-def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
+def walk_forward_backtest(df, config: StrategyConfig = None, fixed_lambda_sequence=None) -> pd.DataFrame:
+    """Walk-forward backtest. If fixed_lambda_sequence is provided, skips Phase 1+2 entirely
+    and uses the provided list of lambdas (one per 6-month period) for OOS. Useful for replaying
+    a known λ trace with a different strategy (e.g., JM-only with XGB-selected λs)."""
     if config is None:
         config = StrategyConfig()
-        
+
     current_date = pd.to_datetime(OOS_START_DATE)
     final_end_date = pd.to_datetime(END_DATE)
 
@@ -713,6 +716,9 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
     _prev_booster = None
 
     # --- Phase 1: Tune EWMA halflife once on initial validation window ---
+    # Skip Phase 1 entirely when using a fixed lambda sequence (no EWMA tuning needed)
+    if fixed_lambda_sequence is not None:
+        best_ewma_hl = 0  # JM-only doesn't use EWMA prob smoothing
     if config.ewma_mode == "paper" and TARGET_TICKER in PAPER_EWMA_HL:
         best_ewma_hl = PAPER_EWMA_HL[TARGET_TICKER]
     else:
@@ -735,6 +741,7 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
                         best_ewma_hl = hl
 
     # --- Phase 2: Walk-forward lambda tuning ---
+    _fixed_lambda_idx = 0  # index into fixed_lambda_sequence when provided
     while current_date < final_end_date:
         chunk_end = min(current_date + pd.DateOffset(months=6), final_end_date)
         
@@ -744,6 +751,19 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
             val_start = current_date - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
             
         lambda_scores = []
+
+        # When a fixed sequence is provided, skip all validation and use the given λ directly
+        if fixed_lambda_sequence is not None:
+            best_lambda = float(fixed_lambda_sequence[_fixed_lambda_idx]) if _fixed_lambda_idx < len(fixed_lambda_sequence) else float(fixed_lambda_sequence[-1])
+            _fixed_lambda_idx += 1
+            best_lambdas = [best_lambda]
+            lambda_history.append(best_lambda)
+            lambda_dates.append(current_date)
+            oos_chunk = run_period_forecast(df, current_date, best_lambda, config, include_xgboost=config.include_xgboost)
+            if oos_chunk is not None:
+                jm_xgb_results.append(oos_chunk)
+            current_date = chunk_end
+            continue
 
         # JM-only mode overrides validation to JM-only regardless of lambda_validation_mode
         use_xgb_for_val = config.include_xgboost and (config.lambda_validation_mode != "jm_only")

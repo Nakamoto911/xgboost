@@ -85,10 +85,14 @@ def load_bbg_raw():
     return raw, fred, vix, irx
 
 
-def build_features(raw, fred, vix, irx, target_col, include_dd=True, ewm_adjust=True):
-    """Build feature DataFrame. include_dd=False for AggBond/Treasury/Gold.
-    ewm_adjust=False uses standard recursive EWMA (adjust=False in pandas),
-    vs default adjust=True which applies weighted initialization."""
+def build_features(raw, fred, vix, irx, target_col, include_dd=True, ewm_adjust=True,
+                   dd_formula='log', sortino_clip=10):
+    """Build feature DataFrame.
+    include_dd=False: exclude DD_log features (AggBond/Treasury/Gold).
+    ewm_adjust=False: standard recursive EWMA vs pandas default weighted init.
+    dd_formula='log' (default): DD_log_hl = log(sqrt(EWM(dn^2,hl))+1e-8)
+    dd_formula='raw': DD_hl = sqrt(EWM(dn^2,hl)) — no log transformation
+    sortino_clip=10 (default): clip Sortino at ±10; None = no clipping."""
     cols = list(dict.fromkeys([target_col, 'SPTR', 'LBUSTRUU']))  # dedup
     df = raw[cols].join(fred, how='inner').join(vix, how='inner').join(irx, how='inner').ffill().dropna()
 
@@ -104,12 +108,16 @@ def build_features(raw, fred, vix, irx, target_col, include_dd=True, ewm_adjust=
     if include_dd:
         for hl in [5, 21]:
             ewm_dd = np.sqrt((dn ** 2).ewm(halflife=hl, adjust=ewm_adjust).mean()).fillna(0)
-            f[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
+            if dd_formula == 'log':
+                f[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
+            else:  # 'raw'
+                f[f'DD_log_{hl}'] = ewm_dd   # raw sqrt, same column name for pipeline compatibility
     for hl in [5, 10, 21]:
         f[f'Avg_Ret_{hl}'] = f['Excess_Return'].ewm(halflife=hl, adjust=ewm_adjust).mean()
     for hl in [5, 10, 21]:
         dd_r = np.maximum(np.sqrt((dn ** 2).ewm(halflife=hl, adjust=ewm_adjust).mean()).fillna(1e-8), 1e-8)
-        f[f'Sortino_{hl}'] = (f[f'Avg_Ret_{hl}'] / dd_r).clip(-10, 10)
+        sortino = f[f'Avg_Ret_{hl}'] / dd_r
+        f[f'Sortino_{hl}'] = sortino.clip(-sortino_clip, sortino_clip) if sortino_clip is not None else sortino
 
     f['Yield_2Y_EWMA_diff']       = df['DGS2'].diff().fillna(0).ewm(halflife=21, adjust=ewm_adjust).mean()
     sl = df['DGS10'] - df['DGS2']
@@ -666,6 +674,149 @@ def adjust_false_batch(dfs, raw, fred, vix, irx):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Shared λ hypothesis — does paper's Table 4 JM row use XGB-selected λ?
+# Method: run XGB WF first, extract λ trace, then replay JM-only OOS with
+# the same λ sequence (skip validation entirely — very fast).
+# If this matches paper's JM Sharpe, the paper shares λ between rows.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_jm_shared_lambda(asset_name, df_feat, cfg_info):
+    """Run XGB WF, extract λ trace, replay JM-only OOS with same λs. Fast."""
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = GRID_8PT
+    main._forecast_cache.clear()
+
+    # Step 1: XGB walk-forward (standard)
+    cfg_xgb = StrategyConfig(name=f'BBG_{asset_name}', ewma_mode='paper')
+    r_xgb = main.walk_forward_backtest(df_feat, cfg_xgb)
+    if r_xgb is None or r_xgb.empty:
+        print(f"  {asset_name:<12}  XGB WF ERROR")
+        return
+
+    lambda_trace = r_xgb.attrs.get('lambda_history', [])
+    s_xgb, m_xgb = mets(r_xgb)
+
+    # Step 2: JM-only replay with same λ trace (no validation — just OOS)
+    main._forecast_cache.clear()
+    cfg_jm = StrategyConfig(name=f'BBG_{asset_name}_jmshared', ewma_mode='paper',
+                            include_xgboost=False)
+    r_jm = main.walk_forward_backtest(df_feat, cfg_jm, fixed_lambda_sequence=lambda_trace)
+    if r_jm is None or r_jm.empty:
+        print(f"  {asset_name:<12}  JM shared λ ERROR")
+        return
+
+    s_jm, m_jm = mets(r_jm)
+    bp_jm, ns_jm = reg_stats(r_jm)
+    pj = PAPER_JM_SHARPE.get(asset_name, cfg_info['paper_sharpe'])
+    px = cfg_info['paper_sharpe']
+
+    print(f"  {asset_name:<12}  "
+          f"XGB  S={s_xgb:.3f}(p:{px:.2f},{s_xgb-px:+.3f})  "
+          f"| JM-shared-λ  S={s_jm:.3f}(p:{pj:.2f},{s_jm-pj:+.3f})  "
+          f"MDD={m_jm:.1%}  Bear={bp_jm:.1f}%  Shft={ns_jm}  "
+          f"λ̄={np.mean(lambda_trace):.1f}")
+
+
+def jm_shared_lambda_batch(dfs):
+    """Shared λ hypothesis: all 12 assets. Fast since JM-only replay skips validation."""
+    print("\n" + "="*70)
+    print("Shared λ Hypothesis — Paper JM uses XGB-selected λ?")
+    print("Method: Run XGB WF → apply JM-only signals with same λ trace")
+    print(f"Paper JM targets: LC=0.59, MC=0.49, SC=0.28, EAFE=0.28, EM=0.65,")
+    print(f"                  REIT=0.39, AB=0.43, TR=0.21, HY=1.49, Corp=0.83, Comm=0.08, Gold=0.12")
+    print("="*70)
+    orig_ticker = main.TARGET_TICKER
+    for name in ASSET_CONFIGS:
+        if name in dfs:
+            run_jm_shared_lambda(name, dfs[name], ASSET_CONFIGS[name])
+    main.TARGET_TICKER = orig_ticker
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DD formula variants — tests whether paper uses log(DD) vs raw DD for JM features
+# and whether Sortino clipping value differs.
+# Current: DD_log_hl = log(sqrt(EWM(dn^2,hl))+1e-8), Sortino clipped ±10
+# Variant: DD_hl = sqrt(EWM(dn^2,hl)) (raw), or different clip value
+# ──────────────────────────────────────────────────────────────────────────────
+
+def dd_formula_sweep(asset_name, df_feat, cfg_info, raw, fred, vix, irx):
+    """Test DD formula variants on one asset. LargeCap first for fast feedback."""
+    p = cfg_info
+    print("\n" + "="*70)
+    print(f"{asset_name} — DD Formula + Sortino Clip Variants")
+    print(f"Paper JM-XGB: S={p['paper_sharpe']:.2f}  Paper JM: S={PAPER_JM_SHARPE.get(asset_name, '?')}")
+    print("="*70)
+
+    variants = [
+        ('log', 10,   'log-DD  clip±10  (current baseline)'),
+        ('raw', 10,   'raw-DD  clip±10'),
+        ('log', 3,    'log-DD  clip±3'),
+        ('raw', 3,    'raw-DD  clip±3'),
+        ('log', None, 'log-DD  no-clip'),
+        ('raw', None, 'raw-DD  no-clip'),
+    ]
+
+    orig_ticker = main.TARGET_TICKER
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = GRID_8PT
+
+    for dd_f, s_clip, label in variants:
+        df_v = build_features(raw, fred, vix, irx, cfg_info['col'], cfg_info['dd'],
+                              dd_formula=dd_f, sortino_clip=s_clip)
+        main._forecast_cache.clear()
+        cfg = StrategyConfig(name=f'BBG_{asset_name}_dd{dd_f}c{s_clip}', ewma_mode='paper')
+        r = main.walk_forward_backtest(df_v, cfg)
+        if r is None or r.empty:
+            print(f"  {label:<38}  ERROR")
+            continue
+        s, m = mets(r)
+        bp, ns = reg_stats(r)
+        lh = np.array(r.attrs.get('lambda_history', [0]))
+        gap = s - p['paper_sharpe']
+        print(f"  {label:<38}  S={s:.3f}({gap:+.3f})  MDD={m:.1%}  Bear={bp:.1f}%  λ̄={lh.mean():.1f}")
+
+    main.TARGET_TICKER = orig_ticker
+
+
+def dd_formula_batch(dfs, raw, fred, vix, irx):
+    """Test 2 key DD variants (log vs raw) on all 12 assets."""
+    print("\n" + "="*70)
+    print("DD Formula Batch — log-DD vs raw-DD, all 12 assets")
+    print("="*70)
+    orig_ticker = main.TARGET_TICKER
+    for name in ASSET_CONFIGS:
+        if name not in dfs:
+            continue
+        cfg_info = ASSET_CONFIGS[name]
+        main.TARGET_TICKER = cfg_info['hl_proxy']
+        main.LAMBDA_GRID   = GRID_8PT
+        p = cfg_info['paper_sharpe']
+
+        # Baseline (log DD, clip±10) — use existing df_feat
+        main._forecast_cache.clear()
+        cfg_log = StrategyConfig(name=f'BBG_{name}', ewma_mode='paper')
+        r_log = main.walk_forward_backtest(dfs[name], cfg_log)
+
+        # Raw DD (no log, clip±10)
+        df_raw = build_features(raw, fred, vix, irx, cfg_info['col'], cfg_info['dd'],
+                                dd_formula='raw')
+        main._forecast_cache.clear()
+        cfg_raw = StrategyConfig(name=f'BBG_{name}_rawdd', ewma_mode='paper')
+        r_raw = main.walk_forward_backtest(df_raw, cfg_raw)
+
+        if r_log is not None and not r_log.empty:
+            s_l, _ = mets(r_log)
+            lh_l = np.array(r_log.attrs.get('lambda_history', [0]))
+            print(f"  {name:<12}  log-DD  S={s_l:.3f}({s_l-p:+.3f})  λ̄={lh_l.mean():.1f}")
+        if r_raw is not None and not r_raw.empty:
+            s_r, _ = mets(r_raw)
+            lh_r = np.array(r_raw.attrs.get('lambda_history', [0]))
+            print(f"  {name:<12}  raw-DD  S={s_r:.3f}({s_r-p:+.3f})  λ̄={lh_r.mean():.1f}")
+
+    main.TARGET_TICKER = orig_ticker
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -678,6 +829,10 @@ if __name__ == '__main__':
 
     # JM-only modes: JM_BATCH, or <ASSET>_JMONLY for a single asset
     JMONLY_SINGLE = {k.upper() + '_JMONLY': k for k in ASSET_CONFIGS}
+    # Shared λ modes: JMSHARED_BATCH, or <ASSET>_JMSHARED
+    JMSHARED_SINGLE = {k.upper() + '_JMSHARED': k for k in ASSET_CONFIGS}
+    # DD formula modes: DD_BATCH (all assets, log vs raw), or <ASSET>_DD (single asset full sweep)
+    DD_SINGLE = {k.upper() + '_DD': k for k in ASSET_CONFIGS}
     # JM-val modes: JMVAL_BATCH, or <ASSET>_JMVAL for a single asset
     JMVAL_SINGLE = {k.upper() + '_JMVAL': k for k in ASSET_CONFIGS}
     # n200 modes: N200_BATCH, or <ASSET>_N200 for a single asset
@@ -699,6 +854,20 @@ if __name__ == '__main__':
     for arg in args:
         if arg in JMONLY_SINGLE:
             jmonly_assets.add(JMONLY_SINGLE[arg])
+
+    jmshared_assets = set()
+    if 'JMSHARED_BATCH' in args:
+        jmshared_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in JMSHARED_SINGLE:
+            jmshared_assets.add(JMSHARED_SINGLE[arg])
+
+    dd_assets = set()
+    if 'DD_BATCH' in args:
+        dd_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in DD_SINGLE:
+            dd_assets.add(DD_SINGLE[arg])
 
     jmval_assets = set()
     if 'JMVAL_BATCH' in args:
@@ -738,11 +907,13 @@ if __name__ == '__main__':
         need_oracle   = any(args_k == (key + '_ORACLE').upper() for args_k in args)
         need_grid     = any(args_k == (key.upper() + '_GRID') for args_k in args)
         need_jmonly   = key in jmonly_assets
+        need_jmshared = key in jmshared_assets
+        need_dd       = key in dd_assets
         need_jmval    = key in jmval_assets
         need_n200     = key in n200_assets
         need_exact    = key in exact_assets
         need_adjust   = key in adjust_assets
-        if need_baseline or need_oracle or need_grid or need_jmonly or need_jmval or need_n200 or need_exact or need_adjust:
+        if need_baseline or need_oracle or need_grid or need_jmonly or need_jmshared or need_dd or need_jmval or need_n200 or need_exact or need_adjust:
             print(f"Building {key} ({cfg['col']}) features  "
                   f"[DD={'incl' if cfg['dd'] else 'excl'}, hl_proxy={cfg['hl_proxy']}]...")
             dfs[key] = build_features(raw, fred, vix, irx, cfg['col'], cfg['dd'])
@@ -781,6 +952,25 @@ if __name__ == '__main__':
             asset_key = JMONLY_SINGLE.get(arg)
             if asset_key and asset_key in dfs:
                 run_asset_jm_only(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run shared λ hypothesis tests
+    if 'JMSHARED_BATCH' in args:
+        jm_shared_lambda_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = JMSHARED_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                run_jm_shared_lambda(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run DD formula tests
+    if 'DD_BATCH' in args:
+        dd_formula_batch(dfs, raw, fred, vix, irx)
+    else:
+        for arg in args:
+            asset_key = DD_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                dd_formula_sweep(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key],
+                                 raw, fred, vix, irx)
 
     # Run JM-only validation sweeps
     if 'JMVAL_BATCH' in args:
