@@ -823,9 +823,9 @@ def dd_formula_batch(dfs, raw, fred, vix, irx):
 if __name__ == '__main__':
     args = [a.upper() for a in sys.argv[1:]] if len(sys.argv) > 1 else list(ASSET_CONFIGS.keys())
 
-    # Expand ALL → all assets
+    # Expand ALL → all assets (uppercase keys to match key.upper() comparison below)
     if 'ALL' in args:
-        args = list(ASSET_CONFIGS.keys()) + ['REIT_ORACLE']
+        args = [k.upper() for k in ASSET_CONFIGS.keys()] + ['REIT_ORACLE']
 
     # JM-only modes: JM_BATCH, or <ASSET>_JMONLY for a single asset
     JMONLY_SINGLE = {k.upper() + '_JMONLY': k for k in ASSET_CONFIGS}

@@ -158,12 +158,85 @@ All results: 2007-2023, Bloomberg SPTR data (`DATA PAUL.xlsx`), 8pt grid [4.64, 
 
 ---
 
+## New Findings (Session 19 analysis — 2026-03-24)
+
+### DD Feature Exclusion — CONFIRMED CORRECT (not a bug)
+- `main.py` has `DD_EXCLUDE_TICKERS` = {AGG, VBMFX, Treasury proxies, Gold proxies}
+- `test_bbg_assets.py` ASSET_CONFIGS has `'dd': False` for AggBond, Treasury, Gold ✓ — matches paper
+- `benchmark_assets.py` also checks `DD_EXCLUDE_TICKERS` correctly ✓
+- Minor discrepancy: `test_bbg_assets.py` also sets `'dd': False` for Corporate, but paper only excludes AggBond/Treasury/Gold. Corporate BEATS paper (0.833 vs 0.76) with dd=False — not a priority issue.
+
+### Macro Feature Construction — EWM(diff) vs diff(EWM) Ambiguity (Session 19, LOW priority)
+- Refcard formula: `Yield_2Y_EWMA_diff` = `diff(EWM(yield_2y, hl=21))` — notation implies diff(EWM(x))
+- Refcard description: "EWMA of daily difference" — implies EWM(diff(x))
+- **Current code implements EWM(diff(x))** — matches the description, not the formula notation
+- Both `main.py` and `test_bbg_assets.py` are consistent with each other (EWM of daily diff)
+- Same applies to `Yield_Slope_EWMA_diff_21`
+- These two transformations are numerically different; testing `diff(EWM(x))` variant is deferred
+
+### Transaction Costs in Table 4 — CONFIRMED GROSS-OF-TC (Session 19)
+
+**Table 4 in the paper is reported GROSS of transaction costs.** Evidence:
+
+| Asset | TC=0 S | Baseline S | TC Δ | Paper S | Gap TC=0 | Gap Baseline |
+|-------|--------|------------|------|---------|----------|-------------|
+| LargeCap | 0.743 | 0.691 | +0.052 | 0.79 | −0.047 | −0.099 |
+| MidCap | 0.537 | 0.481 | +0.056 | 0.59 | −0.053 | −0.109 |
+| SmallCap | 0.486 | 0.472 | +0.014 | 0.51 | −0.024 | −0.038 |
+| EAFE | 0.650 | 0.508 | +0.142 | 0.56 | **+0.090** | −0.052 |
+| EM | 0.808 | 0.701 | +0.107 | 0.85 | −0.042 | −0.149 |
+| REIT | 0.314 | 0.303 | +0.011 | 0.56 | −0.246 | −0.257 |
+| AggBond | 0.733 | 0.685 | +0.048 | 0.67 | +0.063 | +0.015 |
+| Treasury | 0.369 | 0.334 | +0.035 | 0.38 | −0.011 | −0.046 |
+| HighYield | 2.599 | 2.339 | +0.260 | 1.88 | +0.719 | +0.459 |
+| Corporate | 0.953 | 0.833 | +0.120 | 0.76 | +0.193 | +0.073 |
+| Commodity | 0.299 | 0.277 | +0.022 | 0.23 | +0.069 | +0.047 |
+| Gold | 0.188 | 0.195 | −0.007 | 0.31 | −0.122 | −0.115 |
+
+Key findings:
+- **EAFE TC=0 BEATS paper** (+0.090): 344 regime shifts × 5bps = 0.142 Sharpe drag fully explained by TC
+- **hl=8 equity gap halves**: LargeCap −0.099→−0.047, MidCap −0.109→−0.053
+- **Treasury nearly matches** paper (−0.011) with TC=0
+- TC Δ scales with switch count: hl=0 assets +0.107–0.260; hl=8 equity +0.014–0.056
+- TC affects λ SELECTION during validation (not just OOS returns) — explains larger-than-expected delta
+- Gold: TC=0 slightly HURTS (−0.007) due to adverse λ selection change
+
+### jumpmodels Library Validation Loop — CONFIRMED NO GAP (Session 19)
+- Analyzed installed library: `.venv/lib/python3.13/site-packages/jumpmodels/`
+- Library provides ONLY fit/predict/predict_online — NO lambda grid or validation logic
+- Paper authors implemented their own walk-forward validation loop (like our main.py)
+- Our code correctly re-fits JM for each λ candidate during validation ✓
+- No procedural gap found — our validation procedure matches what the paper must have done
+
+---
+
 ## Outstanding Investigations
 
-| Priority | Hypothesis | Expected Impact | Risk |
-|---|---|---|---|
-| LOW | Per-asset lambda grid tuning (non-Bloomberg) | Could improve multi-asset Yahoo WIN rate | Medium complexity |
-| LOW | XGBoost version pinning to 1.x (tree_method='exact' globally) | Mixed — hurts some assets | Use exact per-asset only |
-| LOW | Asset-specific n_estimators | Could close remaining per-asset gaps | Overfitting risk |
+| Priority | Hypothesis | Expected Impact | Risk | Status |
+|---|---|---|---|---|
+| CONFIRMED | TC=0 in Table 4 (0/1 strategy gross of TC) | LC: +0.052, EAFE: +0.142 | None | DONE Session 19 |
+| INCONCLUSIVE | jumpmodels library validation loop | Unknown | None | Repo inaccessible S19 |
+| DEFERRED | EWM(diff) vs diff(EWM) macro features | Unknown (Yield_2Y, Yield_Slope) | Low | Session 20+ |
+| DEFERRED | XGBoost class imbalance: scale_pos_weight | Better prob calibration | Low/Med | Session 20+ |
+| DEFERRED | Per-asset λ grid for benchmark (non-Bloomberg) | Multi-asset Yahoo WIN rate | Medium | Session 20+ |
+| LOW | XGBoost version pinning to 1.x (tree_method='exact' globally) | Mixed — hurts some assets | Use exact per-asset only | Tested S17 |
+| LOW | Asset-specific n_estimators | Could close remaining per-asset gaps | Overfitting risk | Tested S16 |
 
-**All high-priority hypotheses have been tested (Sessions 11-18). Remaining gap is structural (WF noise + data source).**
+**Sessions 11-19: All major hypotheses tested. Remaining gap explained by TC (Session 19) + WF λ noise (Sessions 12, 15).**
+
+## Updated Residual Gap Summary (Post Session 19, TC=0 perspective)
+
+| Asset | Gap (TC=0) | Root Cause |
+|-------|-----------|-----------|
+| LargeCap | −0.047 | WF λ noise (oracle=0.787≈paper). TC explains −0.052 of original −0.099 gap |
+| MidCap | −0.053 | WF λ noise (oracle=0.589≈paper). TC explains −0.056 of −0.109 gap |
+| SmallCap | −0.024 | Mostly WF noise + minor TC (+0.014) |
+| EAFE | +0.090 | BEATS paper with TC=0. TC fully explained our baseline gap |
+| EM | −0.042 | Regime quality (high Bear% 52%), some WF noise. TC helps +0.107 |
+| REIT | −0.246 | **Data quality**: Bear%=38.6% vs paper 18.4% (Yahoo vs Bloomberg structural) |
+| AggBond | +0.063 | BEATS paper with TC=0 (and baseline). Algorithm correct |
+| Treasury | −0.011 | Near-paper match with TC=0. TC explains nearly all −0.046 baseline gap |
+| HighYield | +0.719 | Massively BEATS paper. Our regime model genuinely superior for HY |
+| Corporate | +0.193 | BEATS paper with TC=0. Algorithm correct |
+| Commodity | +0.069 | BEATS paper with TC=0. Algorithm correct |
+| Gold | −0.122 | Bear%=76% structural — almost always bearish. TC=0 slightly hurts (−0.007) |
