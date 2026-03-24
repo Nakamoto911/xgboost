@@ -60,7 +60,7 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 |---|---|
 | `test_bloomberg_data.py` | Bloomberg SPTR data validation: grid sweep (λ=0 variants, regime stats), bear period analysis, λ=0 hypothesis test. Uses `cache/DATA PAUL.xlsx`. |
 | `investigate_gap.py` | Systematic investigation of remaining 0.09 Sharpe gap vs paper. Tests: XGBoost tree_method (A), lambda grid fine sweep N=20-32 (B), sub-window consensus + finer grids (C), predict_online DP initialization (D), fixed-λ XGB decomposition (E), Sortino clipping (F), per-period EWMA smoothing (G). |
-| `test_bbg_assets.py` | Tests n_estimators=100 vs 200 on Bloomberg data for REIT (DJUSRET) and AggBond (LBUSTRUU). Validates generalizability of n_est=200 improvement across assets. Compares vs paper Table 4 targets. |
+| `test_bbg_assets.py` | Multi-mode Bloomberg asset tester. Modes: baseline (all 12 assets), `<ASSET>_ORACLE` (fixed-λ sweep), `MIDCAP_GRID`/`EM_GRID` (focused-grid WF), `<ASSET>_JMONLY` / `JM_BATCH` (JM-only walk-forward vs Table 4 JM row), `<ASSET>_JMVAL` / `JMVAL_BATCH` (JM-only λ validation — Session 16), `<ASSET>_N200` / `N200_BATCH` (n_estimators=200 test — Session 16), `<ASSET>_EXACT` / `EXACT_BATCH` (tree_method='exact' global test — Session 17). |
 
 ## Data Checks
 

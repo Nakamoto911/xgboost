@@ -85,8 +85,10 @@ def load_bbg_raw():
     return raw, fred, vix, irx
 
 
-def build_features(raw, fred, vix, irx, target_col, include_dd=True):
-    """Build feature DataFrame. include_dd=False for AggBond/Treasury/Gold."""
+def build_features(raw, fred, vix, irx, target_col, include_dd=True, ewm_adjust=True):
+    """Build feature DataFrame. include_dd=False for AggBond/Treasury/Gold.
+    ewm_adjust=False uses standard recursive EWMA (adjust=False in pandas),
+    vs default adjust=True which applies weighted initialization."""
     cols = list(dict.fromkeys([target_col, 'SPTR', 'LBUSTRUU']))  # dedup
     df = raw[cols].join(fred, how='inner').join(vix, how='inner').join(irx, how='inner').ffill().dropna()
 
@@ -101,19 +103,19 @@ def build_features(raw, fred, vix, irx, target_col, include_dd=True):
     dn = np.minimum(f['Excess_Return'], 0)
     if include_dd:
         for hl in [5, 21]:
-            ewm_dd = np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(0)
+            ewm_dd = np.sqrt((dn ** 2).ewm(halflife=hl, adjust=ewm_adjust).mean()).fillna(0)
             f[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
     for hl in [5, 10, 21]:
-        f[f'Avg_Ret_{hl}'] = f['Excess_Return'].ewm(halflife=hl).mean()
+        f[f'Avg_Ret_{hl}'] = f['Excess_Return'].ewm(halflife=hl, adjust=ewm_adjust).mean()
     for hl in [5, 10, 21]:
-        dd_r = np.maximum(np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(1e-8), 1e-8)
+        dd_r = np.maximum(np.sqrt((dn ** 2).ewm(halflife=hl, adjust=ewm_adjust).mean()).fillna(1e-8), 1e-8)
         f[f'Sortino_{hl}'] = (f[f'Avg_Ret_{hl}'] / dd_r).clip(-10, 10)
 
-    f['Yield_2Y_EWMA_diff']       = df['DGS2'].diff().fillna(0).ewm(halflife=21).mean()
+    f['Yield_2Y_EWMA_diff']       = df['DGS2'].diff().fillna(0).ewm(halflife=21, adjust=ewm_adjust).mean()
     sl = df['DGS10'] - df['DGS2']
-    f['Yield_Slope_EWMA_10']      = sl.ewm(halflife=10).mean()
-    f['Yield_Slope_EWMA_diff_21'] = sl.diff().fillna(0).ewm(halflife=21).mean()
-    f['VIX_EWMA_log_diff'] = np.log(df['VIX'] / df['VIX'].shift(1)).fillna(0).ewm(halflife=63).mean()
+    f['Yield_Slope_EWMA_10']      = sl.ewm(halflife=10, adjust=ewm_adjust).mean()
+    f['Yield_Slope_EWMA_diff_21'] = sl.diff().fillna(0).ewm(halflife=21, adjust=ewm_adjust).mean()
+    f['VIX_EWMA_log_diff'] = np.log(df['VIX'] / df['VIX'].shift(1)).fillna(0).ewm(halflife=63, adjust=ewm_adjust).mean()
     sptr_ret = df['SPTR'].pct_change().fillna(0)
     bond_ret = df['LBUSTRUU'].pct_change().fillna(0)
     f['Stock_Bond_Corr'] = sptr_ret.rolling(252).corr(bond_ret).fillna(0)
@@ -299,6 +301,371 @@ def em_grid_sweep(df_feat):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# JM-only validation mode sweep
+# Hypothesis: using JM-only sim for λ selection (not JM+XGB) gives a smoother,
+# more robust Sharpe landscape — prevents walk-forward from picking low-λ during
+# post-crisis validation windows. Global fix that should work across all assets.
+# ──────────────────────────────────────────────────────────────────────────────
+
+LOG19PT = list(np.logspace(0, 2, 19))   # [1.0, 1.38, ..., 100.0]
+LOG25PT = list(np.logspace(0, 2, 25))   # [1.0, 1.21, ..., 100.0]
+
+
+def run_asset_wf_jmval(asset_name, df_feat, cfg_info, grid, label=None):
+    """Walk-forward with JM-only λ validation (lambda_validation_mode='jm_only')."""
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = grid
+    main._forecast_cache.clear()
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}_jmval', ewma_mode='paper',
+                         lambda_validation_mode='jm_only')
+    r = main.walk_forward_backtest(df_feat, cfg)
+
+    bh = bh_sharpe(df_feat)
+    if r is None or r.empty:
+        print(f"  {asset_name:<12} [{label or str(grid)}] ERROR")
+        return
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+    hl = r.attrs.get('ewma_halflife', '?')
+
+    gap_s = s - cfg_info['paper_sharpe']
+    grid_label = label or f'{len(grid)}pt [{grid[0]:.0f}-{grid[-1]:.0f}]'
+    print(f"  {asset_name:<12}  grid={grid_label:<22}  S={s:.3f}({gap_s:+.3f})  "
+          f"MDD={m:.1%}  Bear={bp:.1f}%  Shft={ns}  hl={hl}  λ̄={lh.mean():.1f}  λs={list(np.round(lh,1))}")
+
+
+def jm_val_sweep(asset_name, df_feat, cfg_info):
+    """
+    Test JM-only λ validation across grids.
+    Prints baseline (XGB val) vs JM-only val side-by-side for comparison.
+    """
+    p = cfg_info
+    print("\n" + "="*70)
+    print(f"{asset_name} — JM-only λ Validation Sweep")
+    print(f"Paper: S={p['paper_sharpe']:.2f}  MDD={p['paper_mdd']:.2%}  B&H={p['bh_sharpe']:.2f}")
+    print("="*70)
+    print("\n  [XGB validation — baseline for comparison]")
+    run_asset_wf(asset_name, df_feat, cfg_info, GRID_8PT,  '8pt  [xgb-val]')
+    run_asset_wf(asset_name, df_feat, cfg_info, LOG19PT,   'Log19 [xgb-val]')
+
+    print("\n  [JM-only validation — hypothesis]")
+    run_asset_wf_jmval(asset_name, df_feat, cfg_info, GRID_8PT,  '8pt  [jm-val]')
+    run_asset_wf_jmval(asset_name, df_feat, cfg_info, LOG19PT,   'Log19 [jm-val]')
+    run_asset_wf_jmval(asset_name, df_feat, cfg_info, LOG25PT,   'Log25 [jm-val]')
+
+
+def jmval_batch(dfs):
+    """Batch 1 + 2: LargeCap + MidCap + EM + AggBond with JM-only validation."""
+    for name in ['LargeCap', 'MidCap', 'EM', 'AggBond']:
+        if name in dfs:
+            jm_val_sweep(name, dfs[name], ASSET_CONFIGS[name])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# n_estimators=200 global test
+# Hypothesis: n_est=200 amplifies validation Sharpe difference between clean
+# labels (high λ) and noisy labels (low λ), making walk-forward more reliable.
+# Already confirmed for LargeCap (+0.079, S=0.770). Test across all assets.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_asset_n200(asset_name, df_feat, cfg_info):
+    """Run asset with n_estimators=200. Prints vs n_est=100 baseline."""
+    paper = cfg_info
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = GRID_8PT
+    main._forecast_cache.clear()
+
+    from config import _default_xgb_params
+    xgb200 = _default_xgb_params()
+    xgb200['n_estimators'] = 200
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}_n200', ewma_mode='paper', xgb_params=xgb200)
+    r = main.walk_forward_backtest(df_feat, cfg)
+
+    if r is None or r.empty:
+        print(f"  {asset_name:<12}  n_est=200  ERROR")
+        return
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+
+    gap_s  = s - paper['paper_sharpe']
+    print(f"  {asset_name:<12}  n_est=200  S={s:.3f}({gap_s:+.3f})  MDD={m:.1%}  "
+          f"Bear={bp:.1f}%  Shft={ns}  λ̄={lh.mean():.1f}")
+    # Also print λ trace to diagnose selection quality
+    lh_rounded = [round(float(x), 1) for x in lh]
+    print(f"    λ trace: {lh_rounded}")
+
+
+def n200_batch(dfs):
+    """
+    Test n_est=200 on all assets not yet tested (all except LargeCap/AggBond/REIT).
+    Prints both n_est=100 (baseline) and n_est=200 side-by-side for comparison.
+    """
+    # Assets already tested in Sessions 12-13: LargeCap (+0.079), AggBond (-0.046), REIT (-0.029)
+    # Remaining assets to test:
+    test_order = ['MidCap', 'SmallCap', 'EAFE', 'EM',
+                  'Treasury', 'HighYield', 'Corporate', 'Commodity', 'Gold']
+    print("\n" + "="*70)
+    print("n_estimators=200 Global Test — all assets vs baseline n_est=100")
+    print("Known: LargeCap +0.079, AggBond −0.046, REIT −0.029")
+    print("="*70)
+    print(f"\n  {'Asset':<12}  {'n_est':>7}  {'Sharpe (Δ)':>14}  {'MDD':>8}  "
+          f"{'Bear%':>7}  {'Shft':>6}  {'λ̄':>6}")
+    print("  " + "─"*70)
+    orig_ticker = main.TARGET_TICKER
+    for name in test_order:
+        if name in dfs:
+            # Baseline n_est=100
+            main.TARGET_TICKER = ASSET_CONFIGS[name]['hl_proxy']
+            main.LAMBDA_GRID   = GRID_8PT
+            main._forecast_cache.clear()
+            cfg100 = StrategyConfig(name=f'BBG_{name}', ewma_mode='paper')
+            r100 = main.walk_forward_backtest(dfs[name], cfg100)
+            if r100 is not None and not r100.empty:
+                s100, m100 = mets(r100)
+                bp100, ns100 = reg_stats(r100)
+                lh100 = np.array(r100.attrs.get('lambda_history', [0]))
+                g100 = s100 - ASSET_CONFIGS[name]['paper_sharpe']
+                print(f"  {name:<12}  n_est=100  S={s100:.3f}({g100:+.3f})  MDD={m100:.1%}  "
+                      f"Bear={bp100:.1f}%  Shft={ns100}  λ̄={lh100.mean():.1f}")
+            # n_est=200
+            run_asset_n200(name, dfs[name], ASSET_CONFIGS[name])
+    main.TARGET_TICKER = orig_ticker
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JM-only walk-forward — Table 4 JM row replication
+# Uses JM regime labels directly (no XGBoost). Walk-forward λ selection uses
+# JM-only validation Sharpe. Compares against paper Table 4 JM column.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Paper Table 4: JM-only Sharpe and MDD
+PAPER_JM_SHARPE = {
+    'LargeCap': 0.59, 'MidCap': 0.49, 'SmallCap': 0.28, 'EAFE': 0.28,
+    'EM': 0.65, 'REIT': 0.39, 'AggBond': 0.43, 'Treasury': 0.21,
+    'HighYield': 1.49, 'Corporate': 0.83, 'Commodity': 0.08, 'Gold': 0.12,
+}
+PAPER_JM_MDD = {
+    'LargeCap': -0.2478, 'MidCap': -0.3324, 'SmallCap': -0.3835, 'EAFE': -0.2972,
+    'EM': -0.2622, 'REIT': -0.5471, 'AggBond': -0.0609, 'Treasury': -0.2285,
+    'HighYield': -0.1388, 'Corporate': -0.0826, 'Commodity': -0.5848, 'Gold': -0.3178,
+}
+
+
+def run_asset_jm_only(asset_name, df_feat, cfg_info, grid=None):
+    """Walk-forward JM-only strategy. Validates with JM-only Sharpe, OOS with JM signals."""
+    paper = cfg_info
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = grid if grid is not None else GRID_8PT
+    main._forecast_cache.clear()
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}_jmonly', ewma_mode='paper',
+                         include_xgboost=False)
+    r = main.walk_forward_backtest(df_feat, cfg)
+
+    if r is None or r.empty:
+        print(f"  {asset_name:<12}  JM-only  ERROR")
+        return None
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+
+    ps = PAPER_JM_SHARPE.get(asset_name, cfg_info['paper_sharpe'])
+    pm = PAPER_JM_MDD.get(asset_name, cfg_info['paper_mdd'])
+    gap_s = s - ps
+    gap_m = m - pm
+    bh = bh_sharpe(df_feat)
+    print(f"  {asset_name:<12}  JM-only  S={s:.3f}(p:{ps:.2f},{gap_s:+.3f})  "
+          f"MDD={m:.1%}(p:{pm:.1%},{gap_m:+.1%})  Bear={bp:.1f}%  Shft={ns}  "
+          f"λ̄={lh.mean():.1f}  λs={[round(float(x),1) for x in lh]}")
+    return s
+
+
+def jm_batch(dfs):
+    """Run JM-only walk-forward on all 12 Bloomberg assets vs Table 4 JM row."""
+    print("\n" + "="*70)
+    print("JM-only Walk-Forward — Bloomberg Data vs Paper Table 4 JM Row")
+    print("λ selection: JM-only validation Sharpe on 5yr rolling window")
+    print("="*70)
+    print(f"\n  {'Asset':<12}  {'S (p, Δ)':>26}  {'MDD (p, Δ)':>26}  {'Bear%':>7}  {'Shft':>6}  {'λ̄':>6}")
+    print("  " + "─"*90)
+
+    orig_ticker = main.TARGET_TICKER
+    wins = 0
+    for name in ASSET_CONFIGS:
+        if name in dfs:
+            result = run_asset_jm_only(name, dfs[name], ASSET_CONFIGS[name])
+            if result is not None and result >= PAPER_JM_SHARPE.get(name, 0) - 0.05:
+                wins += 1
+    main.TARGET_TICKER = orig_ticker
+    print(f"\n  → Results vs Paper JM row (Table 4)")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# tree_method='exact' global test
+# Hypothesis: paper may have used XGBoost 1.x where 'exact' was the default
+# tree method (changed to 'hist' in XGBoost 2.0). 'exact' evaluates all split
+# points and may produce different validation Sharpe landscapes.
+# Session 12 showed: exact+n=100 → LargeCap S=0.713 (+0.022 vs hist 0.691).
+# Cross-asset effect unknown — test globally here.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_asset_exact(asset_name, df_feat, cfg_info):
+    """Run asset with tree_method='exact'. Prints vs hist baseline."""
+    paper = cfg_info
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = GRID_8PT
+    main._forecast_cache.clear()
+
+    from config import _default_xgb_params
+    xgb_exact = _default_xgb_params()
+    xgb_exact['tree_method'] = 'exact'
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}_exact', ewma_mode='paper', xgb_params=xgb_exact)
+    r = main.walk_forward_backtest(df_feat, cfg)
+
+    if r is None or r.empty:
+        print(f"  {asset_name:<12}  tree=exact  ERROR")
+        return
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+
+    gap_s = s - paper['paper_sharpe']
+    print(f"  {asset_name:<12}  tree=exact  S={s:.3f}({gap_s:+.3f})  MDD={m:.1%}  "
+          f"Bear={bp:.1f}%  Shft={ns}  λ̄={lh.mean():.1f}")
+    lh_rounded = [round(float(x), 1) for x in lh]
+    print(f"    λ trace: {lh_rounded}")
+
+
+def exact_batch(dfs):
+    """
+    Test tree_method='exact' on all 12 assets vs hist baseline.
+    Session 12 confirmed LargeCap: exact S=0.713 vs hist S=0.691 (+0.022).
+    """
+    all_assets = list(ASSET_CONFIGS.keys())
+    print("\n" + "="*70)
+    print("tree_method='exact' Global Test — all 12 assets vs hist baseline")
+    print("Known: LargeCap hist=0.691, exact=0.713 (+0.022)")
+    print("="*70)
+
+    orig_ticker = main.TARGET_TICKER
+    for name in all_assets:
+        if name not in dfs:
+            continue
+        # Baseline hist (n_est=100)
+        main.TARGET_TICKER = ASSET_CONFIGS[name]['hl_proxy']
+        main.LAMBDA_GRID   = GRID_8PT
+        main._forecast_cache.clear()
+        cfg_hist = StrategyConfig(name=f'BBG_{name}', ewma_mode='paper')
+        r_hist = main.walk_forward_backtest(dfs[name], cfg_hist)
+        if r_hist is not None and not r_hist.empty:
+            s_h, m_h = mets(r_hist)
+            bp_h, ns_h = reg_stats(r_hist)
+            lh_h = np.array(r_hist.attrs.get('lambda_history', [0]))
+            g_h = s_h - ASSET_CONFIGS[name]['paper_sharpe']
+            print(f"  {name:<12}  tree=hist   S={s_h:.3f}({g_h:+.3f})  MDD={m_h:.1%}  "
+                  f"Bear={bp_h:.1f}%  Shft={ns_h}  λ̄={lh_h.mean():.1f}")
+        # exact
+        run_asset_exact(name, dfs[name], ASSET_CONFIGS[name])
+    main.TARGET_TICKER = orig_ticker
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# EWMA adjust=False test
+# Hypothesis: paper uses standard recursive EWMA (adjust=False), not pandas
+# default (adjust=True). Affects all feature EWMA computations (DD, Avg_Ret,
+# Sortino, macro features) and probability smoothing. Global change.
+#
+# Large λ grid test
+# Hypothesis: paper used a much larger log-uniform grid (50-100 pts from 1-100)
+# without look-ahead bias in design. Denser coverage in 30-70 range may improve
+# walk-forward λ selection even if more low-λ candidates exist.
+# ──────────────────────────────────────────────────────────────────────────────
+
+LOG50PT  = list(np.logspace(0, 2, 50))    # 50 pts: 1.0 → 100.0
+LOG100PT = list(np.logspace(0, 2, 100))   # 100 pts: 1.0 → 100.0
+
+
+def run_asset_adjust(asset_name, df_feat_adj, cfg_info, grid, label, ewma_adjust=False):
+    """Walk-forward with adjust=False features and prob smoothing."""
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID   = grid
+    main._forecast_cache.clear()
+
+    cfg = StrategyConfig(name=f'BBG_{asset_name}_adj{label}', ewma_mode='paper',
+                         ewma_adjust=ewma_adjust)
+    r = main.walk_forward_backtest(df_feat_adj, cfg)
+
+    if r is None or r.empty:
+        print(f"  {asset_name:<12}  [{label}]  ERROR")
+        return None
+
+    s, m = mets(r)
+    bp, ns = reg_stats(r)
+    lh = np.array(r.attrs.get('lambda_history', [0]))
+    gap_s = s - cfg_info['paper_sharpe']
+    print(f"  {asset_name:<12}  {label:<30}  S={s:.3f}({gap_s:+.3f})  MDD={m:.1%}  "
+          f"Bear={bp:.1f}%  Shft={ns}  λ̄={lh.mean():.1f}  λs={[round(float(x),1) for x in lh]}")
+    return s
+
+
+def adjust_false_sweep(asset_name, df_feat, cfg_info, raw, fred, vix, irx):
+    """
+    Test adjust=False on one asset across multiple grid sizes.
+    Also tests large grids (50pt, 100pt) on both adjust=True and adjust=False.
+    """
+    p = cfg_info
+    print("\n" + "="*70)
+    print(f"{asset_name} — adjust=False + Large Grid Sweep")
+    print(f"Paper JM-XGB: S={p['paper_sharpe']:.2f}  MDD={p['paper_mdd']:.2%}  B&H={p['bh_sharpe']:.2f}")
+    print("="*70)
+
+    df_adj = build_features(raw, fred, vix, irx, cfg_info['col'], cfg_info['dd'],
+                            ewm_adjust=False)
+    print(f"  Features built (adjust=False): {df_adj.index.min().date()} → {df_adj.index.max().date()}")
+
+    print("\n  [adjust=True baseline]")
+    run_asset_adjust(asset_name, df_feat, cfg_info, GRID_8PT,   'adj=True  8pt',   ewma_adjust=True)
+    run_asset_adjust(asset_name, df_feat, cfg_info, LOG50PT,    'adj=True  50pt',  ewma_adjust=True)
+    run_asset_adjust(asset_name, df_feat, cfg_info, LOG100PT,   'adj=True  100pt', ewma_adjust=True)
+
+    print("\n  [adjust=False — hypothesis]")
+    run_asset_adjust(asset_name, df_adj,  cfg_info, GRID_8PT,   'adj=False 8pt',   ewma_adjust=False)
+    run_asset_adjust(asset_name, df_adj,  cfg_info, LOG50PT,    'adj=False 50pt',  ewma_adjust=False)
+    run_asset_adjust(asset_name, df_adj,  cfg_info, LOG100PT,   'adj=False 100pt', ewma_adjust=False)
+
+
+def adjust_false_batch(dfs, raw, fred, vix, irx):
+    """Run adjust=False sweep on all 12 assets (adjust=True vs False, 8pt vs 50pt vs 100pt)."""
+    print("\n" + "="*70)
+    print("EWMA adjust=False + Large Grid — All 12 Assets")
+    print("="*70)
+    orig_ticker = main.TARGET_TICKER
+    for name in ASSET_CONFIGS:
+        if name not in dfs:
+            continue
+        cfg_info = ASSET_CONFIGS[name]
+        df_adj = build_features(raw, fred, vix, irx, cfg_info['col'], cfg_info['dd'],
+                                ewm_adjust=False)
+        print(f"\n  {name} (paper S={cfg_info['paper_sharpe']:.2f})")
+        run_asset_adjust(name, dfs[name], cfg_info, GRID_8PT,  'adj=True  8pt',   ewma_adjust=True)
+        run_asset_adjust(name, df_adj,    cfg_info, GRID_8PT,  'adj=False 8pt',   ewma_adjust=False)
+        run_asset_adjust(name, dfs[name], cfg_info, LOG50PT,   'adj=True  50pt',  ewma_adjust=True)
+        run_asset_adjust(name, df_adj,    cfg_info, LOG50PT,   'adj=False 50pt',  ewma_adjust=False)
+        run_asset_adjust(name, dfs[name], cfg_info, LOG100PT,  'adj=True  100pt', ewma_adjust=True)
+        run_asset_adjust(name, df_adj,    cfg_info, LOG100PT,  'adj=False 100pt', ewma_adjust=False)
+    main.TARGET_TICKER = orig_ticker
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -309,6 +676,15 @@ if __name__ == '__main__':
     if 'ALL' in args:
         args = list(ASSET_CONFIGS.keys()) + ['REIT_ORACLE']
 
+    # JM-only modes: JM_BATCH, or <ASSET>_JMONLY for a single asset
+    JMONLY_SINGLE = {k.upper() + '_JMONLY': k for k in ASSET_CONFIGS}
+    # JM-val modes: JMVAL_BATCH, or <ASSET>_JMVAL for a single asset
+    JMVAL_SINGLE = {k.upper() + '_JMVAL': k for k in ASSET_CONFIGS}
+    # n200 modes: N200_BATCH, or <ASSET>_N200 for a single asset
+    N200_SINGLE  = {k.upper() + '_N200':  k for k in ASSET_CONFIGS}
+    # exact modes: EXACT_BATCH, or <ASSET>_EXACT for a single asset
+    EXACT_SINGLE = {k.upper() + '_EXACT': k for k in ASSET_CONFIGS}
+
     # Detect oracle/grid modes and map to asset keys
     ORACLE_MODES = {k + '_ORACLE': k for k in ASSET_CONFIGS}
     ORACLE_MODES_UPPER = {k.upper(): v for k, v in ORACLE_MODES.items()}
@@ -316,13 +692,57 @@ if __name__ == '__main__':
 
     raw, fred, vix, irx = load_bbg_raw()
 
+    # Determine which assets need feature DataFrames
+    jmonly_assets = set()
+    if 'JM_BATCH' in args:
+        jmonly_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in JMONLY_SINGLE:
+            jmonly_assets.add(JMONLY_SINGLE[arg])
+
+    jmval_assets = set()
+    if 'JMVAL_BATCH' in args:
+        jmval_assets = {'LargeCap', 'MidCap', 'EM', 'AggBond'}
+    for arg in args:
+        if arg in JMVAL_SINGLE:
+            jmval_assets.add(JMVAL_SINGLE[arg])
+
+    n200_assets = set()
+    if 'N200_BATCH' in args:
+        n200_assets = {'MidCap', 'SmallCap', 'EAFE', 'EM',
+                       'Treasury', 'HighYield', 'Corporate', 'Commodity', 'Gold'}
+    for arg in args:
+        if arg in N200_SINGLE:
+            n200_assets.add(N200_SINGLE[arg])
+
+    exact_assets = set()
+    if 'EXACT_BATCH' in args:
+        exact_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in EXACT_SINGLE:
+            exact_assets.add(EXACT_SINGLE[arg])
+
+    # adjust=False + large grid modes: ADJUST_BATCH, or <ASSET>_ADJUST for single asset
+    ADJUST_SINGLE = {k.upper() + '_ADJUST': k for k in ASSET_CONFIGS}
+    adjust_assets = set()
+    if 'ADJUST_BATCH' in args:
+        adjust_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in ADJUST_SINGLE:
+            adjust_assets.add(ADJUST_SINGLE[arg])
+
     # Pre-build feature DataFrames for requested assets
     dfs = {}
     for key, cfg in ASSET_CONFIGS.items():
         need_baseline = key.upper() in args
         need_oracle   = any(args_k == (key + '_ORACLE').upper() for args_k in args)
         need_grid     = any(args_k == (key.upper() + '_GRID') for args_k in args)
-        if need_baseline or need_oracle or need_grid:
+        need_jmonly   = key in jmonly_assets
+        need_jmval    = key in jmval_assets
+        need_n200     = key in n200_assets
+        need_exact    = key in exact_assets
+        need_adjust   = key in adjust_assets
+        if need_baseline or need_oracle or need_grid or need_jmonly or need_jmval or need_n200 or need_exact or need_adjust:
             print(f"Building {key} ({cfg['col']}) features  "
                   f"[DD={'incl' if cfg['dd'] else 'excl'}, hl_proxy={cfg['hl_proxy']}]...")
             dfs[key] = build_features(raw, fred, vix, irx, cfg['col'], cfg['dd'])
@@ -352,6 +772,52 @@ if __name__ == '__main__':
         midcap_grid_sweep(dfs['MidCap'])
     if 'EM_GRID' in args and 'EM' in dfs:
         em_grid_sweep(dfs['EM'])
+
+    # Run JM-only strategy (Table 4 JM row replication)
+    if 'JM_BATCH' in args:
+        jm_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = JMONLY_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                run_asset_jm_only(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run JM-only validation sweeps
+    if 'JMVAL_BATCH' in args:
+        jmval_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = JMVAL_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                jm_val_sweep(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run n_est=200 tests
+    if 'N200_BATCH' in args:
+        n200_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = N200_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                run_asset_n200(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run tree_method='exact' tests
+    if 'EXACT_BATCH' in args:
+        exact_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = EXACT_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                run_asset_exact(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run adjust=False + large grid tests
+    if 'ADJUST_BATCH' in args:
+        adjust_false_batch(dfs, raw, fred, vix, irx)
+    else:
+        for arg in args:
+            asset_key = ADJUST_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                adjust_false_sweep(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key],
+                                   raw, fred, vix, irx)
 
     print("\n" + "="*70)
     print("DONE")

@@ -5,6 +5,169 @@ Entries are in reverse chronological order (newest first).
 
 ---
 
+## Session 2026-03-24 (Session 17) - tree_method='exact', JM-only Walk-Forward, adjust=False, Large Grids
+
+**Goal:** Exhaust remaining global undisclosed-parameter hypotheses to explain paper's walk-forward λ robustness.
+
+### Hypothesis 1: tree_method='exact' Global Test (REJECTED)
+
+**Idea:** Paper used XGBoost 1.x where 'exact' was default tree_method (changed to 'hist' in XGBoost 2.0). Session 12 showed LargeCap +0.022 with exact. Cross-asset effect unknown.
+
+**Results (Bloomberg, 2007-2023, 8pt grid, ewma_mode="paper", n_est=100):**
+
+| Asset | hist S | exact S | Δ | Verdict |
+|---|---|---|---|---|
+| LargeCap | 0.691 | 0.713 | +0.022 | ✓ |
+| MidCap | 0.475 | 0.342 | **−0.133** | ✗ Catastrophic |
+| SmallCap | 0.472 | 0.559 | +0.087 | ✓ |
+| EAFE | 0.508 | 0.453 | −0.055 | ✗ |
+| EM | 0.701 | 0.705 | +0.004 | ~ |
+| REIT | 0.303 | 0.245 | −0.058 | ✗ |
+| AggBond | 0.685 | 0.548 | **−0.137** | ✗ Catastrophic |
+| Treasury | 0.334 | 0.384 | +0.050 | ✓ |
+| HighYield | 2.339 | 2.229 | −0.110 | ✗ |
+| Corporate | 0.833 | 0.854 | +0.021 | ✓ |
+| Commodity | 0.277 | 0.130 | **−0.147** | ✗ Catastrophic |
+| Gold | 0.195 | 0.312 | +0.117 | ✓ |
+
+**Verdict: REJECTED.** Mixed results — helps 6 assets (LargeCap, SmallCap, Treasury, Corporate, Gold, EM~), catastrophically hurts MidCap (−0.133), AggBond (−0.137), Commodity (−0.147), HighYield (−0.110). Same asymmetric pattern as n_est=200.
+
+### Hypothesis 2: JM-only Walk-Forward vs Paper Table 4 JM Row
+
+**New feature added:** `include_xgboost: bool = True` in `StrategyConfig`. When `False`, both validation and OOS use JM-only signals (no XGB). Also required fixing `walk_forward_backtest` to handle missing `Raw_Prob` column.
+
+**Results (Bloomberg, 2007-2023, 8pt JM-only validation grid, ewma_mode="paper"):**
+
+| Asset | Our JM S | Paper JM S | Δ | Our JM-XGB S | Paper JM-XGB S |
+|---|---|---|---|---|---|
+| LargeCap | 0.455 | 0.59 | **−0.135** | 0.691 | 0.79 |
+| MidCap | 0.360 | 0.49 | −0.130 | 0.475 | 0.59 |
+| SmallCap | 0.318 | 0.28 | +0.038 ✓ | 0.472 | 0.51 |
+| EAFE | 0.176 | 0.28 | −0.104 | 0.508 | 0.56 |
+| EM | 0.704 | 0.65 | **+0.054** ✓ | 0.701 | 0.85 |
+| REIT | 0.264 | 0.39 | −0.126 | 0.303 | 0.56 |
+| AggBond | 0.597 | 0.43 | **+0.167** ✓ | 0.685 | 0.67 |
+| Treasury | 0.174 | 0.21 | −0.036 | 0.334 | 0.38 |
+| HighYield | 1.635 | 1.49 | +0.145 ✓ | 2.339 | 1.88 |
+| Corporate | 0.842 | 0.83 | +0.012 ✓ | 0.833 | 0.76 |
+| Commodity | 0.182 | 0.08 | +0.102 ✓ | 0.277 | 0.23 |
+| Gold | 0.068 | 0.12 | −0.052 | 0.195 | 0.31 |
+
+Win rate: 6/12 (50%).
+
+**Key insight: Paper likely uses shared λ from XGB validation for both JM and JM-XGB rows.** Our independently-validated JM-only walk-forward is far more λ-unstable for equity assets (LargeCap trace: [100,100,100,100,100,15,21,15,15,15,15,10,10,10,10,10,10,100,100,10,70...]). XGB validation gives cleaner λ signal. The paper's JM column likely applies JM signals to the walk-forward λ selected by XGB validation — not a separate JM-only optimization.
+
+Note: EM, AggBond, HighYield, Corporate, Commodity all beat or match paper JM with JM-only WF.
+
+### Hypothesis 3: adjust=False + Large Grids (LargeCap only — REJECTED)
+
+**Ideas:**
+1. `ewm_adjust=False` (standard recursive EWMA, not pandas weighted init) — affects all feature computations
+2. Large log-uniform grids (50pt, 100pt from λ=1 to 100) — more points = finer coverage, closer to paper's "log-uniform 0–100"
+
+**Results (Bloomberg SPTR, 2007-2023, ewma_mode="paper"):**
+
+| Config | Sharpe | Δ vs 8pt | λ trace notes |
+|---|---|---|---|
+| adj=True 8pt (baseline) | 0.691 | — | λ̄=44.6 |
+| adj=False 8pt | **0.695** | **+0.004** | λ̄=45.5, nearly identical |
+| adj=True 50pt | 0.575 | **−0.116** | picks λ=1.8, 3.1, 1.9... catastrophic |
+| adj=True 100pt | 0.612 | **−0.079** | picks λ=1.3, 1.9, 2.7... bad |
+| adj=False 50pt | 0.540 | **−0.151** | same low-λ problem |
+| adj=False 100pt | 0.603 | **−0.092** | same low-λ problem |
+
+**Verdict:**
+- **adjust=False: REJECTED** — negligible effect (+0.004), same λ trace structure
+- **Large grids: REJECTED** — 50pt/100pt grids starting at λ=1 pick λ≈1–3 during GFC-contaminated validation windows, catastrophically bad OOS. **The paper did NOT use a naive large log-uniform grid starting from λ=1.** Their grid likely starts at λ≥10.
+
+**Implication for "large grid" hypothesis:** The paper's stated "0.0 to 100.0" range likely refers to the theoretical parameter space, not the literal test values. Their actual grid probably has a floor of λ≥10–15, consistent with our 8pt grid lower bound of 4.64 being near the edge of acceptable performance.
+
+### Session 17 Overall Conclusion
+
+All major undisclosed XGBoost/grid hypotheses now exhausted:
+- tree_method: exact vs hist → mixed, not global (S17)
+- n_estimators: 100 vs 200 → mixed, not global (S16)
+- JM-only validation → worse for equity, not global (S16)
+- EWMA adjust=False → negligible (S17)
+- Large log-uniform grids (50pt, 100pt) → worse due to low-λ catastrophe (S17)
+
+**Remaining gap (LargeCap): −0.099 Sharpe (0.691 vs 0.79)**. Gap is entirely WF λ selection noise — oracle λ=45 → S=0.787 (≈paper). No global single-parameter fix found.
+
+**Untested remaining directions:**
+1. DD formula / Sortino exact implementation (zeros treatment, numerator EWM vs raw)
+2. Paper's JM for Table 4 uses XGB-selected λ (test by applying JM-only signals with XGB-chosen λ)
+3. Biannual calendar anchoring (Jan 1 / Jul 1 vs rolling from OOS start)
+
+**Files modified:** `config.py` (added `include_xgboost`, `ewma_adjust` fields), `main.py` (OOS calls use `config.include_xgboost`, prob smoothing uses `config.ewma_adjust`, JM-only signal path), `misc_scripts/test_bbg_assets.py` (added `JM_BATCH`, `<ASSET>_JMONLY`, `EXACT_BATCH`, `<ASSET>_EXACT`, `ADJUST_BATCH`, `<ASSET>_ADJUST` modes; `build_features` gains `ewm_adjust` param).
+
+---
+
+## Session 2026-03-23 (Session 16) - Global Methodology: JM-only Validation Hypothesis + n_est=200 Global Test
+
+**Goal:** Find a single global methodological change that explains why the paper's walk-forward consistently selects λ≈45 for LargeCap while ours occasionally picks λ=4.64 (bad). Two hypotheses tested.
+
+### Hypothesis 1: JM-only λ Validation (REJECTED)
+
+**Idea:** The paper may use JM-only simulation (no XGB) to compute validation Sharpe for λ selection. JM-only gives a smoother, simpler Sharpe landscape less subject to XGB overfitting.
+
+**Implementation:** Added `lambda_validation_mode: str = "xgb"/"jm_only"` to `StrategyConfig`. When `"jm_only"`, the walk-forward uses `include_xgboost=False` for validation Sharpe computation, then uses XGB for OOS prediction.
+
+**Results (Bloomberg SPTR, 2007-2023, 8pt grid, ewma_mode="paper"):**
+
+| Config | Sharpe | Gap | λ̄ | Notable λ issues |
+|---|---|---|---|---|
+| Paper target | 0.790 | — | ~45 | consistent |
+| 8pt, XGB-val (baseline) | 0.691 | -0.099 | 44.6 | periods 8-12: λ=4.64 |
+| Log19, XGB-val | 0.697 | -0.093 | 30.8 | worse: λ=1.7-6.0 in more periods |
+| **8pt, JM-val** | **0.513** | **-0.277** | **60.5** | picks 100 in late periods, 10 in middle |
+| Log19, JM-val | 0.558 | -0.232 | 60.6 | same pattern |
+| Log25, JM-val | 0.543 | -0.247 | 56.5 | same pattern |
+
+**Verdict: Definitively rejected.** JM-only validation is significantly worse. It pushes λ toward extremes (100 in bull markets, 10 in post-GFC) because JM-only Sharpe lacks the XGB discriminative signal. The XGB-based validation is the right approach.
+
+**Key λ trace finding (8pt XGB-val):**
+- Periods 1-7 (2007-2010): picks 70-100 (slightly too high but acceptable)
+- Periods 8-12 (2010-2013): picks λ=4.64 (catastrophically bad) ← GFC-overfitting
+- Periods 13-22 (2013-2018): picks 46.42 (near-oracle, correct)
+- Periods 23-34 (2018-2023): mixed 15-100, then stabilizes to 46.42
+
+**Root cause confirmed:** Validation windows for periods 8-12 cover 2005-2010, including GFC. XGB trained on low-λ=4.64 noisy labels memorizes 2008-2009 crash patterns → high validation Sharpe → catastrophically bad OOS in 2010-2013 bull market recovery. Log19pt makes this WORSE by offering λ=1.7-6.0 options.
+
+### Hypothesis 2: n_est=200 Global Test (Batch 2 — REJECTED as global fix)
+
+**Idea:** n_est=200 amplifies validation Sharpe differences between clean high-λ labels and noisy low-λ labels, making walk-forward more reliable. Already confirmed for LargeCap (+0.079 → 0.770).
+
+**Results (Bloomberg, 2007-2023, 8pt grid, ewma_mode="paper"):**
+
+| Asset | n=100 | n=200 | Delta | Verdict |
+|---|---|---|---|---|
+| MidCap | 0.475 | 0.512 | +0.037 | ✓ Modest help |
+| SmallCap | 0.472 | 0.488 | +0.016 | ✓ Small help |
+| EAFE | 0.508 | 0.509 | +0.001 | ~ Neutral |
+| EM | 0.701 | 0.623 | **−0.078** | ✗ Hurts (λ̄ shifts to 22, wrong direction) |
+| Treasury | 0.334 | 0.246 | **−0.088** | ✗ Hurts significantly |
+| HighYield | 2.339 | 2.345 | +0.006 | ~ Neutral |
+| Corporate | 0.833 | 0.832 | −0.001 | ~ Neutral |
+| Commodity | 0.277 | 0.071 | **−0.206** | ✗ Catastrophic destabilization |
+| Gold | 0.195 | 0.259 | **+0.064** | ✓ Helps |
+| (AggBond | 0.685 | 0.639 | −0.046 | ✗ Known from Session 13) |
+| (REIT | 0.303 | 0.274 | −0.029 | ✗ Known from Session 13) |
+
+**Verdict: REJECTED as global methodology.** n_est=200 biases validation toward HIGH λ selection. Beneficial when oracle is high-λ (equity hl=8), harmful when oracle is low-λ (EM) or unstable (Commodity, Treasury).
+
+**λ trace insights:**
+- EM: λ̄ rises from 12.6 → 22.2 with n=200 (wrong direction; oracle=4.64)
+- Commodity: wild oscillation λ=4.6↔100 across consecutive periods → catastrophic
+- MidCap: still picks λ=4.64 in period 6, λ=100 in periods 9-10 (bad picks persist)
+
+**Core insight:** No single parameter change (JM-only validation, n_est, grid density) fixes the walk-forward globally. The paper's global λ-selection robustness likely comes from an undisclosed implementation detail (XGBoost version, exact tree_method, or subtle validation methodology).
+
+**Remaining gap hypothesis (unproven):** Paper may have used XGBoost 1.x with tree_method='exact' (changed to 'hist' in XGBoost 2.0). Session 12 showed exact+n=100 → LargeCap 0.713 (+0.022). Cross-asset effect of exact method not yet tested.
+
+**Files modified:** `config.py` (added `lambda_validation_mode`), `main.py` (walk-forward validation patched for jm_only mode), `misc_scripts/test_bbg_assets.py` (added `LARGECAP_JMVAL`, `JMVAL_BATCH`, `N200_BATCH`, `<ASSET>_N200`, `<ASSET>_JMVAL` modes).
+
+---
+
 ## Session 2026-03-23 (Session 15) - MidCap & EM Gap Closure: Oracle + Focused-Grid Analysis
 
 **Goal:** Get as close as possible to paper results for MidCap (SPTRMDCP, paper S=0.590) and EM (NDUEEGF, paper S=0.850) using same Bloomberg data. Baseline gaps: MidCap −0.115 (S=0.475), EM −0.149 (S=0.701).

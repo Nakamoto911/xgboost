@@ -745,6 +745,10 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
             
         lambda_scores = []
 
+        # JM-only mode overrides validation to JM-only regardless of lambda_validation_mode
+        use_xgb_for_val = config.include_xgboost and (config.lambda_validation_mode != "jm_only")
+        val_ewma_hl = best_ewma_hl if use_xgb_for_val else 0
+
         if config.lambda_subwindow_consensus:
             # Run simulate_strategy ONCE per lambda for full validation window (hits forecast cache),
             # then slice into 3 overlapping sub-windows and evaluate each independently.
@@ -757,7 +761,7 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
             # Collect per-lambda, per-sub-window scores
             sub_best_lambdas = [[] for _ in sub_boundaries]  # scores per sub-window
             for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy(df, val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+                val_res = simulate_strategy(df, val_start, current_date, lmbda, config, include_xgboost=use_xgb_for_val, ewma_halflife=val_ewma_hl)
                 if val_res.empty:
                     continue
                 for sw_idx, (sw_start, sw_end) in enumerate(sub_boundaries):
@@ -782,7 +786,7 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
                 lambda_scores = [(0.0, best_lambda)]
         else:
             for lmbda in LAMBDA_GRID:
-                val_res = simulate_strategy(df, val_start, current_date, lmbda, config, include_xgboost=True, ewma_halflife=best_ewma_hl)
+                val_res = simulate_strategy(df, val_start, current_date, lmbda, config, include_xgboost=use_xgb_for_val, ewma_halflife=val_ewma_hl)
                 if not val_res.empty:
                     _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                     metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
@@ -814,7 +818,7 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
         if config.lambda_ensemble_k > 1:
             oos_chunks = []
             for l_val in best_lambdas:
-                oos_chunk_jm_xgb = run_period_forecast(df, current_date, l_val, config, include_xgboost=True)
+                oos_chunk_jm_xgb = run_period_forecast(df, current_date, l_val, config, include_xgboost=config.include_xgboost)
                 if oos_chunk_jm_xgb is not None:
                     oos_chunks.append(oos_chunk_jm_xgb)
             if oos_chunks:
@@ -823,7 +827,7 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
                 final_chunk['Raw_Prob'] = avg_prob
                 jm_xgb_results.append(final_chunk)
         else:
-            oos_chunk_jm_xgb = run_period_forecast(df, current_date, best_lambda, config, include_xgboost=True)
+            oos_chunk_jm_xgb = run_period_forecast(df, current_date, best_lambda, config, include_xgboost=config.include_xgboost)
             if oos_chunk_jm_xgb is not None:
                 jm_xgb_results.append(oos_chunk_jm_xgb)
 
@@ -834,17 +838,27 @@ def walk_forward_backtest(df, config: StrategyConfig = None) -> pd.DataFrame:
         
     jm_xgb_df = pd.concat(jm_xgb_results)
 
-    if best_ewma_hl == 0:
-        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
-    else:
-        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl).mean()
-        
-    if config.allocation_style == "binary":
-        jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > config.prob_threshold).astype(int)
+    if not config.include_xgboost:
+        # JM-only: Forecast_State is already 0/1 from predict_online, no EWMA/prob needed
         trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
         alloc_target = 1.0 - trading_signals
-    elif config.allocation_style == "continuous":
-        alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
+    elif best_ewma_hl == 0:
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob']
+        if config.allocation_style == "binary":
+            jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > config.prob_threshold).astype(int)
+            trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
+            alloc_target = 1.0 - trading_signals
+        elif config.allocation_style == "continuous":
+            alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
+    else:
+        ewma_adj = getattr(config, 'ewma_adjust', True)
+        jm_xgb_df['State_Prob'] = jm_xgb_df['Raw_Prob'].ewm(halflife=best_ewma_hl, adjust=ewma_adj).mean()
+        if config.allocation_style == "binary":
+            jm_xgb_df['Forecast_State'] = (jm_xgb_df['State_Prob'] > config.prob_threshold).astype(int)
+            trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
+            alloc_target = 1.0 - trading_signals
+        elif config.allocation_style == "continuous":
+            alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
         
     strat_returns = (alloc_target * jm_xgb_df['Target_Return']) + ((1.0 - alloc_target) * jm_xgb_df['RF_Rate'])
     trades = alloc_target.diff().abs().fillna(0)

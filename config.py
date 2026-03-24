@@ -63,6 +63,15 @@ class StrategyConfig:
     # --- Feature Ablation ---
     feature_ablation: str = "all"        # Options: "all" (default), "return_only", "macro_only"
 
+    # --- Lambda Validation Mode ---
+    lambda_validation_mode: str = "xgb"  # "xgb" (current, full JM+XGB sim) or "jm_only" (JM-only sim for λ selection)
+
+    # --- JM-only mode (for Table 4 JM row replication) ---
+    include_xgboost: bool = True  # False = JM-only strategy (no XGBoost); also forces JM-only validation
+
+    # --- EWMA adjust convention ---
+    ewma_adjust: bool = True  # False = standard recursive EWMA (adjust=False); True = pandas default weighted init
+
 
 def _strategy_config_from_env():
     """Create a StrategyConfig with defaults overridden by XGB_* environment variables.
