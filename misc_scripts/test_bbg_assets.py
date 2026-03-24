@@ -13,6 +13,8 @@ Usage:
   python misc_scripts/test_bbg_assets.py MIDCAP_GRID   # focused-grid WF tests for MidCap
   python misc_scripts/test_bbg_assets.py EM_GRID       # focused-grid WF tests for EM
   python misc_scripts/test_bbg_assets.py ALL            # all 12 assets
+  python misc_scripts/test_bbg_assets.py JM_TC0_BATCH  # Session 20: JM-only + TC=0 (all 12 assets)
+  python misc_scripts/test_bbg_assets.py LARGECAT_JM_TC0  # Session 20: single asset
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -817,6 +819,93 @@ def dd_formula_batch(dfs, raw, fred, vix, irx):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Session 20: JM-only + TC=0 — combine S18 (shared-λ) + S19 (TC=0)
+# Hypothesis: Paper Table 4 JM row = JM signals + XGB-selected λ + TC=0
+# The paper is gross-of-TC (S19) and reuses XGB λ for JM row (S18).
+# This is the first time both conditions are tested simultaneously.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def jm_tc0_comparison(asset_name, df_feat, cfg_info):
+    """JM-only TC=0 comprehensive comparison vs paper Table 4 JM row.
+
+    Runs 4 conditions per asset:
+      TC=5bps + shared-λ  (S18 baseline — verify consistency)
+      TC=0    + shared-λ  (KEY: paper-matching condition)
+      TC=5bps + indep WF  (S17 independent JM WF — verify)
+      TC=0    + indep WF  (for assets where shared-λ fails: MidCap, SmallCap, EM...)
+    """
+    main.TARGET_TICKER = cfg_info['hl_proxy']
+    main.LAMBDA_GRID = GRID_8PT
+    orig_tc = main.TRANSACTION_COST
+
+    pj = PAPER_JM_SHARPE.get(asset_name, 0)
+    pm = PAPER_JM_MDD.get(asset_name, 0)
+
+    print(f"\n  {asset_name:<12}  Paper JM: S={pj:.2f}  MDD={pm:.1%}")
+
+    for tc_val, tc_label in [(0.0005, 'TC=5bps'), (0.0, 'TC=0  ')]:
+        main.TRANSACTION_COST = tc_val
+
+        # XGB WF → extract λ trace (TC affects validation → λ trace changes with TC)
+        main._forecast_cache.clear()
+        cfg_xgb = StrategyConfig(name=f'BBG_{asset_name}', ewma_mode='paper')
+        r_xgb = main.walk_forward_backtest(df_feat, cfg_xgb)
+        if r_xgb is None or r_xgb.empty:
+            print(f"    {tc_label}  XGB WF ERROR")
+            continue
+        lambda_trace = r_xgb.attrs.get('lambda_history', [])
+        lm_xgb = np.mean(lambda_trace) if lambda_trace else 0
+
+        # Condition A: shared-λ (JM replays same XGB λ trace, no validation)
+        if lambda_trace:
+            main._forecast_cache.clear()
+            cfg_jm_sh = StrategyConfig(name=f'BBG_{asset_name}_jmsh', ewma_mode='paper',
+                                       include_xgboost=False)
+            r_jm_sh = main.walk_forward_backtest(df_feat, cfg_jm_sh,
+                                                  fixed_lambda_sequence=lambda_trace)
+            if r_jm_sh is not None and not r_jm_sh.empty:
+                s_jmsh, m_jmsh = mets(r_jm_sh)
+                bp_jmsh, ns_jmsh = reg_stats(r_jm_sh)
+                gap_sh = s_jmsh - pj
+                print(f"    {tc_label}  shared-λ  (λ̄={lm_xgb:.1f})  "
+                      f"S={s_jmsh:.3f}({gap_sh:+.3f})  MDD={m_jmsh:.1%}  "
+                      f"Bear={bp_jmsh:.1f}%  Shft={ns_jmsh}")
+
+        # Condition B: independent JM WF (JM-only validation, no XGB)
+        main._forecast_cache.clear()
+        cfg_jm_wf = StrategyConfig(name=f'BBG_{asset_name}_jmwf', ewma_mode='paper',
+                                   include_xgboost=False)
+        r_jm_wf = main.walk_forward_backtest(df_feat, cfg_jm_wf)
+        if r_jm_wf is not None and not r_jm_wf.empty:
+            s_jmwf, m_jmwf = mets(r_jm_wf)
+            bp_jmwf, ns_jmwf = reg_stats(r_jm_wf)
+            lh_wf = np.array(r_jm_wf.attrs.get('lambda_history', [0]))
+            gap_wf = s_jmwf - pj
+            print(f"    {tc_label}  indep-WF  (λ̄={lh_wf.mean():.1f})  "
+                  f"S={s_jmwf:.3f}({gap_wf:+.3f})  MDD={m_jmwf:.1%}  "
+                  f"Bear={bp_jmwf:.1f}%  Shft={ns_jmwf}")
+
+    main.TRANSACTION_COST = orig_tc
+
+
+def jm_tc0_batch(dfs):
+    """Run JM_TC0 comparison on all 12 Bloomberg assets."""
+    print("\n" + "="*70)
+    print("JM-only + TC=0 — Session 20 Key Experiment")
+    print("Hypothesis: Table 4 JM row = JM signals + XGB-selected λ + TC=0 (gross)")
+    print(f"Paper JM:  LC=0.59  MC=0.49  SC=0.28  EAFE=0.28  EM=0.65")
+    print(f"           REIT=0.39  AB=0.43  TR=0.21  HY=1.49  Corp=0.83  Comm=0.08  Gold=0.12")
+    print("="*70)
+    orig_ticker = main.TARGET_TICKER
+    for name in ASSET_CONFIGS:
+        if name in dfs:
+            jm_tc0_comparison(name, dfs[name], ASSET_CONFIGS[name])
+    main.TARGET_TICKER = orig_ticker
+    # Restore TC
+    main.TRANSACTION_COST = 0.0005
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -831,6 +920,8 @@ if __name__ == '__main__':
     JMONLY_SINGLE = {k.upper() + '_JMONLY': k for k in ASSET_CONFIGS}
     # Shared λ modes: JMSHARED_BATCH, or <ASSET>_JMSHARED
     JMSHARED_SINGLE = {k.upper() + '_JMSHARED': k for k in ASSET_CONFIGS}
+    # JM + TC=0 combined modes: JM_TC0_BATCH, or <ASSET>_JM_TC0
+    JM_TC0_SINGLE = {k.upper() + '_JM_TC0': k for k in ASSET_CONFIGS}
     # DD formula modes: DD_BATCH (all assets, log vs raw), or <ASSET>_DD (single asset full sweep)
     DD_SINGLE = {k.upper() + '_DD': k for k in ASSET_CONFIGS}
     # JM-val modes: JMVAL_BATCH, or <ASSET>_JMVAL for a single asset
@@ -861,6 +952,13 @@ if __name__ == '__main__':
     for arg in args:
         if arg in JMSHARED_SINGLE:
             jmshared_assets.add(JMSHARED_SINGLE[arg])
+
+    jm_tc0_assets = set()
+    if 'JM_TC0_BATCH' in args:
+        jm_tc0_assets = set(ASSET_CONFIGS.keys())
+    for arg in args:
+        if arg in JM_TC0_SINGLE:
+            jm_tc0_assets.add(JM_TC0_SINGLE[arg])
 
     dd_assets = set()
     if 'DD_BATCH' in args:
@@ -913,7 +1011,8 @@ if __name__ == '__main__':
         need_n200     = key in n200_assets
         need_exact    = key in exact_assets
         need_adjust   = key in adjust_assets
-        if need_baseline or need_oracle or need_grid or need_jmonly or need_jmshared or need_dd or need_jmval or need_n200 or need_exact or need_adjust:
+        need_jm_tc0   = key in jm_tc0_assets
+        if need_baseline or need_oracle or need_grid or need_jmonly or need_jmshared or need_dd or need_jmval or need_n200 or need_exact or need_adjust or need_jm_tc0:
             print(f"Building {key} ({cfg['col']}) features  "
                   f"[DD={'incl' if cfg['dd'] else 'excl'}, hl_proxy={cfg['hl_proxy']}]...")
             dfs[key] = build_features(raw, fred, vix, irx, cfg['col'], cfg['dd'])
@@ -961,6 +1060,16 @@ if __name__ == '__main__':
             asset_key = JMSHARED_SINGLE.get(arg)
             if asset_key and asset_key in dfs:
                 run_jm_shared_lambda(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+
+    # Run JM-only + TC=0 combined test (Session 20 key experiment)
+    if 'JM_TC0_BATCH' in args:
+        jm_tc0_batch(dfs)
+    else:
+        for arg in args:
+            asset_key = JM_TC0_SINGLE.get(arg)
+            if asset_key and asset_key in dfs:
+                jm_tc0_comparison(asset_key, dfs[asset_key], ASSET_CONFIGS[asset_key])
+                main.TRANSACTION_COST = 0.0005  # restore after single-asset run
 
     # Run DD formula tests
     if 'DD_BATCH' in args:
