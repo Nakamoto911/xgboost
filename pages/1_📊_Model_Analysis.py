@@ -540,12 +540,29 @@ if run_button:
         'lambda_dates': lambda_dates,
         'run_simple_jm': run_simple_jm,
         'compare_return_only': compare_return_only and not return_only_df.empty,
+        # --- tickers & dates (snapshotted at run time, immune to backend reload) ---
         'target_ticker': backend.TARGET_TICKER,
+        'bond_ticker': backend.BOND_TICKER,
+        'risk_free_ticker': backend.RISK_FREE_TICKER,
+        'vix_ticker': backend.VIX_TICKER,
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
+        'start_date_data': backend.START_DATE_DATA,
+        # --- run parameters ---
+        'lambda_grid': list(backend.LAMBDA_GRID),
+        'transaction_cost': backend.TRANSACTION_COST,
+        'validation_window': backend.VALIDATION_WINDOW_YRS,
         'backtest_duration': backtest_duration,
         'best_ewma_hl': best_ewma_hl,
         'config_name': config.name,
+        # --- strategy config snapshot ---
+        'cfg_tuning_metric': config.tuning_metric,
+        'cfg_allocation_style': config.allocation_style,
+        'cfg_ewma_mode': config.ewma_mode,
+        'cfg_lambda_selection': config.lambda_selection,
+        'cfg_lambda_subwindow_consensus': config.lambda_subwindow_consensus,
+        'cfg_prob_threshold': config.prob_threshold,
+        'cfg_validation_window_type': config.validation_window_type,
         'cache_version': 2,
     }
     _backtest_cache_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cache', 'backtest_cache.pkl')
@@ -796,7 +813,9 @@ for name, returns in strategies.items():
 
 st.subheader("Performance Metrics")
 _config_label = cache_data.get('config_name', '')
-st.caption(f"Preset: {_config_label} | EWMA halflife: {best_ewma_hl} | Lambda grid: {len(backend.LAMBDA_GRID)} pts")
+_cached_lambda_grid = cache_data.get('lambda_grid', list(backend.LAMBDA_GRID))
+_cached_tgt = cache_data.get('target_ticker', backend.TARGET_TICKER)
+st.caption(f"Ticker: {_cached_tgt} | Preset: {_config_label} | EWMA halflife: {best_ewma_hl} | Lambda grid: {len(_cached_lambda_grid)} pts")
 st.dataframe(pd.DataFrame(metrics_data))
 
 # Export UI logic has been moved to the end of the file to capture generated charts.
@@ -2156,11 +2175,20 @@ with export_container:
         export = {
             "cfg": {
                 "preset": cache_data.get('config_name', ''),
-                "tgt": backend.TARGET_TICKER,
+                "tgt": cache_data.get('target_ticker', backend.TARGET_TICKER),
+                "bond": cache_data.get('bond_ticker', backend.BOND_TICKER),
+                "rf": cache_data.get('risk_free_ticker', backend.RISK_FREE_TICKER),
                 "oos": f"{filter_start} to {filter_end}",
-                "lambda_grid": list(backend.LAMBDA_GRID),
+                "lambda_grid": cache_data.get('lambda_grid', list(backend.LAMBDA_GRID)),
                 "ewma_hl": best_ewma_hl,
-                "cost_bps": round(backend.TRANSACTION_COST * 10000),
+                "ewma_mode": cache_data.get('cfg_ewma_mode', ''),
+                "cost_bps": round(cache_data.get('transaction_cost', backend.TRANSACTION_COST) * 10000),
+                "allocation": cache_data.get('cfg_allocation_style', ''),
+                "tuning": cache_data.get('cfg_tuning_metric', ''),
+                "lambda_sel": cache_data.get('cfg_lambda_selection', ''),
+                "subwindow": cache_data.get('cfg_lambda_subwindow_consensus', False),
+                "val_window_yrs": cache_data.get('validation_window', backend.VALIDATION_WINDOW_YRS),
+                "val_window_type": cache_data.get('cfg_validation_window_type', ''),
                 "duration": _fmt_duration(backtest_duration),
             },
             # --- Performance metrics ---
@@ -2282,14 +2310,18 @@ with export_container:
         config_label = cache_data.get('config_name', '')
         for label, val in [
             ("Preset", config_label),
-            ("Target Ticker", backend.TARGET_TICKER),
-            ("Bond Ticker", backend.BOND_TICKER),
-            ("Risk-Free Ticker", backend.RISK_FREE_TICKER),
-            ("VIX Ticker", backend.VIX_TICKER),
+            ("Target Ticker", cache_data.get('target_ticker', backend.TARGET_TICKER)),
+            ("Bond Ticker", cache_data.get('bond_ticker', backend.BOND_TICKER)),
+            ("Risk-Free Ticker", cache_data.get('risk_free_ticker', backend.RISK_FREE_TICKER)),
+            ("VIX Ticker", cache_data.get('vix_ticker', backend.VIX_TICKER)),
             ("OOS Period", f"{filter_start} to {filter_end}"),
-            ("Lambda Grid", str(list(backend.LAMBDA_GRID))),
+            ("Lambda Grid", str(cache_data.get('lambda_grid', list(backend.LAMBDA_GRID)))),
             ("EWMA Halflife", str(best_ewma_hl)),
-            ("Transaction Cost", f"{backend.TRANSACTION_COST:.4f}"),
+            ("EWMA Mode", cache_data.get('cfg_ewma_mode', '')),
+            ("Allocation Style", cache_data.get('cfg_allocation_style', '')),
+            ("Tuning Metric", cache_data.get('cfg_tuning_metric', '')),
+            ("Lambda Selection", cache_data.get('cfg_lambda_selection', '')),
+            ("Transaction Cost", f"{cache_data.get('transaction_cost', backend.TRANSACTION_COST):.4f}"),
             ("Duration", _fmt_duration(backtest_duration)),
         ]:
             pdf.cell(200, 6, txt=f"- {label}: {val}", ln=True)
