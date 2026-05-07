@@ -75,6 +75,9 @@ VALIDATION_WINDOW_YRS = 5
 # Session 4 diagnosis: wide grid [0, logspace(1,100)] → Sharpe 0.54; focused → 0.85.
 LAMBDA_GRID = [4.64, 10.0, 15.0, 21.54, 30.0, 46.42, 70.0, 100.0]  # Dense 8-pt mid-range (Session 5)
 
+MACRO_FEATURE_NAMES = ['Yield_2Y_EWMA_diff', 'Yield_Slope_EWMA_10', 'Yield_Slope_EWMA_diff_21',
+                       'VIX_EWMA_log_diff', 'Stock_Bond_Corr']
+
 # EWMA halflife grid for auto-tuning (fixed, not user-configurable)
 EWMA_HL_GRID = [0, 1, 2, 4, 8, 12, 16]
 
@@ -487,7 +490,8 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         
     xgb_key = tuple(sorted(config.xgb_params.items())) if config.xgb_params else ()
     ablation_key = getattr(config, 'feature_ablation', 'all')
-    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key, ablation_key)
+    macro_subset_key = tuple(sorted(getattr(config, 'macro_feature_subset', [])))
+    cache_key = (current_date, lambda_penalty, include_xgboost, constrain_xgb, config.name, xgb_key, ablation_key, macro_subset_key)
     if cache_key in _forecast_cache:
         cached = _forecast_cache[cache_key]
         # If SHAP requested but cached result lacks SHAP columns, recompute
@@ -551,17 +555,19 @@ def run_period_forecast(df, current_date, lambda_penalty, config: StrategyConfig
         return result
 
     # 2. Regime Forecasting (XGBoost)
-    macro_features = ['Yield_2Y_EWMA_diff', 'Yield_Slope_EWMA_10', 'Yield_Slope_EWMA_diff_21',
-                      'VIX_EWMA_log_diff', 'Stock_Bond_Corr']
+    macro_features = list(MACRO_FEATURE_NAMES)  # copy so we don't mutate the constant
 
     # Feature ablation: select feature subset for XGBoost
     ablation = getattr(config, 'feature_ablation', 'all')
+    macro_subset = getattr(config, 'macro_feature_subset', [])
     if ablation == 'return_only':
         all_features = return_features[:]
     elif ablation == 'macro_only':
-        all_features = macro_features[:]
+        effective_macro = [f for f in macro_features if not macro_subset or f in macro_subset]
+        all_features = effective_macro
     else:
-        all_features = return_features + macro_features
+        effective_macro = [f for f in macro_features if not macro_subset or f in macro_subset]
+        all_features = return_features + effective_macro
     
     X_train_xgb = train_df[all_features].copy()
     y_train_xgb = train_df['Target_State'].copy()

@@ -62,6 +62,7 @@ class StrategyConfig:
 
     # --- Feature Ablation ---
     feature_ablation: str = "all"        # Options: "all" (default), "return_only", "macro_only"
+    macro_feature_subset: list = field(default_factory=list)  # Empty = use all macro features; non-empty = use only listed features
 
     # --- Lambda Validation Mode ---
     lambda_validation_mode: str = "xgb"  # "xgb" (current, full JM+XGB sim) or "jm_only" (JM-only sim for λ selection)

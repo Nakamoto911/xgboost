@@ -85,6 +85,9 @@ _defaults = {
     'xgb_reg_alpha': 0.0,
     'xgb_reg_lambda': 1.0,
     'calculate_shap': False,
+    'feature_ablation': 'all',
+    'compare_return_only': False,
+    'selected_macro_features': list(backend.MACRO_FEATURE_NAMES),
 }
 for key, val in _defaults.items():
     if key not in st.session_state:
@@ -125,6 +128,9 @@ def on_preset_change():
     st.session_state.lambda_subwindow_consensus = cfg.lambda_subwindow_consensus
     st.session_state.ewma_mode = cfg.ewma_mode
     st.session_state.execution_mode = cfg.execution_mode == 'next_open'
+    st.session_state.feature_ablation = getattr(cfg, 'feature_ablation', 'all')
+    st.session_state.selected_macro_features = list(backend.MACRO_FEATURE_NAMES)
+    st.session_state.compare_return_only = False
     st.session_state.xgb_max_depth = 6
     st.session_state.xgb_n_estimators = 100
     st.session_state.xgb_learning_rate = 0.3
@@ -152,6 +158,7 @@ def on_strategy_param_change():
         st.session_state.lambda_subwindow_consensus == cfg.lambda_subwindow_consensus and
         st.session_state.ewma_mode == cfg.ewma_mode and
         st.session_state.execution_mode == (cfg.execution_mode == 'next_open') and
+        st.session_state.feature_ablation == getattr(cfg, 'feature_ablation', 'all') and
         st.session_state.xgb_max_depth == 6 and
         st.session_state.xgb_n_estimators == 100 and
         abs(st.session_state.xgb_learning_rate - 0.3) < 0.001 and
@@ -236,8 +243,25 @@ with st.sidebar.form("config_form"):
         end_date = st.text_input("End Date", key='end_date_input')
 
     with st.expander("2. Feature Engineering", expanded=False):
-        st.write("Feature parameters configured in code (currently using default).")
-        # In the future, feature engineering inputs like window sizes can go here.
+        st.selectbox(
+            "Feature Ablation Mode",
+            ["all", "return_only", "macro_only"],
+            key='feature_ablation',
+            help="**all**: Return + Macro features (default). **return_only**: Only momentum/volatility features (no macro). **macro_only**: Only yield, VIX, and correlation features.",
+        )
+        st.multiselect(
+            "Active Macro Features",
+            options=list(backend.MACRO_FEATURE_NAMES),
+            default=st.session_state.selected_macro_features,
+            key='selected_macro_features',
+            help="Select which macro features to include when Ablation Mode = 'all'. Deselecting features lets you test individual SHAP impact. Ignored in return_only / macro_only modes.",
+        )
+        st.caption("↑ Macro feature subset is only applied when Ablation Mode = 'all'")
+        st.checkbox(
+            "Compare against Return-Only baseline",
+            key='compare_return_only',
+            help="When checked, runs a second backtest with return_only features and shows it alongside the primary strategy.",
+        )
 
     with st.expander("3. Jump Model (JM) Parameters", expanded=False):
         st.selectbox("Validation Window Type", ["rolling", "expanding"], key='validation_window_type')
@@ -339,6 +363,13 @@ if run_button:
         "reg_lambda": st.session_state.xgb_reg_lambda,
     }
 
+    _ablation_mode = st.session_state.feature_ablation
+    _macro_subset = (
+        list(st.session_state.selected_macro_features)
+        if _ablation_mode == 'all'
+        else []
+    )
+
     config = StrategyConfig(
         name=st.session_state.experiment_preset,
         tuning_metric=st.session_state.tuning_metric,
@@ -353,7 +384,11 @@ if run_button:
         ewma_mode=st.session_state.ewma_mode,
         xgb_params=xgb_params,
         calculate_shap=st.session_state.calculate_shap,
+        feature_ablation=_ablation_mode,
+        macro_feature_subset=_macro_subset,
     )
+
+    compare_return_only = st.session_state.compare_return_only
 
     # Update backend globals
     backend.TARGET_TICKER = target_ticker
@@ -423,14 +458,39 @@ if run_button:
                 simple_jm_df['Strat_Return'] = np.where(tradable_signal == 0, simple_jm_df['Target_Return'], simple_jm_df['RF_Rate']) - (tradable_signal.diff().abs().fillna(0) * transaction_cost)
                 simple_jm_df['Trades'] = tradable_signal.diff().abs().fillna(0)
 
+    # Return-Only comparison baseline (separate run if requested)
+    return_only_df = pd.DataFrame()
+    if compare_return_only and config.feature_ablation != 'return_only':
+        with st.spinner("Running Return-Only baseline for comparison..."):
+            return_only_config = StrategyConfig(
+                name="Return-Only Baseline",
+                tuning_metric=config.tuning_metric,
+                validation_window_type=config.validation_window_type,
+                lambda_smoothing=config.lambda_smoothing,
+                prob_threshold=config.prob_threshold,
+                allocation_style=config.allocation_style,
+                execution_mode=config.execution_mode,
+                lambda_ensemble_k=config.lambda_ensemble_k,
+                lambda_selection=config.lambda_selection,
+                lambda_subwindow_consensus=config.lambda_subwindow_consensus,
+                ewma_mode=config.ewma_mode,
+                xgb_params=config.xgb_params,
+                calculate_shap=config.calculate_shap,
+                feature_ablation='return_only',
+                macro_feature_subset=[],
+            )
+            return_only_df = backend.walk_forward_backtest(df, return_only_config)
+
     backtest_duration = time.time() - backtest_start_time
 
     cache_data = {
         'jm_xgb_df': jm_xgb_df,
         'simple_jm_df': simple_jm_df,
+        'return_only_df': return_only_df,
         'lambda_history': lambda_history,
         'lambda_dates': lambda_dates,
         'run_simple_jm': run_simple_jm,
+        'compare_return_only': compare_return_only and not return_only_df.empty,
         'target_ticker': backend.TARGET_TICKER,
         'oos_start_date': backend.OOS_START_DATE,
         'end_date': backend.END_DATE,
@@ -459,12 +519,16 @@ if os.path.exists(_backtest_cache_path):
             # New format: complete DataFrames
             jm_xgb_df = cache_data['jm_xgb_df']
             simple_jm_df = cache_data.get('simple_jm_df', pd.DataFrame())
+            return_only_df = cache_data.get('return_only_df', pd.DataFrame())
             run_simple_jm_cached = cache_data.get('run_simple_jm', False) and not simple_jm_df.empty
+            compare_return_only_cached = cache_data.get('compare_return_only', False) and not return_only_df.empty
         else:
             # Legacy format: raw result lists
             jm_xgb_results = cache_data.get('jm_xgb_results', [])
             simple_jm_results = cache_data.get('simple_jm_results', [])
             run_simple_jm_cached = cache_data.get('run_simple_jm', False)
+            compare_return_only_cached = False
+            return_only_df = pd.DataFrame()
             best_ewma_hl_legacy = cache_data.get('best_ewma_hl', 8)
             if jm_xgb_results:
                 jm_xgb_df = pd.concat(jm_xgb_results)
@@ -517,6 +581,12 @@ if os.path.exists(_backtest_cache_path):
 if not cache_loaded:
     st.info("No cached results found. Please configure parameters and click 'Run Backtest'.")
     st.stop()
+
+# Ensure these are always defined after successful cache load
+if 'compare_return_only_cached' not in dir():
+    compare_return_only_cached = False
+if 'return_only_df' not in dir():
+    return_only_df = pd.DataFrame()
 
 if jm_xgb_df.empty:
     st.error("No results generated. Check your date ranges and data availability.")
@@ -612,6 +682,9 @@ if jm_xgb_df.empty:
 if run_simple_jm_cached:
     simple_jm_df = simple_jm_df.loc[str(filter_start):str(filter_end)]
 
+if compare_return_only_cached and not return_only_df.empty:
+    return_only_df = return_only_df.loc[str(filter_start):str(filter_end)]
+
 bh_returns = jm_xgb_df['Target_Return']
 rf_returns = jm_xgb_df['RF_Rate']
 
@@ -621,11 +694,14 @@ strategies = {
 }
 if run_simple_jm_cached:
     strategies['Simple JM Baseline'] = simple_jm_df['Strat_Return']
+if compare_return_only_cached and not return_only_df.empty:
+    strategies['Return-Only Baseline'] = return_only_df['Strat_Return']
 
 strategy_colors = {
     'Buy & Hold': 'dodgerblue',
     'JM-XGB Strategy': 'darkorange',
-    'Simple JM Baseline': 'forestgreen'
+    'Simple JM Baseline': 'forestgreen',
+    'Return-Only Baseline': 'mediumpurple',
 }
 
 columns = ['Strategy', 'Ann. Ret', 'Ann. Vol', 'Sharpe', 'Sortino', 'Max DD', 'Total Trades']
@@ -637,8 +713,10 @@ for name, returns in strategies.items():
     ret, vol, sharpe, sortino, mdd = backend.calculate_metrics(returns, rf_returns)
     if name == 'Buy & Hold':
         trades = "N/A"
-    elif "XGB" in name:
+    elif name == 'JM-XGB Strategy':
         trades = int(jm_xgb_df['Trades'].sum())
+    elif name == 'Return-Only Baseline':
+        trades = int(return_only_df['Trades'].sum()) if not return_only_df.empty else "N/A"
     else:
         trades = int(simple_jm_df['Trades'].sum())
         
