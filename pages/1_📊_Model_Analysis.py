@@ -60,11 +60,30 @@ PRESET_NAMES = list(EXPERIMENT_PRESETS.keys()) + ["Custom"]
 # =============================================================================
 _default_preset = EXPERIMENT_PRESETS["2. Optimized"]
 _default_cfg = _default_preset["config"]
+KNOWN_ASSETS = {
+    "^SP500TR": "^SP500TR — S&P 500 Total Return",
+    "VIMSX":    "VIMSX — Vanguard Mid-Cap Index",
+    "NAESX":    "NAESX — Vanguard Small-Cap Index",
+    "FDIVX":    "FDIVX — Fidelity Diversified Intl",
+    "VEIEX":    "VEIEX — Vanguard Emerging Markets",
+    "VBMFX":    "VBMFX — Vanguard Total Bond Market",
+    "VUSTX":    "VUSTX — Vanguard Long-Term Treasury",
+    "VWEHX":    "VWEHX — Vanguard High-Yield Corp",
+    "VWESX":    "VWESX — Vanguard Long-Term Corp",
+    "FRESX":    "FRESX — Fidelity Real Estate",
+    "PCASX":    "PCASX — PIMCO Commodity Real Ret",
+    "GC=F":     "GC=F — Gold Futures",
+    "Custom…":  "Custom…",
+}
+_KNOWN_TICKERS = list(KNOWN_ASSETS.keys())
+
 _defaults = {
     'start_date_input': _default_preset["start_date"],
     'oos_start_input': _default_preset["oos_start"],
     'end_date_input': _default_preset["end_date"],
     'target_ticker_input': backend.TARGET_TICKER,
+    'target_ticker_select': backend.TARGET_TICKER,
+    'target_ticker_custom': '',
     'val_window_input': _default_preset["val_window"],
     'lambda_grid_preset': _default_preset["lambda_grid_preset"],
     'tuning_metric': _default_cfg.tuning_metric,
@@ -199,14 +218,44 @@ with st.sidebar.form("config_form"):
             except Exception:
                 return "", f"Earliest data: {earliest}"
         
-        tt_val = st.session_state.get('target_ticker_input', backend.TARGET_TICKER)
-        tt_suffix, tt_help = get_earliest_info(tt_val if tt_val else backend.TARGET_TICKER)
-        target_ticker = st.text_input(
-            f"Target Ticker{tt_suffix}", 
-            value=tt_val if tt_val else backend.TARGET_TICKER, 
-            key='target_ticker_input',
-            help=tt_help
+        # Resolve which ticker is currently active so the selectbox stays in sync
+        _cur_ticker = st.session_state.get('target_ticker_input', backend.TARGET_TICKER) or backend.TARGET_TICKER
+        _select_val = _cur_ticker if _cur_ticker in _KNOWN_TICKERS else "Custom…"
+        if st.session_state.get('target_ticker_select') not in _KNOWN_TICKERS:
+            st.session_state['target_ticker_select'] = _select_val
+
+        _ticker_select = st.selectbox(
+            "Target Ticker",
+            options=_KNOWN_TICKERS,
+            format_func=lambda k: KNOWN_ASSETS[k],
+            index=_KNOWN_TICKERS.index(st.session_state.get('target_ticker_select', _select_val)),
+            key='target_ticker_select',
         )
+
+        if _ticker_select == "Custom…":
+            _custom_val = st.session_state.get('target_ticker_custom') or (
+                _cur_ticker if _cur_ticker not in _KNOWN_TICKERS else ''
+            )
+            _custom_ticker = st.text_input(
+                "Custom Ticker Symbol",
+                value=_custom_val,
+                key='target_ticker_custom',
+                placeholder="e.g. IVV, EEM, GLD…",
+            ).strip().upper()
+            _resolved_ticker = _custom_ticker if _custom_ticker else backend.TARGET_TICKER
+        else:
+            _resolved_ticker = _ticker_select
+
+        # Keep target_ticker_input in sync so downstream code and session state work unchanged
+        st.session_state['target_ticker_input'] = _resolved_ticker
+
+        tt_suffix, tt_help = get_earliest_info(_resolved_ticker)
+        if tt_suffix:
+            st.caption(f"**{_resolved_ticker}**{tt_suffix} — {tt_help}")
+        elif tt_help:
+            st.caption(f"**{_resolved_ticker}** — {tt_help}")
+
+        target_ticker = _resolved_ticker
 
         bond_suffix, bond_help = get_earliest_info(backend.BOND_TICKER)
         bond_ticker = st.text_input(f"Bond Ticker{bond_suffix}", value=backend.BOND_TICKER, help=bond_help)
