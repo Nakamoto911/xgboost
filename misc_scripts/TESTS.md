@@ -53,6 +53,7 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 | Script | Purpose |
 |---|---|
 | `run_macro_ablation.py` | Macro feature ablation: compares all features vs return-only vs macro-only XGBoost configurations. |
+| `run_multi_asset_ablation.py` | Multi-asset macro ablation: walk-forward backtests "Default ETFs" (12 assets) under `feature_ablation="all"` vs `"return_only"`, parallelized across assets. Outputs a consolidated MD comparison table. |
 
 ## Bloomberg Replication
 

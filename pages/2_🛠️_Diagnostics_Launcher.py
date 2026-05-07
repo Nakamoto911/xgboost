@@ -136,6 +136,17 @@ with st.sidebar.expander("Data Source", expanded=True):
     st.text_input("OOS Start Date", key='oos_start_input')
     st.text_input("End Date", key='end_date_input')
 
+# If a user clears a text_input, session_state holds an empty string which would
+# propagate to subprocess env vars as ''. Re-hydrate with the preset's default
+# so downstream scripts always receive a usable date.
+for _k, _fallback in (
+    ('start_date_input', _default_preset["start_date"]),
+    ('oos_start_input',  _default_preset["oos_start"]),
+    ('end_date_input',   _default_preset["end_date"]),
+):
+    if not str(st.session_state.get(_k, '')).strip():
+        st.session_state[_k] = _fallback
+
 with st.sidebar.expander("Jump Model", expanded=False):
     st.selectbox("Validation Window Type", ["rolling", "expanding"], key='validation_window_type')
     st.number_input("Validation Window (Years)", min_value=1, max_value=20, key='val_window_input')
@@ -273,11 +284,21 @@ SCRIPTS = {
         "file": "misc_scripts/benchmark_assets.py",
         "description": "Verify the strategy works across other asset classes (optional, for robustness).",
         "icon": "🌍"
+    },
+    "Multi-Asset Macro Ablation": {
+        "file": "misc_scripts/run_multi_asset_ablation.py",
+        "description": "Compare Full vs. Return-Only performance across all 12 core assets.",
+        "icon": "📊"
     }
 }
 
 # Scripts that benefit from env var sync with sidebar parameters
-SYNCED_SCRIPTS = {"diagnose_pipeline.py", "run_experiments.py", "misc_scripts/benchmark_assets.py"}
+SYNCED_SCRIPTS = {
+    "diagnose_pipeline.py",
+    "run_experiments.py",
+    "misc_scripts/benchmark_assets.py",
+    "misc_scripts/run_multi_asset_ablation.py",
+}
 
 # =============================================================================
 def get_asset_lists():

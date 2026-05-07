@@ -472,7 +472,13 @@ def run_period_forecast_fast(df, current_date, lambda_penalty, cache, config: St
 
     macro_features = ['Yield_2Y_EWMA_diff', 'Yield_Slope_EWMA_10',
                       'Yield_Slope_EWMA_diff_21', 'VIX_EWMA_log_diff', 'Stock_Bond_Corr']
-    all_features = return_features + macro_features
+    ablation = getattr(config, 'feature_ablation', 'all')
+    if ablation == 'return_only':
+        all_features = list(return_features)
+    elif ablation == 'macro_only':
+        all_features = [f for f in macro_features if f in train_df.columns]
+    else:
+        all_features = list(return_features) + [f for f in macro_features if f in train_df.columns]
 
     X_train_xgb = train_df[all_features]
     y_train_xgb = train_df['Target_State']
