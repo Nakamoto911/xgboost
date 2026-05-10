@@ -263,6 +263,10 @@ def get_script_env():
     for env_key, ss_key in xgb_mapping.items():
         env[env_key] = str(st.session_state[ss_key])
 
+    # Multi-Asset Macro Ablation: data-source toggle
+    if 'ablation_source_value' in st.session_state:
+        env['XGB_DATA_SOURCE'] = str(st.session_state['ablation_source_value'])
+
     return env
 
 
@@ -336,6 +340,46 @@ with col1:
         if selected_asset_list:
             st.session_state.selected_asset_list = selected_asset_list
 
+    if selected_script == "Multi-Asset Macro Ablation":
+        _bbg_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'cache', 'DATA PAUL.xlsx',
+        )
+        _bbg_available = os.path.exists(_bbg_path)
+        _options = ["Yahoo (Default ETFs)"]
+        if _bbg_available:
+            _options.append("Bloomberg (Paper Assets)")
+        _selected_source = st.selectbox(
+            "Data Source:",
+            _options,
+            key='ablation_data_source',
+            help=(
+                "Yahoo: 12 ETFs from asset_lists.md (some lack pre-2007 history → N/A). "
+                "Bloomberg: 12 paper-aligned total-return series from `cache/DATA PAUL.xlsx` "
+                "with full 1987+ history."
+            ),
+        )
+        st.session_state.ablation_source_value = (
+            'bloomberg' if _selected_source.startswith('Bloomberg') else 'yahoo'
+        )
+        if not _bbg_available:
+            st.caption(f"💡 Place `DATA PAUL.xlsx` under `cache/` to enable Bloomberg mode.")
+        elif _selected_source.startswith('Bloomberg'):
+            st.caption("📅 Bloomberg covers 1987+. Paper OOS window: 2007-01-01 → 2023-12-31.")
+            _is_auto = st.session_state.get('ewma_mode', 'auto') == 'auto'
+            _full_oos = (
+                str(st.session_state.get('oos_start_input', '')).startswith('2007')
+                and str(st.session_state.get('end_date_input', ''))[:4] >= '2023'
+            )
+            if _is_auto and _full_oos:
+                st.warning(
+                    "⏱️ Estimated runtime: **30–60 min** "
+                    "(12 assets × 2 ablation passes × full OOS × auto EWMA tuning). "
+                    "Switch `EWMA Halflife Mode` to `paper` for ~5× speedup, "
+                    "or shorten the OOS window to validate the pipeline first.",
+                    icon="⏱️",
+                )
+
     if st.button(f"Run {script_info['file']}", type="primary"):
         st.session_state.running_script = script_info['file']
         st.session_state.script_output = ""
@@ -354,24 +398,43 @@ with col2:
 
         with st.spinner(f"Running {script_to_run}..."):
             try:
-                cmd = ["python", script_to_run]
+                # `python -u` forces unbuffered stdout so progress lines flush
+                # immediately to the launcher (otherwise block-buffering hides
+                # output for the entire run).
+                cmd = ["python", "-u", script_to_run]
                 if script_to_run == "misc_scripts/benchmark_assets.py" and "selected_asset_list" in st.session_state:
                     cmd.append(st.session_state.selected_asset_list)
 
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    env=script_env
-                )
-                output = f"--- STDOUT ---\n{result.stdout}\n\n--- STDERR ---\n{result.stderr}"
-                output_container.code(output, language="text")
+                # Belt-and-suspenders: also export PYTHONUNBUFFERED for any
+                # nested processes the script might spawn (e.g. Pool workers).
+                stream_env = dict(script_env or os.environ)
+                stream_env['PYTHONUNBUFFERED'] = '1'
 
-                if result.returncode == 0:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    env=stream_env,
+                )
+                buffered_lines = []
+                MAX_DISPLAY_LINES = 400  # cap UI text to keep Streamlit responsive
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    buffered_lines.append(line.rstrip('\n'))
+                    visible = buffered_lines[-MAX_DISPLAY_LINES:]
+                    output_container.code('\n'.join(visible), language="text")
+                proc.wait()
+
+                full_output = '\n'.join(buffered_lines)
+                output_container.code(full_output[-20000:], language="text")
+
+                if proc.returncode == 0:
                     st.success(f"{script_to_run} completed successfully!")
                 else:
-                    st.error(f"{script_to_run} failed with return code {result.returncode}.")
+                    st.error(f"{script_to_run} failed with return code {proc.returncode}.")
 
             except Exception as e:
                 output_container.error(f"Failed to execute script: {e}")

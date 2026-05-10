@@ -42,6 +42,24 @@ ABLATION_PASSES = [
     ('Return-Only', 'return_only'),
 ]
 
+# Bloomberg paper-aligned assets (DATA PAUL.xlsx). Long history → no inception
+# truncation issues. Schema mirrors test_bbg_assets.ASSET_CONFIGS.
+BBG_XLSX_PATH = os.path.join(PROJECT_ROOT, 'cache', 'DATA PAUL.xlsx')
+BBG_ASSETS = {
+    'LargeCap':  {'col': 'SPTR',     'dd': True,  'hl_proxy': '^SP500TR'},
+    'MidCap':    {'col': 'SPTRMDCP', 'dd': True,  'hl_proxy': '^SP500TR'},
+    'SmallCap':  {'col': 'RU20INTR', 'dd': True,  'hl_proxy': '^SP500TR'},
+    'EAFE':      {'col': 'NDDUEAFE', 'dd': True,  'hl_proxy': 'EFA'},
+    'EM':        {'col': 'NDUEEGF',  'dd': True,  'hl_proxy': 'EEM'},
+    'REIT':      {'col': 'DJUSRET',  'dd': True,  'hl_proxy': '^SP500TR'},
+    'AggBond':   {'col': 'LBUSTRUU', 'dd': False, 'hl_proxy': '^SP500TR'},
+    'Treasury':  {'col': 'LUTLTRUU', 'dd': False, 'hl_proxy': '^SP500TR'},
+    'HighYield': {'col': 'IBOXHY',   'dd': True,  'hl_proxy': 'HYG'},
+    'Corporate': {'col': 'LUACTRUU', 'dd': False, 'hl_proxy': 'SPBO'},
+    'Commodity': {'col': 'DBLCDBCE', 'dd': True,  'hl_proxy': 'DBC'},
+    'Gold':      {'col': 'GOLDLNPM', 'dd': False, 'hl_proxy': 'GLD'},
+}
+
 def _env(key, default=None):
     """Return env var value, treating missing/empty/whitespace as fallback to default."""
     raw = os.environ.get(key, '')
@@ -53,6 +71,7 @@ OOS_START_DATE = _env('XGB_OOS_START_DATE', '2007-01-01')
 OOS_END_DATE = _env('XGB_END_DATE', _yesterday)
 DATA_START_OVERRIDE = _env('XGB_START_DATE_DATA')  # None if missing → falls back to asset_lists.md
 VALIDATION_WINDOW_YRS = int(_env('XGB_VALIDATION_WINDOW_YRS', '5'))
+DATA_SOURCE = (_env('XGB_DATA_SOURCE', 'yahoo') or 'yahoo').lower()  # 'yahoo' | 'bloomberg'
 
 BENCHMARKS_DIR = os.path.join(PROJECT_ROOT, 'benchmarks')
 os.makedirs(BENCHMARKS_DIR, exist_ok=True)
@@ -80,11 +99,103 @@ def build_config(name, ablation):
     return StrategyConfig(**kwargs)
 
 
+# ── Bloomberg loader ──────────────────────────────────────────────────────────
+
+def _bbg_series(df_yf, name):
+    if df_yf is None or df_yf.empty:
+        return None
+    cols = df_yf.columns
+    if isinstance(cols, pd.MultiIndex):
+        s = df_yf['Adj Close'].iloc[:, 0] if 'Adj Close' in cols.get_level_values(0) else df_yf.iloc[:, 0]
+    else:
+        s = df_yf.get('Adj Close', df_yf.get('Close', df_yf.iloc[:, 0]))
+    return s.rename(name)
+
+
+def _load_bloomberg_inputs():
+    """Load DATA PAUL.xlsx + FRED yields + ^VIX + ^IRX. Returns (raw, fred, vix, irx)."""
+    import yfinance as yf
+    import main as backend  # main.py owns the FRED loader + cache
+    if not os.path.exists(BBG_XLSX_PATH):
+        raise FileNotFoundError(
+            f"Bloomberg data file not found: {BBG_XLSX_PATH}\n"
+            "Place 'DATA PAUL.xlsx' under cache/ to run with --source bloomberg."
+        )
+    raw = pd.read_excel(BBG_XLSX_PATH, header=None, skiprows=6)
+    raw.columns = ['Date', 'SPTR', 'SPTRMDCP', 'RU20INTR', 'NDDUEAFE', 'NDUEEGF',
+                   'LBUSTRUU', 'IBOXHY', 'LUACTRUU', 'DJUSRET', 'DBLCDBCE',
+                   'GOLDLNPM', 'LUTLTRUU']
+    raw['Date'] = pd.to_datetime(raw['Date'])
+    raw = raw.set_index('Date').sort_index()
+
+    fred = backend._fetch_fred_data().ffill().dropna()
+    fetch_end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    vix = _bbg_series(yf.download('^VIX', start='1987-01-01', end=fetch_end,
+                                  auto_adjust=False, progress=False), 'VIX')
+    irx = _bbg_series(yf.download('^IRX', start='1987-01-01', end=fetch_end,
+                                  auto_adjust=False, progress=False), 'IRX')
+    if vix is None or irx is None:
+        raise RuntimeError("Failed to fetch ^VIX/^IRX from Yahoo (needed for Bloomberg pipeline).")
+    return raw, fred, vix, irx
+
+
+def _build_bloomberg_features(raw, fred, vix, irx, target_col, include_dd):
+    """Reproduce benchmark_assets.fetch_etf_data feature shape from Bloomberg series."""
+    cols = list(dict.fromkeys([target_col, 'SPTR', 'LBUSTRUU']))  # dedup; need SPTR+LBUSTRUU for Stock_Bond_Corr
+    df = (raw[cols]
+          .join(fred, how='inner')
+          .join(vix, how='inner')
+          .join(irx, how='inner')
+          .ffill().dropna())
+
+    f = pd.DataFrame(index=df.index)
+    tr = df[target_col].pct_change().fillna(0)
+    f['Target_Return'] = tr
+    f['RF_Rate'] = (df['IRX'] / 100) / 252
+    f['Excess_Return'] = tr - f['RF_Rate']
+
+    dn = np.minimum(f['Excess_Return'], 0)
+    if include_dd:
+        for hl in [5, 21]:
+            ewm_dd = np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(0)
+            f[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
+    for hl in [5, 10, 21]:
+        f[f'Avg_Ret_{hl}'] = f['Excess_Return'].ewm(halflife=hl).mean()
+    for hl in [5, 10, 21]:
+        dd_r = np.maximum(np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(1e-8), 1e-8)
+        f[f'Sortino_{hl}'] = (f[f'Avg_Ret_{hl}'] / dd_r).clip(-10, 10)
+
+    f['Yield_2Y_EWMA_diff'] = df['DGS2'].diff().fillna(0).ewm(halflife=21).mean()
+    sl = df['DGS10'] - df['DGS2']
+    f['Yield_Slope_EWMA_10'] = sl.ewm(halflife=10).mean()
+    f['Yield_Slope_EWMA_diff_21'] = sl.diff().fillna(0).ewm(halflife=21).mean()
+    f['VIX_EWMA_log_diff'] = np.log(df['VIX'] / df['VIX'].shift(1)).fillna(0).ewm(halflife=63).mean()
+    sptr_ret = df['SPTR'].pct_change().fillna(0)
+    bond_ret = df['LBUSTRUU'].pct_change().fillna(0)
+    f['Stock_Bond_Corr'] = sptr_ret.rolling(252).corr(bond_ret).fillna(0)
+    return f.dropna()
+
+
+def load_bloomberg_assets():
+    """Return (asset_data, paper_hl_map, tickers) for the 12 paper-aligned BBG assets."""
+    raw, fred, vix, irx = _load_bloomberg_inputs()
+    asset_data = {}
+    paper_hl_map = {}
+    for name, info in BBG_ASSETS.items():
+        feats = _build_bloomberg_features(raw, fred, vix, irx, info['col'], info['dd'])
+        if len(feats) < 252 * 5:
+            print(f"  [WARN] {name}: only {len(feats)} rows after feature build, skipping")
+            continue
+        asset_data[name] = feats
+        paper_hl_map[name] = ba.PAPER_EWMA_HL.get(info['hl_proxy'], 8)
+    return asset_data, paper_hl_map, list(asset_data.keys())
+
+
 # ── Walk-forward backtest (single asset, two configs, full OOS window) ────────
 
-def _tune_initial_ewma_hl(df, ticker, config, oos_start_dt, data_start, cache):
-    if config.ewma_mode == "paper" and ticker in ba.PAPER_EWMA_HL:
-        return ba.PAPER_EWMA_HL[ticker]
+def _tune_initial_ewma_hl(df, ticker, config, oos_start_dt, data_start, cache, paper_hl_map):
+    if config.ewma_mode == "paper" and ticker in paper_hl_map:
+        return paper_hl_map[ticker]
 
     if config.validation_window_type == 'expanding':
         init_val_start = pd.to_datetime(data_start)
@@ -167,7 +278,7 @@ def _select_lambda_argmax(df, val_start, current_date, config, ewma_hl, cache):
     return best, top_k
 
 
-def _run_single_pass(df, ticker, config, data_start, cache):
+def _run_single_pass(df, ticker, config, data_start, cache, paper_hl_map):
     """Run full walk-forward backtest for one (ticker, config) pair."""
     oos_start_dt = pd.to_datetime(OOS_START_DATE)
     oos_end_dt = pd.to_datetime(OOS_END_DATE)
@@ -176,7 +287,7 @@ def _run_single_pass(df, ticker, config, data_start, cache):
     if df.index[0] > oos_start_dt - pd.DateOffset(years=3):
         return None, None
 
-    best_ewma_hl = _tune_initial_ewma_hl(df, ticker, config, oos_start_dt, data_start, cache)
+    best_ewma_hl = _tune_initial_ewma_hl(df, ticker, config, oos_start_dt, data_start, cache, paper_hl_map)
 
     current_date = oos_start_dt
     chunks = []
@@ -250,12 +361,18 @@ def _run_single_pass(df, ticker, config, data_start, cache):
 
 def backtest_single_asset_ablation(args):
     """Worker entrypoint for the multiprocessing pool."""
-    ticker, df, configs, data_start = args
+    ticker, df, configs, data_start, paper_hl_map = args
     cache = {}
     rows = []
+    asset_t0 = time.time()
+    print(f"  [{ticker}] starting ({len(df)} rows, "
+          f"{df.index[0].date()} → {df.index[-1].date()})", flush=True)
     for config in configs:
-        oos_only, ewma_hl = _run_single_pass(df, ticker, config, data_start, cache)
+        pass_t0 = time.time()
+        oos_only, ewma_hl = _run_single_pass(df, ticker, config, data_start, cache, paper_hl_map)
+        pass_dt = time.time() - pass_t0
         if oos_only is None:
+            print(f"  [{ticker}] pass={config.name:<12} {pass_dt:6.1f}s  → no data", flush=True)
             rows.append({
                 'Ticker': ticker, 'Config': config.name,
                 'Ann_Ret': np.nan, 'Ann_Vol': np.nan,
@@ -266,12 +383,15 @@ def backtest_single_asset_ablation(args):
         ann_ret, ann_vol, sharpe, sortino, mdd = ba.calculate_metrics(
             oos_only['Strat_Return'], oos_only['RF_Rate'],
         )
+        print(f"  [{ticker}] pass={config.name:<12} {pass_dt:6.1f}s  "
+              f"Sharpe={sharpe:+.3f}  hl={ewma_hl}", flush=True)
         rows.append({
             'Ticker': ticker, 'Config': config.name,
             'Ann_Ret': ann_ret, 'Ann_Vol': ann_vol,
             'Sharpe': sharpe, 'Sortino': sortino, 'Max_DD': mdd,
             'EWMA_HL': ewma_hl,
         })
+    print(f"  [{ticker}] done in {time.time() - asset_t0:.1f}s", flush=True)
     return rows
 
 
@@ -286,13 +406,14 @@ def _fmt_num(x, digits=3):
 
 
 def generate_markdown_report(results_df, asset_data, tickers, elapsed, timestamp,
-                             configs, data_start):
+                             configs, data_start, source_label, list_label):
     lines = []
     lines.append("# Multi-Asset Macro Ablation Report")
     lines.append("")
     lines.append(f"**Generated:** {timestamp}")
     lines.append(f"**Runtime:** {elapsed:.1f}s")
-    lines.append(f"**Asset list:** {ASSET_LIST_NAME} ({len(tickers)} tickers)")
+    lines.append(f"**Data source:** {source_label}")
+    lines.append(f"**Asset list:** {list_label} ({len(tickers)} tickers)")
     lines.append(f"**OOS window:** {OOS_START_DATE} → {OOS_END_DATE}")
     lines.append(f"**Lambda grid:** {ba.LAMBDA_GRID}")
     lines.append(f"**Transaction cost:** {ba.TRANSACTION_COST*10000:.1f} bps")
@@ -396,7 +517,8 @@ def generate_markdown_report(results_df, asset_data, tickers, elapsed, timestamp
     lines.append("")
     lines.append("| Parameter | Value |")
     lines.append("|---|---|")
-    lines.append(f"| Asset list | {ASSET_LIST_NAME} |")
+    lines.append(f"| Data source | {source_label} |")
+    lines.append(f"| Asset list | {list_label} |")
     lines.append(f"| Data start | {data_start} |")
     lines.append(f"| OOS window | {OOS_START_DATE} → {OOS_END_DATE} |")
     lines.append(f"| Validation window | {cfg.validation_window_type} ({VALIDATION_WINDOW_YRS}y) |")
@@ -427,16 +549,6 @@ def generate_markdown_report(results_df, asset_data, tickers, elapsed, timestamp
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    all_lists = ba.load_asset_lists()
-    if ASSET_LIST_NAME not in all_lists:
-        print(f"Error: '{ASSET_LIST_NAME}' not found in asset_lists.md")
-        print("Available lists:", ', '.join(f"'{n}'" for n in all_lists))
-        sys.exit(1)
-
-    selected = all_lists[ASSET_LIST_NAME]
-    tickers = selected['tickers']
-    data_start = DATA_START_OVERRIDE or selected['data_start'] or '1993-01-01'
-
     # Validate OOS window — pd.to_datetime('') silently returns NaT, which would
     # cause every WF loop to exit immediately and produce all-N/A results.
     oos_start_ts = pd.to_datetime(OOS_START_DATE, errors='coerce')
@@ -450,27 +562,63 @@ def main():
     t0 = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print("=" * 80)
-    print(f"  MULTI-ASSET MACRO ABLATION  [{ASSET_LIST_NAME}]")
-    print("=" * 80)
-    print(f"OOS window: {OOS_START_DATE} → {OOS_END_DATE}")
-    print(f"Data start: {data_start}")
-    print(f"Lambda grid: {ba.LAMBDA_GRID}")
-    print(f"Validation window: {VALIDATION_WINDOW_YRS} years")
-    print(f"Passes: {[name for name, _ in ABLATION_PASSES]}")
-    print()
+    # 1. Resolve data source
+    if DATA_SOURCE == 'bloomberg':
+        source_label = "Bloomberg (DATA PAUL.xlsx)"
+        list_label = "Bloomberg Paper Assets"
+        data_start = DATA_START_OVERRIDE or '1987-01-01'
+        print("=" * 80)
+        print(f"  MULTI-ASSET MACRO ABLATION  [{list_label}]")
+        print("=" * 80)
+        print(f"Data source: {source_label}")
+        print(f"OOS window: {OOS_START_DATE} → {OOS_END_DATE}")
+        print(f"Data start: {data_start}")
+        print(f"Lambda grid: {ba.LAMBDA_GRID}")
+        print(f"Validation window: {VALIDATION_WINDOW_YRS} years")
+        print(f"Passes: {[name for name, _ in ABLATION_PASSES]}\n")
+        print(f"Loading 12 Bloomberg paper-aligned assets from {BBG_XLSX_PATH} ...")
+        try:
+            asset_data, paper_hl_map, tickers = load_bloomberg_assets()
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            sys.exit(3)
+        # Trim each asset to OOS-end so backtests don't reference future bars
+        for tk, df in list(asset_data.items()):
+            asset_data[tk] = df[df.index <= oos_end_ts]
+            print(f"  {tk:<10} OK ({len(asset_data[tk])} rows, "
+                  f"{asset_data[tk].index[0].date()} → {asset_data[tk].index[-1].date()})")
+    else:
+        list_label = ASSET_LIST_NAME
+        source_label = f"Yahoo Finance ({ASSET_LIST_NAME})"
+        all_lists = ba.load_asset_lists()
+        if ASSET_LIST_NAME not in all_lists:
+            print(f"Error: '{ASSET_LIST_NAME}' not found in asset_lists.md")
+            print("Available lists:", ', '.join(f"'{n}'" for n in all_lists))
+            sys.exit(1)
+        selected = all_lists[ASSET_LIST_NAME]
+        tickers = selected['tickers']
+        data_start = DATA_START_OVERRIDE or selected['data_start'] or '1993-01-01'
+        paper_hl_map = ba.PAPER_EWMA_HL
 
-    # 1. Fetch data sequentially (yfinance does not parallelize well)
-    print(f"Fetching data for {len(tickers)} assets...")
-    asset_data = {}
-    for ticker in tickers:
-        print(f"  Fetching {ticker}...", end=" ", flush=True)
-        _, df = ba.fetch_etf_data(ticker, data_start=data_start)
-        if df is not None:
-            asset_data[ticker] = df
-            print(f"OK ({len(df)} rows, {df.index[0].date()} → {df.index[-1].date()})")
-        else:
-            print("FAILED")
+        print("=" * 80)
+        print(f"  MULTI-ASSET MACRO ABLATION  [{list_label}]")
+        print("=" * 80)
+        print(f"Data source: {source_label}")
+        print(f"OOS window: {OOS_START_DATE} → {OOS_END_DATE}")
+        print(f"Data start: {data_start}")
+        print(f"Lambda grid: {ba.LAMBDA_GRID}")
+        print(f"Validation window: {VALIDATION_WINDOW_YRS} years")
+        print(f"Passes: {[name for name, _ in ABLATION_PASSES]}\n")
+        print(f"Fetching data for {len(tickers)} assets...")
+        asset_data = {}
+        for ticker in tickers:
+            print(f"  Fetching {ticker}...", end=" ", flush=True)
+            _, df = ba.fetch_etf_data(ticker, data_start=data_start)
+            if df is not None:
+                asset_data[ticker] = df
+                print(f"OK ({len(df)} rows, {df.index[0].date()} → {df.index[-1].date()})")
+            else:
+                print("FAILED")
 
     print(f"\nLoaded {len(asset_data)}/{len(tickers)} assets")
     if not asset_data:
@@ -483,7 +631,8 @@ def main():
     # 3. Run backtests in parallel across assets
     print(f"\nRunning ablation backtests "
           f"({len(configs)} passes × {len(asset_data)} assets) ...")
-    args_list = [(ticker, df, configs, data_start) for ticker, df in asset_data.items()]
+    args_list = [(ticker, df, configs, data_start, paper_hl_map)
+                 for ticker, df in asset_data.items()]
     n_workers = min(cpu_count(), len(args_list))
     print(f"Using {n_workers} parallel workers\n")
 
@@ -511,6 +660,7 @@ def main():
 
     md_content = generate_markdown_report(
         results_df, asset_data, tickers, elapsed, timestamp, configs, data_start,
+        source_label, list_label,
     )
     md_path = os.path.join(BENCHMARKS_DIR, f'macro_ablation_report_{timestamp}.md')
     with open(md_path, 'w') as f:
