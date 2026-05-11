@@ -249,6 +249,7 @@ def get_script_env():
         env[env_key] = str(st.session_state[ss_key])
         
     env['XGB_EXECUTION_MODE'] = "next_open" if st.session_state.get('execution_mode', True) else "close"
+    env['XGB_PRESET_NAME'] = str(st.session_state.get('diag_experiment_preset', 'Custom'))
 
     # XGBoost parameters (overrides in config.py)
     xgb_mapping = {

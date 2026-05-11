@@ -210,6 +210,50 @@ DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',        # AggBond proxies
                       'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury proxies
                       'GLD', 'GC=F', 'IAU'}   # Gold proxies
 
+# ── Paper Table 4 reference (2007-2023, Bloomberg, gross of TC) ───────────────
+# Source: arXiv 2406.09578v2, Table 4. Values are GROSS of transaction costs.
+# Sharpe ratios and Max Drawdowns for B&H, JM, and JM-XGB strategies.
+PAPER_TABLE4 = {
+    'LargeCap':  {'bh_sharpe': 0.50, 'jm_sharpe': 0.59, 'jmxgb_sharpe': 0.79,
+                  'bh_mdd': -0.5525, 'jm_mdd': -0.2478, 'jmxgb_mdd': -0.1769},
+    'MidCap':    {'bh_sharpe': 0.45, 'jm_sharpe': 0.49, 'jmxgb_sharpe': 0.59,
+                  'bh_mdd': -0.5515, 'jm_mdd': -0.3324, 'jmxgb_mdd': -0.2989},
+    'SmallCap':  {'bh_sharpe': 0.36, 'jm_sharpe': 0.28, 'jmxgb_sharpe': 0.51,
+                  'bh_mdd': -0.5889, 'jm_mdd': -0.3835, 'jmxgb_mdd': -0.3584},
+    'EAFE':      {'bh_sharpe': 0.20, 'jm_sharpe': 0.28, 'jmxgb_sharpe': 0.56,
+                  'bh_mdd': -0.6041, 'jm_mdd': -0.2972, 'jmxgb_mdd': -0.1993},
+    'EM':        {'bh_sharpe': 0.20, 'jm_sharpe': 0.65, 'jmxgb_sharpe': 0.85,
+                  'bh_mdd': -0.6525, 'jm_mdd': -0.2622, 'jmxgb_mdd': -0.2130},
+    'REIT':      {'bh_sharpe': 0.27, 'jm_sharpe': 0.39, 'jmxgb_sharpe': 0.56,
+                  'bh_mdd': -0.7423, 'jm_mdd': -0.5471, 'jmxgb_mdd': -0.3270},
+    'AggBond':   {'bh_sharpe': 0.46, 'jm_sharpe': 0.43, 'jmxgb_sharpe': 0.67,
+                  'bh_mdd': -0.1841, 'jm_mdd': -0.0609, 'jmxgb_mdd': -0.0630},
+    'Treasury':  {'bh_sharpe': 0.26, 'jm_sharpe': 0.21, 'jmxgb_sharpe': 0.38,
+                  'bh_mdd': -0.4691, 'jm_mdd': -0.2285, 'jmxgb_mdd': -0.1746},
+    'HighYield': {'bh_sharpe': 0.67, 'jm_sharpe': 1.49, 'jmxgb_sharpe': 1.88,
+                  'bh_mdd': -0.3287, 'jm_mdd': -0.1388, 'jmxgb_mdd': -0.1025},
+    'Corporate': {'bh_sharpe': 0.54, 'jm_sharpe': 0.83, 'jmxgb_sharpe': 0.76,
+                  'bh_mdd': -0.2204, 'jm_mdd': -0.0826, 'jmxgb_mdd': -0.0679},
+    'Commodity': {'bh_sharpe': 0.03, 'jm_sharpe': 0.08, 'jmxgb_sharpe': 0.23,
+                  'bh_mdd': -0.7554, 'jm_mdd': -0.5848, 'jmxgb_mdd': -0.4790},
+    'Gold':      {'bh_sharpe': 0.43, 'jm_sharpe': 0.12, 'jmxgb_sharpe': 0.31,
+                  'bh_mdd': -0.4462, 'jm_mdd': -0.3178, 'jmxgb_mdd': -0.2162},
+}
+
+# Mapping from ticker (both asset lists) to paper asset name in PAPER_TABLE4
+TICKER_TO_PAPER_ASSET = {
+    # Long History proxies
+    '^SP500TR': 'LargeCap', 'VIMSX': 'MidCap',  'NAESX': 'SmallCap',
+    'FDIVX':    'EAFE',     'VEIEX': 'EM',       'VBMFX': 'AggBond',
+    'VUSTX':    'Treasury', 'VWEHX': 'HighYield','VWESX': 'Corporate',
+    'FRESX':    'REIT',     'PCASX': 'Commodity','GC=F':  'Gold',
+    # Default ETF proxies
+    'IVV':  'LargeCap', 'IJH':  'MidCap',  'IWM':  'SmallCap',
+    'EFA':  'EAFE',     'EEM':  'EM',       'AGG':  'AggBond',
+    'SPTL': 'Treasury', 'HYG':  'HighYield','SPBO': 'Corporate',
+    'IYR':  'REIT',     'DBC':  'Commodity','GLD':  'Gold',
+}
+
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
 
 class StatisticalJumpModel:
@@ -763,13 +807,15 @@ def backtest_single_asset(args):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, list_name, config, data_start):
+def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, list_name, config, data_start, preset_name="Custom"):
     """Generate a markdown report with parameters and full results."""
     lines = []
     lines.append(f"# JM-XGB Multi-Asset Benchmark Report — {list_name}")
     lines.append(f"")
     lines.append(f"**Generated:** {timestamp}")
     lines.append(f"**Runtime:** {elapsed:.1f}s")
+    lines.append(f"**Asset List:** {list_name}")
+    lines.append(f"**Strategy Preset:** {preset_name}")
     lines.append(f"")
 
     # Data coverage
@@ -859,6 +905,73 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
                 lines.append(f"| {cls_name} | {np.mean(j_sharpes):.2f} | {np.mean(b_sharpes):.2f} | {np.mean(j_sharpes)-np.mean(b_sharpes):+.2f} |")
             else:
                 lines.append(f"| {cls_name} | N/A | N/A | N/A |")
+        lines.append(f"")
+
+    # vs. Paper Table 4 comparison
+    mapped_tickers = [(t, TICKER_TO_PAPER_ASSET[t]) for t in tickers if t in TICKER_TO_PAPER_ASSET]
+    if mapped_tickers and not full_data.empty:
+        jm_full = full_data[full_data['Strategy'] == 'JM-XGB']
+        bh_full = full_data[full_data['Strategy'] == 'B&H']
+
+        lines.append(f"## vs. Paper Table 4 (2007–2023, Bloomberg, gross of TC)")
+        lines.append(f"")
+        lines.append(f"> Paper results are from Bloomberg total-return series, 2007–2023, **gross of transaction costs**. "
+                     f"Ours use Yahoo Finance proxies, 2007–2025, with TC=0.0005 (5 bps). "
+                     f"Both sources and periods differ, so gaps are expected.")
+        lines.append(f"")
+
+        lines.append(f"### JM-XGB Sharpe")
+        lines.append(f"")
+        lines.append(f"| Asset | Ticker | Paper | Ours | Gap |")
+        lines.append(f"|---|---|---:|---:|---:|")
+        gaps_sharpe = []
+        for ticker, asset_name in mapped_tickers:
+            paper = PAPER_TABLE4[asset_name]
+            row = jm_full[jm_full['Ticker'] == ticker]
+            if row.empty or np.isnan(row.iloc[0]['Sharpe']):
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | N/A | N/A |")
+            else:
+                ours = row.iloc[0]['Sharpe']
+                gap = ours - paper['jmxgb_sharpe']
+                gaps_sharpe.append(gap)
+                sign = '+' if gap >= 0 else ''
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | {ours:.2f} | {sign}{gap:.2f} |")
+        if gaps_sharpe:
+            avg_gap = np.mean(gaps_sharpe)
+            sign = '+' if avg_gap >= 0 else ''
+            lines.append(f"| **AVG** | | | | **{sign}{avg_gap:.2f}** |")
+        lines.append(f"")
+
+        lines.append(f"### B&H Sharpe")
+        lines.append(f"")
+        lines.append(f"| Asset | Ticker | Paper | Ours | Gap |")
+        lines.append(f"|---|---|---:|---:|---:|")
+        for ticker, asset_name in mapped_tickers:
+            paper = PAPER_TABLE4[asset_name]
+            row = bh_full[bh_full['Ticker'] == ticker]
+            if row.empty or np.isnan(row.iloc[0]['Sharpe']):
+                lines.append(f"| {asset_name} | {ticker} | {paper['bh_sharpe']:.2f} | N/A | N/A |")
+            else:
+                ours = row.iloc[0]['Sharpe']
+                gap = ours - paper['bh_sharpe']
+                sign = '+' if gap >= 0 else ''
+                lines.append(f"| {asset_name} | {ticker} | {paper['bh_sharpe']:.2f} | {ours:.2f} | {sign}{gap:.2f} |")
+        lines.append(f"")
+
+        lines.append(f"### JM-XGB Max Drawdown")
+        lines.append(f"")
+        lines.append(f"| Asset | Ticker | Paper | Ours | Gap |")
+        lines.append(f"|---|---|---:|---:|---:|")
+        for ticker, asset_name in mapped_tickers:
+            paper = PAPER_TABLE4[asset_name]
+            row = jm_full[jm_full['Ticker'] == ticker]
+            if row.empty or np.isnan(row.iloc[0]['Max_DD']):
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_mdd']*100:.1f}% | N/A | N/A |")
+            else:
+                ours = row.iloc[0]['Max_DD']
+                gap = ours - paper['jmxgb_mdd']
+                sign = '+' if gap >= 0 else ''
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_mdd']*100:.1f}% | {ours*100:.1f}% | {sign}{gap*100:.1f}pp |")
         lines.append(f"")
 
     # Per-period tables
@@ -988,6 +1101,7 @@ def main():
     print(f"Using {min(cpu_count(), len(asset_data))} parallel workers\n")
 
     config = StrategyConfig()
+    preset_name = os.environ.get('XGB_PRESET_NAME', 'Custom')
     args_list = [(ticker, df, config, data_start) for ticker, df in asset_data.items()]
 
     all_results = []
@@ -1015,7 +1129,7 @@ def main():
     results_df.to_csv(csv_path, index=False)
 
     # 4. Generate and save markdown report
-    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name, config, data_start)
+    md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name, config, data_start, preset_name)
     md_path = os.path.join(BENCHMARKS_DIR, f'benchmark_report_{timestamp}.md')
     with open(md_path, 'w') as f:
         f.write(md_content)
