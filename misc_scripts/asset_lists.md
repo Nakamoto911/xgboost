@@ -1,6 +1,6 @@
 # Asset Lists for benchmark_assets.py
 
-## Default ETFs
+## Yahoo ETFs
 
 data_start: 1993-01-01
 
@@ -19,7 +19,7 @@ data_start: 1993-01-01
 | DBC    | Real Assets  | Invesco DB Commodity Tracking    |
 | GLD    | Real Assets  | SPDR Gold Shares                 |
 
-## Long History
+## Yahoo Mutual Funds
 
 data_start: 1975-01-01
 
@@ -37,3 +37,22 @@ data_start: 1975-01-01
 | FRESX    | Real Assets  | Fidelity Real Estate (1986)        |
 | PCASX    | Real Assets  | PIMCO Commodity Real Ret (2002)    |
 | GC=F     | Real Assets  | Gold Futures (2000)                |
+
+## Bloomberg Indices
+
+data_start: 1989-01-01
+
+| Ticker   | Asset Class  | Description                                    |
+|----------|--------------|------------------------------------------------|
+| SPTR     | US Equity    | S&P 500 Total Return (Bloomberg)               |
+| SPTRMDCP | US Equity    | S&P MidCap 400 Total Return (Bloomberg)        |
+| RU20INTR | US Equity    | Russell 2000 Total Return (Bloomberg)          |
+| NDDUEAFE | Intl Equity  | MSCI EAFE Net Total Return USD (Bloomberg)     |
+| NDUEEGF  | Intl Equity  | MSCI Emerging Net Total Return USD (Bloomberg) |
+| LBUSTRUU | Fixed Income | Bloomberg US Aggregate Total Return (Bloomberg)|
+| LUTLTRUU | Fixed Income | Bloomberg US Long Treasury Total Return (BBG)  |
+| IBOXHY   | Fixed Income | iBoxx USD Liquid High Yield (Bloomberg)        |
+| LUACTRUU | Fixed Income | Bloomberg US Corporate Total Return (Bloomberg)|
+| DJUSRET  | Real Assets  | Dow Jones US Real Estate Total Return (BBG)    |
+| DBLCDBCE | Real Assets  | Deutsche Bank DBIQ Optimum Yield Commodity (BBG)|
+| GOLDLNPM | Real Assets  | LBMA Gold Price PM USD (Bloomberg)             |

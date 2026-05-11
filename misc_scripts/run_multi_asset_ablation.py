@@ -1,7 +1,7 @@
 """
 Multi-Asset Macro Ablation
 ==========================
-For each ticker in the "Default ETFs" asset list, runs a full walk-forward
+For each ticker in the "Yahoo ETFs" asset list, runs a full walk-forward
 backtest under two configurations:
 
   Pass A — feature_ablation="all"          (full JM-XGB: return + macro features)
@@ -35,7 +35,7 @@ warnings.filterwarnings('ignore')
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-ASSET_LIST_NAME = 'Default ETFs'
+ASSET_LIST_NAME = 'Yahoo ETFs'
 
 ABLATION_PASSES = [
     ('Full',        'all'),

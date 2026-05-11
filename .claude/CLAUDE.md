@@ -29,9 +29,10 @@ python run_experiments.py --help       # Show usage
 streamlit run app.py
 
 # Multi-asset benchmark (configurable asset lists, parallel execution)
-python misc_scripts/benchmark_assets.py              # Default ETFs (12 ETFs)
-python misc_scripts/benchmark_assets.py "Long History" # Long-history mutual fund proxies
-python misc_scripts/benchmark_assets.py list           # Show available asset lists
+python misc_scripts/benchmark_assets.py                      # Yahoo ETFs (12 investable ETFs, ~1993+)
+python misc_scripts/benchmark_assets.py "Yahoo Mutual Funds" # Mutual fund proxies, ~1975+
+python misc_scripts/benchmark_assets.py "Bloomberg Indices"  # Paper-aligned series from DATA PAUL.xlsx, 1989+
+python misc_scripts/benchmark_assets.py list                 # Show available asset lists
 
 # Run pipeline diagnostics
 python misc_scripts/diagnose_pipeline.py              # Full diagnostics
@@ -47,7 +48,7 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
 - `app.py` & `pages/` -- Streamlit multi-page dashboard. `app.py` is the landing page.
   - `pages/1_📊_Model_Analysis.py`: Full backtest portal with parameter tuning via `st.form`, performance metrics, SHAP analysis, feature charts, JM audit, XGBoost evaluation, and PDF/JSON export. Tabs: Performance & Tracking, Feature Impact Analysis, Feature Charts, JM Audit, XGBoost Eval.
   - `pages/2_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
-  - `pages/3_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Long History proxy pairs). Ticker selector at top.
+  - `pages/3_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Yahoo Mutual Funds proxy pairs). Ticker selector at top.
   - `pages/4_📈_Portfolio_Construction.py`: Multi-asset MVO portfolio page reproducing paper Tables 6/7 and Figure 3. Universe selector (Bloomberg default / Yahoo ETFs), configurable rebalance frequency (daily default), MVO params (γ_risk, γ_trade, w_ub, covariance hl, μ lookbacks), in-sample μ toggle. Runs 7 paper strategies (MV/MinVar/EW × baseline/JM-XGB + ERC). Displays Table 6 (ours vs paper), Figure 3 (log-scale cumulative wealth), Table 7 (forecast correlation), diagnostics, and structural-gap explanation.
   - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`. Experiment preset selector (all 11 experiments + Custom) auto-fills all StrategyConfig params.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
@@ -61,7 +62,10 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
 - `misc_scripts/TESTS.md` -- **Test registry.** Documents all scripts in `misc_scripts/` with their purpose. Must be updated when adding new scripts.
 - `misc_scripts/run_portfolio_paper.py` -- CLI script: loads signals + insample_mu, builds panel, runs all 7 portfolios, prints Tables 6/7 vs paper reference.
 - `misc_scripts/smoke_test_portfolio.py` -- Fast smoke test: 3 BBG assets, 4-year window, validates pipeline end-to-end.
-- `misc_scripts/asset_lists.md` -- Named asset lists for multi-asset benchmark (tickers, asset classes, data_start dates). Parsed by `benchmark_assets.py`.
+- `misc_scripts/asset_lists.md` -- Three named asset lists for multi-asset benchmark. Parsed by `benchmark_assets.py`:
+  - **Yahoo ETFs** (~1993+): IVV, IJH, IWM, EFA, EEM, AGG, SPTL, HYG, SPBO, IYR, DBC, GLD
+  - **Yahoo Mutual Funds** (~1975+): ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, PCASX, GC=F
+  - **Bloomberg Indices** (1989+): SPTR, SPTRMDCP, RU20INTR, NDDUEAFE, NDUEEGF, LBUSTRUU, LUTLTRUU, IBOXHY, LUACTRUU, DJUSRET, DBLCDBCE, GOLDLNPM — loaded from `cache/DATA PAUL.xlsx`
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
 - `paper_text.txt` -- Full text of the reference paper for comparison.
@@ -151,7 +155,7 @@ Return features are standardized (z-score) before feeding to the Jump Model. XGB
 - **JM fit_predict fixed (Session 8):** Was using 1 random init, 20 max iters. Now uses k-means++ init, n_init=10, max_iter=1000, tol=1e-8 — matching the paper's `jumpmodels` library exactly (100% state agreement, identical objective values). JM-only Sharpe improved from 0.534 to 0.607 at λ=100.
 - **predict_online fixed (Session 4):** Previous greedy implementation only considered previous state cost, producing sticky regimes (18 shifts vs paper's 46). Now uses forward-only Viterbi (accumulated DP costs) matching the paper's `jumpmodels` library.
 - **Lambda grid fixed (Sessions 4+5):** Wide grid [0, logspace(1,100)] caused walk-forward overfitting. Dense 8pt grid [4.64, 10, 15, 21.54, 30, 46.42, 70, 100] fills gaps for multi-asset coverage. Dashboard presets allow testing alternatives.
-- **Multi-asset benchmark (Session 5):** 7/11 WIN (64%) on Long History assets vs paper's 11/12 (92%). Root causes: per-asset lambda sensitivity (no single global grid is optimal for all asset classes), FDIVX broken proxy (loses at ALL lambdas), Yahoo vs Bloomberg data gaps. Dense 8pt grid + NAESX hl=2 override improved from 5/11 to 7/11 WIN.
+- **Multi-asset benchmark (Session 5):** 7/11 WIN (64%) on Yahoo Mutual Funds assets vs paper's 11/12 (92%). Root causes: per-asset lambda sensitivity (no single global grid is optimal for all asset classes), FDIVX broken proxy (loses at ALL lambdas), Yahoo vs Bloomberg data gaps. Dense 8pt grid + NAESX hl=2 override improved from 5/11 to 7/11 WIN.
 - **Data source:** Paper uses Bloomberg total return indices; we use Yahoo Finance. Causes ~0.14 avg Sharpe gap across assets (Session 3 finding).
 - **OOS period:** We test 2007-2026 vs paper's 2007-2023. Diagnostic showed time period effect is negligible (-0.003 Sharpe delta).
 - **EWMA halflife:** Controlled by `ewma_mode` on StrategyConfig. `"auto"` (default) tunes on pre-OOS window using fixed grid [0,1,2,4,8,12,16]. `"paper"` uses prescribed values from `PAPER_EWMA_HL` dict. Paper Baseline preset uses `"paper"`, all others use `"auto"`.
@@ -188,6 +192,14 @@ Claude Code has an auto-memory directory that persists across conversations. The
 4. **After findings:** Update `performance_gaps.md` if gap analysis changed. Update `MEMORY.md` current performance numbers.
 5. Keep `MEMORY.md` as a concise index (<200 lines); use topic files for details.
 6. Ask user before major restructuring of memory files.
+
+## Bloomberg Data Source
+
+`cache/DATA PAUL.xlsx` contains all 12 paper total-return series exported from Bloomberg (1989-01-02 to 2026-03-20). Parsed with `skiprows=6`; columns: `['Date', 'SPTR', 'SPTRMDCP', 'RU20INTR', 'NDDUEAFE', 'NDUEEGF', 'LBUSTRUU', 'IBOXHY', 'LUACTRUU', 'DJUSRET', 'DBLCDBCE', 'GOLDLNPM', 'LUTLTRUU']`. Loading is handled by `_load_bbg_raw()` / `_load_bbg_price_series()` in `benchmark_assets.py` — called automatically when ticker is in `BBG_PRICE_COLS`.
+
+**PCASX vs DBLCDBCE:** Both represent Commodity but are NOT interchangeable across lists. PCASX is the Yahoo Finance mutual fund proxy used in "Yahoo Mutual Funds". DBLCDBCE is the Bloomberg column name used in "Bloomberg Indices". Replacing one with the other in the wrong list will silently break data loading.
+
+**PAPER_EWMA_HL for Bloomberg tickers:** hl=8 for SPTR/SPTRMDCP/RU20INTR/LBUSTRUU/LUTLTRUU/DJUSRET; hl=4 for DBLCDBCE/GOLDLNPM; hl=2 for LUACTRUU; hl=0 for NDUEEGF/NDDUEAFE/IBOXHY. DD excluded: LBUSTRUU, LUTLTRUU, GOLDLNPM.
 
 ## Paper Reference
 

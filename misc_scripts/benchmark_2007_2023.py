@@ -46,7 +46,7 @@ PAPER_SHARPE = {
 
 def main():
     all_lists = load_asset_lists()
-    selected = all_lists['Long History']
+    selected = all_lists['Yahoo Mutual Funds']
     tickers = selected['tickers']
     asset_classes = selected['asset_classes']
     data_start = selected['data_start']

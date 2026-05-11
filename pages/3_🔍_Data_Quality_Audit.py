@@ -776,7 +776,7 @@ for fund_ticker, info in PROXY_PAIRS.items():
 
 if not proxy_pairs_available:
     st.info("No proxy pairs available — need both mutual fund and ETF caches. "
-            "Run `benchmark_assets.py` for both 'Default ETFs' and 'Long History' asset lists to populate caches.")
+            "Run `benchmark_assets.py` for both 'Yahoo ETFs' and 'Yahoo Mutual Funds' asset lists to populate caches.")
 else:
     st.caption(f"Found {len(proxy_pairs_available)} proxy pairs with cached data.")
 

@@ -92,14 +92,17 @@ PAPER_EWMA_HL = {
     'AGG': 8, 'VBMFX': 8,              # AggBond
     'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,  # Treasury
     # hl=4: Commodity, Gold
-    'DBC': 4, 'PCASX': 4,              # Commodity
-    'GLD': 4, 'GC=F': 4, 'IAU': 4,    # Gold
+    'DBC': 4, 'PCASX': 4, 'DBLCDBCE': 4,      # Commodity
+    'GLD': 4, 'GC=F': 4, 'IAU': 4, 'GOLDLNPM': 4,  # Gold
     # hl=2: Corporate
-    'SPBO': 2, 'VWESX': 2,             # Corporate
+    'SPBO': 2, 'VWESX': 2, 'LUACTRUU': 2,     # Corporate
     # hl=0: EM, EAFE, HighYield
-    'EEM': 0, 'VEIEX': 0,              # EM
-    'EFA': 0, 'FDIVX': 0,              # EAFE
-    'HYG': 0, 'VWEHX': 0,             # HighYield
+    'EEM': 0, 'VEIEX': 0, 'NDUEEGF': 0,       # EM
+    'EFA': 0, 'FDIVX': 0, 'NDDUEAFE': 0,      # EAFE
+    'HYG': 0, 'VWEHX': 0, 'IBOXHY': 0,       # HighYield
+    # Bloomberg Indices: hl=8 for equity/AggBond/Treasury/REIT
+    'SPTR': 8, 'SPTRMDCP': 8, 'RU20INTR': 8,
+    'LBUSTRUU': 8, 'LUTLTRUU': 8, 'DJUSRET': 8,
 }
 
 # Override from environment variables (used by Diagnostics Launcher to sync with dashboard)

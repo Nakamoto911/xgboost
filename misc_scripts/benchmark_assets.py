@@ -60,10 +60,37 @@ BENCHMARKS_DIR = os.path.join(PROJECT_ROOT, 'benchmarks')
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(BENCHMARKS_DIR, exist_ok=True)
 
+BBG_EXCEL_PATH = os.path.join(PROJECT_ROOT, 'cache', 'DATA PAUL.xlsx')
+BBG_EXCEL_COLS = ['Date', 'SPTR', 'SPTRMDCP', 'RU20INTR', 'NDDUEAFE', 'NDUEEGF',
+                  'LBUSTRUU', 'IBOXHY', 'LUACTRUU', 'DJUSRET', 'DBLCDBCE', 'GOLDLNPM', 'LUTLTRUU']
+
+# "Bloomberg Indices" list tickers — loaded from DATA PAUL.xlsx instead of Yahoo Finance.
+BBG_PRICE_COLS = {c: c for c in BBG_EXCEL_COLS[1:]}
+
+_bbg_raw_cache: dict = {}
+
+
+def _load_bbg_raw() -> pd.DataFrame:
+    """Load and cache the full DATA PAUL.xlsx price table (indexed by date)."""
+    if not _bbg_raw_cache:
+        df = pd.read_excel(BBG_EXCEL_PATH, header=None, skiprows=6)
+        df.columns = BBG_EXCEL_COLS
+        df['Date'] = pd.to_datetime(df['Date'])
+        _bbg_raw_cache['df'] = df.set_index('Date').sort_index()
+    return _bbg_raw_cache['df']
+
+
+def _load_bbg_price_series(ticker: str) -> pd.Series:
+    """Return a price Series from DATA PAUL.xlsx for a Bloomberg Indices ticker."""
+    s = _load_bbg_raw()[BBG_PRICE_COLS[ticker]].dropna()
+    s.name = ticker
+    return s
+
+
 # ── Asset List Loading ────────────────────────────────────────────────────────
 
 ASSET_LISTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asset_lists.md')
-DEFAULT_LIST_NAME = 'Default ETFs'
+DEFAULT_LIST_NAME = 'Yahoo ETFs'
 
 
 def load_asset_lists(md_path=ASSET_LISTS_PATH):
@@ -136,8 +163,9 @@ def parse_asset_list_selection(args, all_lists):
     if arg in ('-h', '--help', 'help'):
         print("Usage: python misc_scripts/benchmark_assets.py [LIST_NAME | list | --help]")
         print()
-        print("  (no argument)       Use 'Default ETFs' list")
-        print("  \"Long History\"      Use 'Long History' list")
+        print("  (no argument)       Use 'Yahoo ETFs' list")
+        print("  \"Yahoo Mutual Funds\"  Use mutual fund long-history proxies (Yahoo Finance)")
+        print("  \"Bloomberg Indices\"   Use paper-aligned total-return indices (DATA PAUL.xlsx)")
         print("  list                Show all available asset lists")
         return None
 
@@ -193,22 +221,26 @@ PAPER_EWMA_HL = {
     # smoothing differs from Bloomberg Russell 2000 TR index.
     'NAESX': 2,
     # hl=4: Commodity, Gold
-    'DBC': 4, 'PCASX': 4,
-    'GLD': 4, 'GC=F': 4, 'IAU': 4,
+    'DBC': 4, 'PCASX': 4, 'DBLCDBCE': 4,
+    'GLD': 4, 'GC=F': 4, 'IAU': 4, 'GOLDLNPM': 4,
     # hl=2: Corporate
-    'SPBO': 2, 'VWESX': 2,
+    'SPBO': 2, 'VWESX': 2, 'LUACTRUU': 2,
     # hl=0: EM, EAFE, HighYield
-    'EEM': 0, 'VEIEX': 0,
-    'EFA': 0, 'FDIVX': 0,
-    'HYG': 0, 'VWEHX': 0,
+    'EEM': 0, 'VEIEX': 0, 'NDUEEGF': 0,
+    'EFA': 0, 'FDIVX': 0, 'NDDUEAFE': 0,
+    'HYG': 0, 'VWEHX': 0, 'IBOXHY': 0,
+    # Bloomberg Indices (hl=8: equity, AggBond, Treasury, REIT)
+    'SPTR': 8, 'SPTRMDCP': 8, 'RU20INTR': 8,
+    'LBUSTRUU': 8, 'LUTLTRUU': 8, 'DJUSRET': 8,
 }
 VALIDATION_WINDOW_YRS = 5
 
 # Paper Table 2: bonds and gold use only 6 return features (Avg_Return×3, Sortino×3),
 # excluding Downside Deviation (DD_log_5, DD_log_21) which are equity-specific.
-DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',        # AggBond proxies
-                      'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury proxies
-                      'GLD', 'GC=F', 'IAU'}   # Gold proxies
+DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',                    # AggBond
+                      'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury
+                      'GLD', 'GC=F', 'IAU',               # Gold (Yahoo)
+                      'LBUSTRUU', 'LUTLTRUU', 'GOLDLNPM'} # Bloomberg AggBond/Treasury/Gold
 
 # ── Paper Table 4 reference (2007-2023, Bloomberg, gross of TC) ───────────────
 # Source: arXiv 2406.09578v2, Table 4. Values are GROSS of transaction costs.
@@ -240,18 +272,23 @@ PAPER_TABLE4 = {
                   'bh_mdd': -0.4462, 'jm_mdd': -0.3178, 'jmxgb_mdd': -0.2162},
 }
 
-# Mapping from ticker (both asset lists) to paper asset name in PAPER_TABLE4
+# Mapping from ticker (all three asset lists) to paper asset name in PAPER_TABLE4
 TICKER_TO_PAPER_ASSET = {
-    # Long History proxies
+    # Yahoo Mutual Funds proxies
     '^SP500TR': 'LargeCap', 'VIMSX': 'MidCap',  'NAESX': 'SmallCap',
     'FDIVX':    'EAFE',     'VEIEX': 'EM',       'VBMFX': 'AggBond',
     'VUSTX':    'Treasury', 'VWEHX': 'HighYield','VWESX': 'Corporate',
     'FRESX':    'REIT',     'PCASX': 'Commodity','GC=F':  'Gold',
-    # Default ETF proxies
+    # Yahoo ETFs
     'IVV':  'LargeCap', 'IJH':  'MidCap',  'IWM':  'SmallCap',
     'EFA':  'EAFE',     'EEM':  'EM',       'AGG':  'AggBond',
     'SPTL': 'Treasury', 'HYG':  'HighYield','SPBO': 'Corporate',
     'IYR':  'REIT',     'DBC':  'Commodity','GLD':  'Gold',
+    # Bloomberg Indices
+    'SPTR':     'LargeCap', 'SPTRMDCP': 'MidCap',    'RU20INTR': 'SmallCap',
+    'NDDUEAFE': 'EAFE',     'NDUEEGF':  'EM',         'LBUSTRUU': 'AggBond',
+    'LUTLTRUU': 'Treasury', 'IBOXHY':   'HighYield',  'LUACTRUU': 'Corporate',
+    'DJUSRET':  'REIT',     'DBLCDBCE': 'Commodity',  'GOLDLNPM': 'Gold',
 }
 
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
@@ -373,23 +410,43 @@ def fetch_etf_data(ticker, data_start=None):
             print(f"  {ticker}: cache {gap_days}d stale, re-fetching...")
 
     try:
-        # Download ETF + auxiliary tickers.
-        # Always include LARGECAP_TICKER so Stock_Bond_Corr = corr(LargeCap, AggBond) for all assets.
         fetch_end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-        tickers_to_fetch = dict.fromkeys([ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
-        raw = {}
-        for t in tickers_to_fetch:
-            df_t = yf.download(t, start=data_start, end=fetch_end, auto_adjust=False, progress=False)
-            if df_t.empty:
-                continue
-            if isinstance(df_t.columns, pd.MultiIndex):
-                if 'Adj Close' in df_t.columns.get_level_values(0):
-                    s = df_t['Adj Close'].iloc[:, 0].rename(t)
+
+        # Bloomberg Indices list: load price from DATA PAUL.xlsx,
+        # then fetch auxiliary series (VIX, IRX, LargeCap, AggBond) from Yahoo.
+        if ticker in BBG_PRICE_COLS:
+            bbg_series = _load_bbg_price_series(ticker)
+            aux_tickers = dict.fromkeys([BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
+            raw = {ticker: bbg_series}
+            for t in aux_tickers:
+                df_t = yf.download(t, start=data_start, end=fetch_end, auto_adjust=False, progress=False)
+                if df_t.empty:
+                    continue
+                if isinstance(df_t.columns, pd.MultiIndex):
+                    if 'Adj Close' in df_t.columns.get_level_values(0):
+                        s = df_t['Adj Close'].iloc[:, 0].rename(t)
+                    else:
+                        s = df_t.iloc[:, 0].rename(t)
                 else:
-                    s = df_t.iloc[:, 0].rename(t)
-            else:
-                s = df_t.get('Adj Close', df_t.get('Close', df_t.iloc[:, 0])).rename(t)
-            raw[t] = s
+                    s = df_t.get('Adj Close', df_t.get('Close', df_t.iloc[:, 0])).rename(t)
+                raw[t] = s
+        else:
+            # Yahoo Finance (ETFs or Mutual Funds lists): download target + auxiliary tickers.
+            # Always include LARGECAP_TICKER so Stock_Bond_Corr = corr(LargeCap, AggBond) for all assets.
+            tickers_to_fetch = dict.fromkeys([ticker, BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
+            raw = {}
+            for t in tickers_to_fetch:
+                df_t = yf.download(t, start=data_start, end=fetch_end, auto_adjust=False, progress=False)
+                if df_t.empty:
+                    continue
+                if isinstance(df_t.columns, pd.MultiIndex):
+                    if 'Adj Close' in df_t.columns.get_level_values(0):
+                        s = df_t['Adj Close'].iloc[:, 0].rename(t)
+                    else:
+                        s = df_t.iloc[:, 0].rename(t)
+                else:
+                    s = df_t.get('Adj Close', df_t.get('Close', df_t.iloc[:, 0])).rename(t)
+                raw[t] = s
 
         if ticker not in raw or RISK_FREE_TICKER not in raw or VIX_TICKER not in raw:
             return ticker, None

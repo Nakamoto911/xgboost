@@ -347,17 +347,17 @@ with col1:
             'cache', 'DATA PAUL.xlsx',
         )
         _bbg_available = os.path.exists(_bbg_path)
-        _options = ["Yahoo (Default ETFs)"]
+        _options = ["Yahoo ETFs"]
         if _bbg_available:
-            _options.append("Bloomberg (Paper Assets)")
+            _options.append("Bloomberg Indices")
         _selected_source = st.selectbox(
             "Data Source:",
             _options,
             key='ablation_data_source',
             help=(
-                "Yahoo: 12 ETFs from asset_lists.md (some lack pre-2007 history → N/A). "
-                "Bloomberg: 12 paper-aligned total-return series from `cache/DATA PAUL.xlsx` "
-                "with full 1987+ history."
+                "Yahoo ETFs: 12 investable ETFs (some lack pre-2007 history → N/A). "
+                "Bloomberg Indices: 12 paper-aligned total-return series from `cache/DATA PAUL.xlsx` "
+                "with full 1989+ history."
             ),
         )
         st.session_state.ablation_source_value = (
