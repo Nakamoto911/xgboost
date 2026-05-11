@@ -18,6 +18,7 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 |---|---|
 | `diagnose_pipeline.py` | Full pipeline health diagnostics. Generates MD report assessing ML model quality and regime structural integrity. |
 | `diagnose_baseline.py` | Diagnoses Paper Baseline underperformance by testing time period and XGBoost hyperparameter effects. |
+| `diagnose_bh_sharpe.py` | Decomposes the B&H Sharpe gap vs paper Table 4 into period (2007-2025 vs 2007-2023) and risk-free source (Yahoo ^IRX vs FRED DTB3) contributions. Strategy-free; runs in seconds. |
 | `diagnose_fast.py` | Fast diagnostic suite (skips SHAP) to quickly diagnose signal quality issues. |
 | `diagnose_gap.py` | Investigates JM-XGB Sharpe gap vs paper by decomposing pipeline quality (regimes, forecasts, lambda tuning). |
 | `diagnose_gap2.py` | Lean diagnostic testing alternative grid/window configurations via walk_forward_backtest. |

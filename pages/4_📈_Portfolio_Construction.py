@@ -50,8 +50,10 @@ with st.sidebar:
         oos_start_default = "2007-01-01"
         oos_end_default   = "2023-12-31"
     else:
-        oos_start_default = "2010-01-01"   # Some ETFs have shorter history
-        oos_end_default   = "2024-12-31"
+        # Yahoo ETFs: start pinned at 2010 by ETF inception (SPBO inception 2012, others 2007-2010),
+        # but end matched to the paper's 2023-12-31 for apples-to-apples comparison.
+        oos_start_default = "2010-01-01"
+        oos_end_default   = "2023-12-31"
 
     oos_start = st.text_input("OOS start", value=oos_start_default,
                               help="Out-of-sample start date (paper: 2007-01-01).")

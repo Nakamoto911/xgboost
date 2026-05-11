@@ -187,6 +187,7 @@ TIME_PERIODS = [
     ('2020-2021 (COVID)',     '2020-01-01', '2022-01-01'),
     ('2022-2025 (Post-COVID)','2022-01-01', '2026-01-01'),
     ('Full (2007-2025)',      '2007-01-01', '2026-01-01'),
+    ('Full (Paper 2007-2023)','2007-01-01', '2024-01-01'),  # Apples-to-apples window for paper Table 4 comparison
 ]
 
 RISK_FREE_TICKER = '^IRX'
@@ -964,17 +965,18 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
                 lines.append(f"| {cls_name} | N/A | N/A | N/A |")
         lines.append(f"")
 
-    # vs. Paper Table 4 comparison
+    # vs. Paper Table 4 comparison — use the paper-matched window for an apples-to-apples gap
+    paper_window_data = results_df[results_df['Period'] == 'Full (Paper 2007-2023)']
     mapped_tickers = [(t, TICKER_TO_PAPER_ASSET[t]) for t in tickers if t in TICKER_TO_PAPER_ASSET]
-    if mapped_tickers and not full_data.empty:
-        jm_full = full_data[full_data['Strategy'] == 'JM-XGB']
-        bh_full = full_data[full_data['Strategy'] == 'B&H']
+    if mapped_tickers and not paper_window_data.empty:
+        jm_full = paper_window_data[paper_window_data['Strategy'] == 'JM-XGB']
+        bh_full = paper_window_data[paper_window_data['Strategy'] == 'B&H']
 
         lines.append(f"## vs. Paper Table 4 (2007–2023, Bloomberg, gross of TC)")
         lines.append(f"")
         lines.append(f"> Paper results are from Bloomberg total-return series, 2007–2023, **gross of transaction costs**. "
-                     f"Ours use Yahoo Finance proxies, 2007–2025, with TC=0.0005 (5 bps). "
-                     f"Both sources and periods differ, so gaps are expected.")
+                     f"Ours are computed on the **matching 2007-2023 window** for direct comparison "
+                     f"(Bloomberg series via `DATA PAUL.xlsx`, TC=0.0005 (5 bps) applied to our strategy).")
         lines.append(f"")
 
         lines.append(f"### JM-XGB Sharpe")
