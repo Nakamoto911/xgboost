@@ -9,6 +9,8 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 | `benchmark_assets.py` | Multi-asset benchmark: tests JM-XGB vs B&H across configurable asset lists (12 ETFs, mutual fund proxies) with parallel execution and 5 market periods. Main benchmark tool. |
 | `benchmark_2007_2023.py` | Multi-asset benchmark restricted to 2007-2023 to match paper's Table 4 for direct comparison. |
 | `benchmark.py` | Micro-benchmark comparing two Viterbi implementations (loop-based vs vectorized matrix operations). |
+| `run_portfolio_paper.py` | Reproduces paper Tables 6 & 7 on Bloomberg data (2007–2023): runs walk-forward signals for all 12 assets, then 7 portfolios (60/40, MinVar±, MV±, EW±) and prints side-by-side ours-vs-paper comparison. Populates the on-disk cache used by the Portfolio Construction Streamlit page. |
+| `smoke_test_portfolio.py` | Fast smoke test for `portfolio.py` — runs 3 BBG assets over a short window (2007–2010) to validate end-to-end pipeline and MVO solver wiring. |
 
 ## Diagnostics
 

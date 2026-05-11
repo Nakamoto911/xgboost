@@ -48,6 +48,7 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
   - `pages/1_📊_Model_Analysis.py`: Full backtest portal with parameter tuning via `st.form`, performance metrics, SHAP analysis, feature charts, JM audit, XGBoost evaluation, and PDF/JSON export. Tabs: Performance & Tracking, Feature Impact Analysis, Feature Charts, JM Audit, XGBoost Eval.
   - `pages/2_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
   - `pages/3_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Long History proxy pairs). Ticker selector at top.
+  - `pages/4_📈_Portfolio_Construction.py`: Multi-asset MVO portfolio page reproducing paper Tables 6/7 and Figure 3. Universe selector (Bloomberg default / Yahoo ETFs), configurable rebalance frequency (daily default), MVO params (γ_risk, γ_trade, w_ub, covariance hl, μ lookbacks), in-sample μ toggle. Runs 7 paper strategies (MV/MinVar/EW × baseline/JM-XGB + ERC). Displays Table 6 (ours vs paper), Figure 3 (log-scale cumulative wealth), Table 7 (forecast correlation), diagnostics, and structural-gap explanation.
   - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`. Experiment preset selector (all 11 experiments + Custom) auto-fills all StrategyConfig params.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
@@ -55,8 +56,11 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
 
 ### Supporting Files
 - `config.py` -- `StrategyConfig` dataclass with all tunable strategy parameters.
+- `portfolio.py` -- Multi-asset MVO portfolio engine (paper Section 4). `compute_asset_signals()` runs walk_forward_backtest per asset; `compute_insample_regime_means()` refits JM at each biannual anchor to get in-sample μ; `build_asset_panel()` aligns + shifts forecasts +1; `solve_mvo()` uses SLSQP + cvxpy/CLARABEL fallback; `run_all_portfolios()` runs 7 strategies. **μ and Σ are excess-return forecasts** (paper Section 4.1). In-sample JM regime means (~30%/yr bull) are the correct μ source for MV(JM-XGB) — OOS-conditioned μ (~5%/yr) collapses leverage due to γ_trade L1 penalty.
 - `refcard.md` -- **Implementation reference card** extracted from the paper. Contains all formulas, hyperparameters, feature definitions, data splits, and numerical results. Use this instead of the full paper when verifying implementation correctness. Includes an "Undisclosed" section listing gaps the paper does not resolve.
 - `misc_scripts/TESTS.md` -- **Test registry.** Documents all scripts in `misc_scripts/` with their purpose. Must be updated when adding new scripts.
+- `misc_scripts/run_portfolio_paper.py` -- CLI script: loads signals + insample_mu, builds panel, runs all 7 portfolios, prints Tables 6/7 vs paper reference.
+- `misc_scripts/smoke_test_portfolio.py` -- Fast smoke test: 3 BBG assets, 4-year window, validates pipeline end-to-end.
 - `misc_scripts/asset_lists.md` -- Named asset lists for multi-asset benchmark (tickers, asset classes, data_start dates). Parsed by `benchmark_assets.py`.
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
@@ -161,6 +165,8 @@ All data caches **auto-refresh** when stale — no manual deletion needed.
 - `cache/fred_cache.pkl` -- FRED Treasury yields (DGS2, DGS10), ticker-independent, shared across all backtest runs. Auto-refreshes if >7 days behind `END_DATE`.
 - `cache/data_cache_{ticker}_{date}_v2.pkl` -- Per-ticker caches for multi-asset benchmark (`benchmark_assets.py`). Auto-refreshes if >30 days stale.
 - `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence (also read by Data Quality Audit page).
+- `cache/portfolio_signals_{universe}_{oos_start}_{oos_end}.pkl` -- Per-universe portfolio signals cache (`portfolio.py`). Contains walk_forward_backtest results for all 12 assets. Refreshed via force-refresh button in page 4.
+- `cache/portfolio_insample_mu_{universe}_{oos_start}_{oos_end}.pkl` -- In-sample JM regime means cache (`portfolio.py`). Contains μ_bull/μ_bear per asset per biannual anchor. Refreshed via force-refresh button in page 4.
 - `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution.
 
 ### Staleness Rules
