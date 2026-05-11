@@ -49,7 +49,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config import StrategyConfig
+from config import StrategyConfig, _strategy_config_from_env
 
 warnings.filterwarnings('ignore')
 
@@ -682,8 +682,8 @@ def backtest_single_asset(args):
         oos_end_dt = pd.to_datetime(oos_end)
 
         if df.index[0] > oos_start_dt - pd.DateOffset(years=3):
-            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'EWMA_HL': np.nan})
-            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'EWMA_HL': np.nan})
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan, 'EWMA_HL': np.nan})
+            results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan, 'EWMA_HL': np.nan})
             continue
 
         # Phase 1: Tune EWMA halflife on initial validation window
@@ -808,11 +808,13 @@ def backtest_single_asset(args):
                 'Ticker': ticker, 'Period': period_name,
                 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan,
                 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan,
+                'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan,
             })
             results.append({
                 'Ticker': ticker, 'Period': period_name,
                 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan,
                 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan,
+                'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan,
             })
             continue
 
@@ -833,6 +835,7 @@ def backtest_single_asset(args):
             
         strat_rets = (alloc_target * jm_xgb_df['Target_Return']) + ((1.0 - alloc_target) * jm_xgb_df['RF_Rate'])
         trades = alloc_target.diff().abs().fillna(0)
+        jm_xgb_df['Strat_Return_Gross'] = strat_rets  # before TC — matches paper Table 4 reporting
         jm_xgb_df['Strat_Return'] = strat_rets - (trades * TRANSACTION_COST)
 
         # Trim to exact OOS window
@@ -841,22 +844,25 @@ def backtest_single_asset(args):
         if jm_xgb_df.empty:
             continue
 
-        # JM-XGB metrics
+        # JM-XGB metrics (net of TC; also gross for apples-to-apples paper comparison)
         ret, vol, sharpe, sortino, mdd = calculate_metrics(jm_xgb_df['Strat_Return'], jm_xgb_df['RF_Rate'])
+        ret_g, vol_g, sharpe_g, sortino_g, mdd_g = calculate_metrics(jm_xgb_df['Strat_Return_Gross'], jm_xgb_df['RF_Rate'])
         results.append({
             'Ticker': ticker, 'Period': period_name,
             'Strategy': 'JM-XGB', 'Ann_Ret': ret, 'Ann_Vol': vol,
             'Sharpe': sharpe, 'Sortino': sortino, 'Max_DD': mdd,
+            'Sharpe_Gross': sharpe_g, 'Ann_Ret_Gross': ret_g, 'Max_DD_Gross': mdd_g,
             'EWMA_HL': best_ewma_hl,
         })
 
-        # B&H metrics
+        # B&H metrics (no rebalancing, so net == gross)
         bh_ret, bh_vol, bh_sharpe, bh_sortino, bh_mdd = calculate_metrics(
             jm_xgb_df['Target_Return'], jm_xgb_df['RF_Rate'])
         results.append({
             'Ticker': ticker, 'Period': period_name,
             'Strategy': 'B&H', 'Ann_Ret': bh_ret, 'Ann_Vol': bh_vol,
             'Sharpe': bh_sharpe, 'Sortino': bh_sortino, 'Max_DD': bh_mdd,
+            'Sharpe_Gross': bh_sharpe, 'Ann_Ret_Gross': bh_ret, 'Max_DD_Gross': bh_mdd,
             'EWMA_HL': best_ewma_hl,
         })
 
@@ -974,34 +980,42 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
 
         lines.append(f"## vs. Paper Table 4 (2007–2023, Bloomberg, gross of TC)")
         lines.append(f"")
-        lines.append(f"> Paper results are from Bloomberg total-return series, 2007–2023, **gross of transaction costs**. "
-                     f"Ours are computed on the **matching 2007-2023 window** for direct comparison "
-                     f"(Bloomberg series via `DATA PAUL.xlsx`, TC=0.0005 (5 bps) applied to our strategy).")
+        lines.append(f"> Paper Table 4 reports Sharpe ratios **gross of transaction costs** (Session 19 finding). "
+                     f"Both `Ours (gross)` and `Paper` are gross-of-TC and directly comparable. "
+                     f"`Ours (net)` applies 5 bps per one-way trade — what an investor would actually earn.")
         lines.append(f"")
 
         lines.append(f"### JM-XGB Sharpe")
         lines.append(f"")
-        lines.append(f"| Asset | Ticker | Paper | Ours | Gap |")
-        lines.append(f"|---|---|---:|---:|---:|")
-        gaps_sharpe = []
+        lines.append(f"| Asset | Ticker | Paper | Ours (gross) | Gap (gross) | Ours (net) | Gap (net) |")
+        lines.append(f"|---|---|---:|---:|---:|---:|---:|")
+        gaps_gross, gaps_net = [], []
         for ticker, asset_name in mapped_tickers:
             paper = PAPER_TABLE4[asset_name]
             row = jm_full[jm_full['Ticker'] == ticker]
             if row.empty or np.isnan(row.iloc[0]['Sharpe']):
-                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | N/A | N/A |")
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | N/A | N/A | N/A | N/A |")
             else:
-                ours = row.iloc[0]['Sharpe']
-                gap = ours - paper['jmxgb_sharpe']
-                gaps_sharpe.append(gap)
-                sign = '+' if gap >= 0 else ''
-                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | {ours:.2f} | {sign}{gap:.2f} |")
-        if gaps_sharpe:
-            avg_gap = np.mean(gaps_sharpe)
-            sign = '+' if avg_gap >= 0 else ''
-            lines.append(f"| **AVG** | | | | **{sign}{avg_gap:.2f}** |")
+                ours_g = row.iloc[0]['Sharpe_Gross']
+                ours_n = row.iloc[0]['Sharpe']
+                gap_g = ours_g - paper['jmxgb_sharpe']
+                gap_n = ours_n - paper['jmxgb_sharpe']
+                gaps_gross.append(gap_g)
+                gaps_net.append(gap_n)
+                sign_g = '+' if gap_g >= 0 else ''
+                sign_n = '+' if gap_n >= 0 else ''
+                lines.append(f"| {asset_name} | {ticker} | {paper['jmxgb_sharpe']:.2f} | {ours_g:.2f} | {sign_g}{gap_g:.2f} | {ours_n:.2f} | {sign_n}{gap_n:.2f} |")
+        if gaps_gross:
+            avg_g = np.mean(gaps_gross)
+            avg_n = np.mean(gaps_net)
+            sg = '+' if avg_g >= 0 else ''
+            sn = '+' if avg_n >= 0 else ''
+            lines.append(f"| **AVG** | | | | **{sg}{avg_g:.2f}** | | **{sn}{avg_n:.2f}** |")
         lines.append(f"")
 
         lines.append(f"### B&H Sharpe")
+        lines.append(f"")
+        lines.append(f"> B&H does not rebalance, so net == gross.")
         lines.append(f"")
         lines.append(f"| Asset | Ticker | Paper | Ours | Gap |")
         lines.append(f"|---|---|---:|---:|---:|")
@@ -1159,7 +1173,9 @@ def main():
     print(f"\nRunning walk-forward backtests across {len(TIME_PERIODS)} time periods...")
     print(f"Using {min(cpu_count(), len(asset_data))} parallel workers\n")
 
-    config = StrategyConfig()
+    # Build config from env vars (honors XGB_EWMA_MODE, XGB_LAMBDA_SUBWINDOW_CONSENSUS, etc.
+    # set by Diagnostics Launcher or CLI). Missing env vars fall back to StrategyConfig defaults.
+    config = StrategyConfig(**_strategy_config_from_env())
     preset_name = os.environ.get('XGB_PRESET_NAME', 'Custom')
     args_list = [(ticker, df, config, data_start) for ticker, df in asset_data.items()]
 
