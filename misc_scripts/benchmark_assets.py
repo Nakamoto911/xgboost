@@ -682,7 +682,11 @@ def backtest_single_asset(args):
         oos_start_dt = pd.to_datetime(oos_start)
         oos_end_dt = pd.to_datetime(oos_end)
 
-        if df.index[0] > oos_start_dt - pd.DateOffset(years=3):
+        # Per-asset OOS start: need at least 3 years of pre-OOS history for training.
+        # Short-history ETFs (e.g. SPTL, HYG, SPBO inception >2004) get a partial window
+        # starting at data_start+3y rather than being dropped from the period entirely.
+        effective_oos_start = max(oos_start_dt, df.index[0] + pd.DateOffset(years=3))
+        if effective_oos_start >= oos_end_dt:
             results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'JM-XGB', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan, 'EWMA_HL': np.nan})
             results.append({'Ticker': ticker, 'Period': period_name, 'Strategy': 'B&H', 'Ann_Ret': np.nan, 'Ann_Vol': np.nan, 'Sharpe': np.nan, 'Sortino': np.nan, 'Max_DD': np.nan, 'Sharpe_Gross': np.nan, 'Ann_Ret_Gross': np.nan, 'Max_DD_Gross': np.nan, 'EWMA_HL': np.nan})
             continue
@@ -692,7 +696,7 @@ def backtest_single_asset(args):
             best_ewma_hl = PAPER_EWMA_HL[ticker]
         else:
             # Auto-tune: search fixed grid on pre-OOS validation window
-            init_val_start = oos_start_dt - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
+            init_val_start = effective_oos_start - pd.DateOffset(years=VALIDATION_WINDOW_YRS)
             if config.validation_window_type == 'expanding':
                 init_val_start = pd.to_datetime(data_start)
 
@@ -700,7 +704,7 @@ def backtest_single_asset(args):
             best_init_metric = -np.inf
             for hl in EWMA_HL_GRID:
                 for lmbda in LAMBDA_GRID:
-                    val_res = simulate_strategy_fast(df, init_val_start, oos_start_dt, lmbda, cache, config, include_xgboost=True, ewma_halflife=hl)
+                    val_res = simulate_strategy_fast(df, init_val_start, effective_oos_start, lmbda, cache, config, include_xgboost=True, ewma_halflife=hl)
                     if not val_res.empty:
                         _, _, sharpe, sortino, _ = calculate_metrics(val_res['Strat_Return'], val_res['RF_Rate'])
                         metric_val = sortino if config.tuning_metric == 'sortino' else sharpe
@@ -709,7 +713,7 @@ def backtest_single_asset(args):
                             best_ewma_hl = hl
 
         # Phase 2: Walk-forward lambda tuning + OOS execution
-        current_date = oos_start_dt
+        current_date = effective_oos_start
         jm_xgb_chunks = []
         lambda_history = []
 
@@ -839,8 +843,8 @@ def backtest_single_asset(args):
         jm_xgb_df['Strat_Return_Gross'] = strat_rets  # before TC — matches paper Table 4 reporting
         jm_xgb_df['Strat_Return'] = strat_rets - (trades * TRANSACTION_COST)
 
-        # Trim to exact OOS window
-        mask = (jm_xgb_df.index >= oos_start_dt) & (jm_xgb_df.index < oos_end_dt)
+        # Trim to exact OOS window (per-asset effective start handles short histories)
+        mask = (jm_xgb_df.index >= effective_oos_start) & (jm_xgb_df.index < oos_end_dt)
         jm_xgb_df = jm_xgb_df[mask]
         if jm_xgb_df.empty:
             continue

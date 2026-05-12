@@ -504,7 +504,23 @@ if os.path.exists(benchmarks_dir):
         list_name = regimes_data.get('list_name', '')
 
         if timeseries:
-            tickers_with_data = [t for t in timeseries if not timeseries[t].empty]
+            # Risk ordering: low risk (top) → high risk (bottom)
+            _RISK_ORDER = [
+                'Treasury', 'AggBond', 'Corporate', 'HighYield',
+                'LargeCap', 'MidCap', 'SmallCap',
+                'EAFE', 'EM',
+                'REIT', 'Commodity', 'Gold',
+            ]
+            _risk_rank = {name: i for i, name in enumerate(_RISK_ORDER)}
+
+            def _sort_key(ticker):
+                asset = asset_names.get(ticker, ticker)
+                return _risk_rank.get(asset, len(_RISK_ORDER))
+
+            tickers_with_data = sorted(
+                [t for t in timeseries if not timeseries[t].empty],
+                key=_sort_key,
+            )
 
             # ── Regime Heatmap ───────────────────────────────────────────────
             ctrl_res, ctrl_range, _ = st.columns([1, 2, 2])
