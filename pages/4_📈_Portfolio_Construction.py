@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # Ensure project root is on path so `import portfolio` works regardless of CWD
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -488,7 +489,8 @@ for _date, _row in _w_rs.iterrows():
         _lines.append(f" {_name}: {_val:.1%}")
     _hover_texts.append("<br>".join(_lines))
 
-fig_comp = go.Figure()
+fig_comp = make_subplots(specs=[[{"secondary_y": True}]])
+
 for _col in _w_rs.columns:
     _color, _label = _ASSET_META.get(_col, ('#CCCCCC', _col))
     fig_comp.add_trace(go.Bar(
@@ -497,7 +499,18 @@ for _col in _w_rs.columns:
         name=_label,
         marker_color=_color,
         hoverinfo='skip',
-    ))
+    ), secondary_y=False)
+
+# Cumulative wealth line on secondary axis
+_wealth = (1 + results[comp_strategy]['returns']).cumprod()
+_wealth_rs = _wealth.resample(_freq_map[comp_freq_label]).last()
+fig_comp.add_trace(go.Scatter(
+    x=_wealth_rs.index,
+    y=_wealth_rs.values,
+    name='Wealth',
+    line=dict(color='white', width=2),
+    hovertemplate="%{x|%Y-%m}: %{y:.2f}x<extra>Wealth</extra>",
+), secondary_y=True)
 
 # Invisible scatter carries the sorted/filtered tooltip for each period
 fig_comp.add_trace(go.Scatter(
@@ -509,15 +522,17 @@ fig_comp.add_trace(go.Scatter(
     customdata=_hover_texts,
     showlegend=False,
     name='',
-))
+), secondary_y=False)
 
 fig_comp.update_layout(
     barmode='stack',
-    title=f"Portfolio weights — {comp_strategy} ({comp_freq_label.lower()})",
+    title=f"Portfolio weights & cumulative wealth — {comp_strategy} ({comp_freq_label.lower()})",
     xaxis_title="Date",
     yaxis_title="Weight",
     yaxis_tickformat=".0%",
-    height=500,
+    yaxis2_title="Cumulative wealth",
+    yaxis2=dict(showgrid=False),
+    height=520,
     hovermode="x unified",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
