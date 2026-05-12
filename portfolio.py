@@ -191,8 +191,20 @@ def _build_yahoo_features(ticker: str, start_date: str, end_date: str,
 # Per-asset signal computation (heavy step — cached to disk)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _signal_cache_path(universe: str, oos_start: str, oos_end: str) -> str:
-    fname = f'portfolio_signals_{universe}_{oos_start[:7]}_{oos_end[:7]}.pkl'
+def _signal_cache_path(universe: str, oos_start: str, oos_end: str,
+                       tc_mode: str = 'net') -> str:
+    # Backwards-compat: 'net' (5 bps, default) keeps the original filename.
+    # 'gross' adds a suffix so paper-faithful (TC=0) signals cache separately.
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    fname = f'portfolio_signals_{universe}_{oos_start[:7]}_{oos_end[:7]}{suffix}.pkl'
+    return os.path.join(CACHE_DIR, fname)
+
+
+def _insample_mu_cache_path(universe: str, oos_start: str, oos_end: str,
+                            tc_mode: str = 'net') -> str:
+    # Mirrors signal cache naming so net/gross stay paired.
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    fname = f'portfolio_insample_mu_{universe}_{oos_start[:7]}_{oos_end[:7]}{suffix}.pkl'
     return os.path.join(CACHE_DIR, fname)
 
 
@@ -200,15 +212,23 @@ def compute_asset_signals(universe: str = 'bloomberg',
                           oos_start: str = '2007-01-01',
                           oos_end: str = '2023-12-31',
                           force_refresh: bool = False,
+                          tc_mode: str = 'net',
                           progress_callback=None) -> Dict[str, pd.DataFrame]:
     """Run walk-forward backtest for each of the 12 assets and return a dict
     keyed by asset name. Each value is a DataFrame containing at least:
         Target_Return, RF_Rate, Forecast_State, Raw_Prob (when JM-XGB),
         and lambda_history attribute under .attrs.
 
-    Cached on disk under cache/portfolio_signals_<universe>_<oos>.pkl.
+    tc_mode='net'  → walk-forward tunes λ on net-of-TC Sharpe (5 bps default).
+    tc_mode='gross' → tunes on gross Sharpe (TC=0) — apples-to-apples with paper
+                      Tables 4/6/7 (gross-of-TC).  Forecasts differ from 'net'
+                      because λ choices differ, so this caches separately.
+
+    Cached on disk under cache/portfolio_signals_<universe>_<oos>[_gross].pkl.
     """
-    cache_path = _signal_cache_path(universe, oos_start, oos_end)
+    if tc_mode not in ('net', 'gross'):
+        raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
+    cache_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 
     if not force_refresh and os.path.exists(cache_path):
         try:
@@ -229,6 +249,12 @@ def compute_asset_signals(universe: str = 'bloomberg',
     # Wide enough to give the 11-year JM lookback room
     _main.START_DATE_DATA = '1991-01-01' if universe == 'bloomberg' else '1996-01-01'
 
+    # tc_mode='gross': zero out TC during walk-forward so λ-selection uses gross
+    # Sharpe (matches paper Table 4). Restored in the finally block.
+    original_tc = _main.TRANSACTION_COST
+    if tc_mode == 'gross':
+        _main.TRANSACTION_COST = 0.0
+
     if universe == 'bloomberg':
         asset_specs = BBG_ASSETS
     elif universe == 'yahoo':
@@ -238,52 +264,56 @@ def compute_asset_signals(universe: str = 'bloomberg',
 
     signals: Dict[str, pd.DataFrame] = {}
 
-    for i, spec in enumerate(asset_specs):
-        if universe == 'bloomberg':
-            asset_name, bbg_col, hl_proxy, include_dd = spec
+    try:
+        for i, spec in enumerate(asset_specs):
+            if universe == 'bloomberg':
+                asset_name, bbg_col, hl_proxy, include_dd = spec
+                try:
+                    df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
+                except Exception as e:
+                    print(f'[portfolio] {asset_name}: feature build failed — {e}')
+                    continue
+            else:
+                asset_name, ticker, hl_proxy, include_dd = spec
+                try:
+                    df_feat = _build_yahoo_features(ticker, _main.START_DATE_DATA, oos_end,
+                                                    include_dd=include_dd)
+                except Exception as e:
+                    print(f'[portfolio] {asset_name}: feature build failed — {e}')
+                    continue
+
+            # Drive PAPER_EWMA_HL lookup via TARGET_TICKER
+            _main.TARGET_TICKER = hl_proxy
+            _main._forecast_cache.clear()
+
+            cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
+                                 ewma_mode='paper')
+            if progress_callback is not None:
+                progress_callback(i, len(asset_specs), asset_name)
+
             try:
-                df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
+                r = _main.walk_forward_backtest(df_feat, cfg)
             except Exception as e:
-                print(f'[portfolio] {asset_name}: feature build failed — {e}')
-                continue
-        else:
-            asset_name, ticker, hl_proxy, include_dd = spec
-            try:
-                df_feat = _build_yahoo_features(ticker, _main.START_DATE_DATA, oos_end,
-                                                include_dd=include_dd)
-            except Exception as e:
-                print(f'[portfolio] {asset_name}: feature build failed — {e}')
+                print(f'[portfolio] {asset_name}: walk_forward failed — {e}')
                 continue
 
-        # Drive PAPER_EWMA_HL lookup via TARGET_TICKER
-        _main.TARGET_TICKER = hl_proxy
-        _main._forecast_cache.clear()
+            if r is None or r.empty:
+                print(f'[portfolio] {asset_name}: empty result')
+                continue
 
-        cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
-                             ewma_mode='paper')
-        if progress_callback is not None:
-            progress_callback(i, len(asset_specs), asset_name)
+            # Attach JM-only Forecast_State for later regime-conditional μ computation
+            # (We re-run JM at each biannual anchor using the selected λ trace.)
+            r.attrs['hl_proxy'] = hl_proxy
+            r.attrs['include_dd'] = include_dd
+            r.attrs['tc_mode'] = tc_mode
+            if universe == 'bloomberg':
+                r.attrs['source_col'] = bbg_col
+            else:
+                r.attrs['source_ticker'] = ticker
 
-        try:
-            r = _main.walk_forward_backtest(df_feat, cfg)
-        except Exception as e:
-            print(f'[portfolio] {asset_name}: walk_forward failed — {e}')
-            continue
-
-        if r is None or r.empty:
-            print(f'[portfolio] {asset_name}: empty result')
-            continue
-
-        # Attach JM-only Forecast_State for later regime-conditional μ computation
-        # (We re-run JM at each biannual anchor using the selected λ trace.)
-        r.attrs['hl_proxy'] = hl_proxy
-        r.attrs['include_dd'] = include_dd
-        if universe == 'bloomberg':
-            r.attrs['source_col'] = bbg_col
-        else:
-            r.attrs['source_ticker'] = ticker
-
-        signals[asset_name] = r
+            signals[asset_name] = r
+    finally:
+        _main.TRANSACTION_COST = original_tc
 
     # Cache
     try:
@@ -298,23 +328,29 @@ def compute_asset_signals(universe: str = 'bloomberg',
 
 
 def clear_signal_cache(universe: Optional[str] = None) -> List[str]:
-    """Remove on-disk signal caches. Returns list of files deleted."""
+    """Remove on-disk signal caches. Returns list of files deleted.
+
+    Globs match both net (no suffix) and gross (`_gross` suffix) variants,
+    and the paired in-sample μ caches.
+    """
     import glob
-    pattern = f'portfolio_signals_{universe}*.pkl' if universe else 'portfolio_signals_*.pkl'
+    patterns = []
+    if universe:
+        patterns.append(f'portfolio_signals_{universe}*.pkl')
+        patterns.append(f'portfolio_insample_mu_{universe}*.pkl')
+    else:
+        patterns.append('portfolio_signals_*.pkl')
+        patterns.append('portfolio_insample_mu_*.pkl')
+    patterns.append('portfolio_results_*.pkl')
+
     deleted = []
-    for f in glob.glob(os.path.join(CACHE_DIR, pattern)):
-        try:
-            os.remove(f)
-            deleted.append(os.path.basename(f))
-        except OSError:
-            pass
-    # Also remove any portfolio_results_* files
-    for f in glob.glob(os.path.join(CACHE_DIR, 'portfolio_results_*.pkl')):
-        try:
-            os.remove(f)
-            deleted.append(os.path.basename(f))
-        except OSError:
-            pass
+    for pat in patterns:
+        for f in glob.glob(os.path.join(CACHE_DIR, pat)):
+            try:
+                os.remove(f)
+                deleted.append(os.path.basename(f))
+            except OSError:
+                pass
     return deleted
 
 
@@ -326,6 +362,7 @@ def compute_insample_regime_means(universe: str,
                                   oos_start: str = '2007-01-01',
                                   oos_end: str = '2023-12-31',
                                   force_refresh: bool = False,
+                                  tc_mode: str = 'net',
                                   progress_callback=None) -> Dict[str, pd.DataFrame]:
     """For each asset, at each biannual rebalance anchor, fit JM on the 11-year
     lookback window with the asset's selected λ and compute in-sample
@@ -338,9 +375,13 @@ def compute_insample_regime_means(universe: str,
     The means represent the mean **daily total return** for bullish (state 0)
     and bearish (state 1) days as labeled by the in-sample JM fit. This
     matches paper Section 4.5's spec for MV(JM-XGB).
+
+    tc_mode is propagated to the signal lookup so λ traces match the
+    requested TC regime; cache is keyed by mode.
     """
-    cache_path = os.path.join(CACHE_DIR,
-                              f'portfolio_insample_mu_{universe}_{oos_start[:7]}_{oos_end[:7]}.pkl')
+    if tc_mode not in ('net', 'gross'):
+        raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
+    cache_path = _insample_mu_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 
     if not force_refresh and os.path.exists(cache_path):
         try:
@@ -354,10 +395,10 @@ def compute_insample_regime_means(universe: str,
     import main as _main
     from config import StrategyConfig
 
-    sig_path = _signal_cache_path(universe, oos_start, oos_end)
+    sig_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
     if not os.path.exists(sig_path):
         raise FileNotFoundError(f'Signals cache not found: {sig_path}. '
-                                'Run compute_asset_signals first.')
+                                f'Run compute_asset_signals(tc_mode={tc_mode!r}) first.')
     with open(sig_path, 'rb') as fh:
         signals = pickle.load(fh)
 

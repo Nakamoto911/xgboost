@@ -60,6 +60,21 @@ with st.sidebar:
     oos_end   = st.text_input("OOS end",   value=oos_end_default,
                               help="Out-of-sample end date (paper: 2023-12-31).")
 
+    st.markdown("**TC mode**")
+    tc_mode = st.radio(
+        "Transaction cost reporting",
+        options=["net", "gross"],
+        index=0,
+        format_func=lambda x: {"net":   "Net (5 bps) — realistic investor",
+                               "gross": "Gross (paper-faithful, TC=0)"}[x],
+        horizontal=False,
+        help="Net: 5 bps applied during walk-forward λ-selection AND portfolio "
+             "rebalancing — what you would actually earn. "
+             "Gross: TC=0 in both layers — apples-to-apples with paper Tables 4/6/7 "
+             "(reported gross of TC, Session 19 finding). Gross signals cache "
+             "separately and require a one-time recompute.",
+    )
+
     rebal_freq = st.selectbox(
         "Rebalancing frequency",
         options=["daily", "monthly", "quarterly", "biannually", "yearly"],
@@ -76,8 +91,12 @@ with st.sidebar:
                                              "Reduces turnover. With OOS-forecast μ this can collapse "
                                              "leverage; with in-sample μ (paper-faithful, see toggle "
                                              "below) the larger μ values support full deployment.")
-    tc_oneway         = st.number_input("Transaction cost (one-way, decimal)",
-                                        value=0.0005, step=0.0001, format="%.4f")
+    # Portfolio-level TC default mirrors the selected mode; user can still override.
+    _tc_default = 0.0 if tc_mode == "gross" else 0.0005
+    tc_oneway = st.number_input("Transaction cost (one-way, decimal)",
+                                value=_tc_default, step=0.0001, format="%.4f",
+                                help=f"Defaults to {_tc_default} for tc_mode='{tc_mode}'. "
+                                     "Override to decouple portfolio-level TC from signal-level.")
     w_ub              = st.number_input("w_ub (max weight per asset)",
                                         value=0.40, step=0.05, format="%.2f")
     cov_hl_days       = st.number_input("Σ EWM halflife (days)", value=252, step=21,
@@ -111,7 +130,7 @@ with st.sidebar:
 # Step 1 — compute (or load) per-asset signals (heavy, cached on disk)
 # ─────────────────────────────────────────────────────────────────────────────
 
-cache_path = portfolio._signal_cache_path(universe, oos_start, oos_end)
+cache_path = portfolio._signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 cache_exists = os.path.exists(cache_path)
 
 if force_refresh:
@@ -119,20 +138,21 @@ if force_refresh:
     cache_exists = False
 
 st.subheader("1. Per-asset regime signals")
+mode_label = "Gross (TC=0, paper-faithful)" if tc_mode == "gross" else "Net (5 bps)"
 if cache_exists:
-    st.success(f"Loaded cached signals from `cache/{os.path.basename(cache_path)}`")
+    st.success(f"Loaded cached **{mode_label}** signals from `cache/{os.path.basename(cache_path)}`")
 else:
     st.warning(
-        f"No cached signals for **{universe} {oos_start}→{oos_end}**. "
+        f"No cached **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**. "
         f"Click below to compute (this will run walk-forward on each of 12 assets — "
-        f"several minutes total)."
+        f"several minutes total). Net and gross caches are stored separately."
     )
     if not st.button("▶️ Compute signals now"):
         st.stop()
 
 
 @st.cache_resource(show_spinner=False)
-def _load_signals(universe, oos_start, oos_end, force_refresh_flag):
+def _load_signals(universe, oos_start, oos_end, tc_mode, force_refresh_flag):
     progress_bar = st.progress(0.0)
     status_box   = st.empty()
 
@@ -142,14 +162,15 @@ def _load_signals(universe, oos_start, oos_end, force_refresh_flag):
 
     signals = portfolio.compute_asset_signals(universe=universe,
                                               oos_start=oos_start, oos_end=oos_end,
+                                              tc_mode=tc_mode,
                                               force_refresh=force_refresh_flag,
                                               progress_callback=_cb)
     progress_bar.empty(); status_box.empty()
     return signals
 
 
-with st.spinner(f"Computing per-asset signals for **{universe}**…"):
-    signals = _load_signals(universe, oos_start, oos_end, force_refresh)
+with st.spinner(f"Computing per-asset signals for **{universe}** ({mode_label})…"):
+    signals = _load_signals(universe, oos_start, oos_end, tc_mode, force_refresh)
 
 if not signals:
     st.error("Signal computation produced no output. Check the data files and logs.")
@@ -180,7 +201,7 @@ with st.expander("Signal summary per asset", expanded=False):
 st.subheader("2. Portfolio backtests")
 
 @st.cache_resource(show_spinner=False)
-def _load_insample_mu(universe, oos_start, oos_end, force_refresh_flag):
+def _load_insample_mu(universe, oos_start, oos_end, tc_mode, force_refresh_flag):
     progress_bar = st.progress(0.0)
     status_box   = st.empty()
 
@@ -191,6 +212,7 @@ def _load_insample_mu(universe, oos_start, oos_end, force_refresh_flag):
     try:
         out = portfolio.compute_insample_regime_means(
             universe=universe, oos_start=oos_start, oos_end=oos_end,
+            tc_mode=tc_mode,
             force_refresh=force_refresh_flag, progress_callback=_cb)
     except FileNotFoundError:
         out = {}
@@ -200,18 +222,16 @@ def _load_insample_mu(universe, oos_start, oos_end, force_refresh_flag):
 
 insample_mu = None
 if use_insample_mu:
-    insample_mu_path = os.path.join(
-        portfolio.CACHE_DIR,
-        f'portfolio_insample_mu_{universe}_{oos_start[:7]}_{oos_end[:7]}.pkl',
-    )
+    insample_mu_path = portfolio._insample_mu_cache_path(universe, oos_start, oos_end,
+                                                        tc_mode=tc_mode)
     if not os.path.exists(insample_mu_path) and not force_refresh:
         st.info(
-            "In-sample regime-mean cache not found — computing now "
+            f"In-sample regime-mean cache not found for **{mode_label}** — computing now "
             "(refits JM at each biannual anchor × 12 assets, ~2 min). "
             "This is the paper's exact MV(JM-XGB) μ spec."
         )
     with st.spinner("Loading in-sample regime means…"):
-        insample_mu = _load_insample_mu(universe, oos_start, oos_end, force_refresh)
+        insample_mu = _load_insample_mu(universe, oos_start, oos_end, tc_mode, force_refresh)
     if insample_mu:
         st.caption(f"✓ In-sample μ loaded for {len(insample_mu)} assets "
                    f"(`cache/{os.path.basename(insample_mu_path)}`).")
