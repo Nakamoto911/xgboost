@@ -418,10 +418,180 @@ st.plotly_chart(fig, use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Portfolio composition — stacked weights over time
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.subheader("5. Portfolio composition over time")
+st.caption("Stacked bar chart of MVO weights per period. "
+           "Assets grouped by type; same-type assets share a colour family. "
+           "'Cash' = uninvested fraction (1 − Σweights, clipped at 0).")
+
+_comp_col1, _comp_col2 = st.columns([2, 1])
+with _comp_col1:
+    comp_strategy = st.selectbox(
+        "Strategy",
+        options=[l for l in portfolio.STRATEGY_LABELS if l in results],
+        key="comp_strategy_sel",
+    )
+with _comp_col2:
+    comp_freq_label = st.radio(
+        "Resample to",
+        options=["Weekly", "Monthly", "Quarterly"],
+        index=1,
+        horizontal=True,
+        key="comp_freq_sel",
+    )
+
+# ── asset metadata: colour by type (keyed by friendly name used in panel.asset_order)
+# Blues → US Equity | Greens → Intl Equity | Reds → Fixed Income
+# Purple → Real Estate | Ambers → Commodities | Grey → Cash
+_ASSET_META = {
+    'LargeCap':  ('#0D47A1', 'LargeCap'),   # US Equity — blue family
+    'MidCap':    ('#1976D2', 'MidCap'),
+    'SmallCap':  ('#64B5F6', 'SmallCap'),
+    'EAFE':      ('#1B5E20', 'EAFE'),        # Intl Equity — green family
+    'EM':        ('#66BB6A', 'EM'),
+    'AggBond':   ('#B71C1C', 'AggBond'),    # Fixed Income — red family
+    'Treasury':  ('#E53935', 'Treasury'),
+    'Corporate': ('#EF9A9A', 'Corporate'),
+    'HighYield': ('#FFCDD2', 'HighYield'),
+    'REIT':      ('#6A1B9A', 'REIT'),        # Real Estate — purple
+    'Commodity': ('#E65100', 'Commodity'),   # Commodities — amber family
+    'Gold':      ('#FDD835', 'Gold'),
+    'Cash':      ('#000000', 'Cash'),        # Cash — black
+}
+
+# Draw order (bottom of stack → top): US Eq → Intl Eq → FI → RE → Commodities → Cash
+_DRAW_ORDER = [
+    'LargeCap', 'MidCap', 'SmallCap',
+    'EAFE', 'EM',
+    'AggBond', 'Treasury', 'Corporate', 'HighYield',
+    'REIT',
+    'Commodity', 'Gold',
+    'Cash',
+]
+
+_freq_map = {"Weekly": "W", "Monthly": "ME", "Quarterly": "QE"}
+_w = results[comp_strategy]['weights'].copy()
+_w_rs = _w.resample(_freq_map[comp_freq_label]).mean()
+_w_rs['Cash'] = (1 - _w_rs.sum(axis=1)).clip(lower=0)
+_w_rs = _w_rs[[c for c in _DRAW_ORDER if c in _w_rs.columns]]
+
+# Custom tooltip: sorted by descending weight, zero assets hidden
+_hover_texts = []
+for _date, _row in _w_rs.iterrows():
+    _nonzero = _row[_row > 0.0005].sort_values(ascending=False)
+    _label = pd.Timestamp(_date).strftime('%Y-%m')
+    _lines = [f"<b>{_label}</b>"]
+    for _col, _val in _nonzero.items():
+        _name = _ASSET_META.get(_col, (_col, _col))[1]
+        _lines.append(f" {_name}: {_val:.1%}")
+    _hover_texts.append("<br>".join(_lines))
+
+fig_comp = go.Figure()
+for _col in _w_rs.columns:
+    _color, _label = _ASSET_META.get(_col, ('#CCCCCC', _col))
+    fig_comp.add_trace(go.Bar(
+        x=_w_rs.index,
+        y=_w_rs[_col].round(4),
+        name=_label,
+        marker_color=_color,
+        hoverinfo='skip',
+    ))
+
+# Invisible scatter carries the sorted/filtered tooltip for each period
+fig_comp.add_trace(go.Scatter(
+    x=_w_rs.index,
+    y=[0.5] * len(_w_rs),
+    mode='markers',
+    marker=dict(opacity=0, size=18),
+    hovertemplate="%{customdata}<extra></extra>",
+    customdata=_hover_texts,
+    showlegend=False,
+    name='',
+))
+
+fig_comp.update_layout(
+    barmode='stack',
+    title=f"Portfolio weights — {comp_strategy} ({comp_freq_label.lower()})",
+    xaxis_title="Date",
+    yaxis_title="Weight",
+    yaxis_tickformat=".0%",
+    height=500,
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_comp, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Drawdown (underwater equity curve)
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.subheader("6. Drawdown (underwater equity)")
+st.caption("Fraction below running peak at each point in time — reveals risk episodes "
+           "and recovery speed across strategies.")
+
+fig_dd = go.Figure()
+for label in portfolio.STRATEGY_LABELS:
+    if label not in results:
+        continue
+    r = results[label]['returns']
+    wealth = (1 + r).cumprod()
+    dd = (wealth / wealth.cummax() - 1) * 100
+    fig_dd.add_trace(go.Scatter(x=dd.index, y=dd.values, name=label, line=dict(width=1.5)))
+
+fig_dd.update_layout(
+    title="Drawdown from running peak",
+    xaxis_title="Date", yaxis_title="Drawdown (%)",
+    height=420, hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_dd, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Annual returns bar chart
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.subheader("7. Annual returns by strategy")
+st.caption("Grouped bar chart — excess returns per calendar year. Clearly shows which "
+           "strategies outperform in crisis years (GFC, COVID) vs bull markets.")
+
+ann_data = {}
+for label in portfolio.STRATEGY_LABELS:
+    if label not in results:
+        continue
+    r = results[label]['returns']
+    ann = (1 + r).resample('YE').prod() - 1
+    ann_data[label] = ann * 100
+
+ann_df = pd.DataFrame(ann_data)
+ann_df.index = ann_df.index.year
+
+fig_ann = go.Figure()
+for label in ann_df.columns:
+    fig_ann.add_trace(go.Bar(
+        x=ann_df.index.astype(str), y=ann_df[label].round(2),
+        name=label,
+        hovertemplate="%{x}: %{y:.1f}%<extra>" + label + "</extra>",
+    ))
+
+fig_ann.update_layout(
+    barmode='group',
+    title="Annual excess returns by strategy (%)",
+    xaxis_title="Year", yaxis_title="Return (%)",
+    height=500, hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_ann, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Table 7 — Forecast correlation
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("5. Table 7 — Return forecast correlation with realized")
+st.subheader("8. Table 7 — Return forecast correlation with realized")
 
 ewma_mu  = results['MV']['mu_forecast']         if 'MV' in results else pd.DataFrame()
 jmxgb_mu = results['MV(JM-XGB)']['mu_forecast'] if 'MV(JM-XGB)' in results else pd.DataFrame()
@@ -456,7 +626,7 @@ st.dataframe(display7, use_container_width=True)
 # Diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
 
-with st.expander("Diagnostics — weights, turnover, regime calls", expanded=False):
+with st.expander("8. Diagnostics — weights, turnover, regime calls", expanded=False):
     sel = st.selectbox("Strategy", options=list(results.keys()),
                        index=min(2, len(results) - 1))
     res = results[sel]
@@ -481,7 +651,7 @@ with st.expander("Diagnostics — weights, turnover, regime calls", expanded=Fal
     st.line_chart(bull_count)
 
 
-with st.expander("Regime call panel — bear-state percentage per asset", expanded=False):
+with st.expander("9. Regime call panel — bear-state percentage per asset", expanded=False):
     bear_pct = pd.DataFrame({
         a: [(panel.forecast[a] == 1).mean() * 100] for a in panel.asset_order
     }, index=['% bear days']).T
