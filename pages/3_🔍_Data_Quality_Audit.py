@@ -33,7 +33,7 @@ PROXY_PAIRS = {
     "VWEHX": {"etf": "HYG",  "name": "High-Yield Corp"},
     "VWESX": {"etf": "SPBO", "name": "Corporate Bond"},
     "FRESX": {"etf": "IYR",  "name": "Real Estate"},
-    "PCASX": {"etf": "DBC",  "name": "Commodity"},
+    "^SPGSCI": {"etf": "DBC", "name": "Commodity"},
     "GC=F":  {"etf": "GLD",  "name": "Gold"},
 }
 

@@ -35,7 +35,7 @@ data_start: 1975-01-01
 | VWEHX    | Fixed Income | Vanguard High-Yield Corp (1980)    |
 | VWESX    | Fixed Income | Vanguard Long-Term Corp (1980)     |
 | FRESX    | Real Assets  | Fidelity Real Estate (1986)        |
-| PCASX    | Real Assets  | PIMCO Commodity Real Ret (2002)    |
+| ^SPGSCI  | Real Assets  | S&P GSCI Commodity Index (1984)    |
 | GC=F     | Real Assets  | Gold Futures (2000)                |
 
 ## Bloomberg Indices

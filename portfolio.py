@@ -67,6 +67,24 @@ YAHOO_ASSETS: List[Tuple[str, str, str, bool]] = [
     ('Gold',      'GLD',  'GLD',  False),
 ]
 
+# Yahoo Mutual Funds — long-history proxies optimised for paper replication.
+# ^SPGSCI replaces delisted PCASX/PCRAX (0.928 daily-return corr with paper's DBLCDBCE).
+# GC=F and VBMFX/VUSTX excluded from DD features (same rule as benchmark_assets.py).
+MUTUAL_FUNDS_ASSETS: List[Tuple[str, str, str, bool]] = [
+    ('LargeCap',  '^SP500TR', '^SP500TR', True),
+    ('MidCap',    'VIMSX',   'VIMSX',   True),
+    ('SmallCap',  'NAESX',   'NAESX',   True),
+    ('EAFE',      'FDIVX',   'FDIVX',   True),
+    ('EM',        'VEIEX',   'VEIEX',   True),
+    ('REIT',      'FRESX',   'FRESX',   True),
+    ('AggBond',   'VBMFX',   'VBMFX',   False),
+    ('Treasury',  'VUSTX',   'VUSTX',   False),
+    ('HighYield', 'VWEHX',   'VWEHX',   True),
+    ('Corporate', 'VWESX',   'VWESX',   True),
+    ('Commodity', '^SPGSCI', '^SPGSCI', True),
+    ('Gold',      'GC=F',    'GC=F',    False),
+]
+
 PAPER_60_40 = {
     'LargeCap': 0.10, 'MidCap': 0.05, 'SmallCap': 0.05, 'EAFE': 0.05, 'EM': 0.05,
     'REIT': 0.10, 'HighYield': 0.10, 'Commodity': 0.05, 'Gold': 0.05,
@@ -247,7 +265,12 @@ def compute_asset_signals(universe: str = 'bloomberg',
     _main.END_DATE = oos_end
     _main.LAMBDA_GRID = list(GRID_8PT)
     # Wide enough to give the 11-year JM lookback room
-    _main.START_DATE_DATA = '1991-01-01' if universe == 'bloomberg' else '1996-01-01'
+    if universe == 'bloomberg':
+        _main.START_DATE_DATA = '1991-01-01'
+    elif universe == 'yahoo_mutual':
+        _main.START_DATE_DATA = '1990-01-01'  # ^VIX (1990-01-02) is the binding constraint
+    else:
+        _main.START_DATE_DATA = '1996-01-01'
 
     # tc_mode='gross': zero out TC during walk-forward so λ-selection uses gross
     # Sharpe (matches paper Table 4). Restored in the finally block.
@@ -259,6 +282,8 @@ def compute_asset_signals(universe: str = 'bloomberg',
         asset_specs = BBG_ASSETS
     elif universe == 'yahoo':
         asset_specs = YAHOO_ASSETS
+    elif universe == 'yahoo_mutual':
+        asset_specs = MUTUAL_FUNDS_ASSETS
     else:
         raise ValueError(f'Unknown universe: {universe!r}')
 
@@ -405,9 +430,19 @@ def compute_insample_regime_means(universe: str,
     _main.OOS_START_DATE = oos_start
     _main.END_DATE = oos_end
     _main.LAMBDA_GRID = list(GRID_8PT)
-    _main.START_DATE_DATA = '1991-01-01' if universe == 'bloomberg' else '1996-01-01'
+    if universe == 'bloomberg':
+        _main.START_DATE_DATA = '1991-01-01'
+    elif universe == 'yahoo_mutual':
+        _main.START_DATE_DATA = '1990-01-01'
+    else:
+        _main.START_DATE_DATA = '1996-01-01'
 
-    asset_specs = BBG_ASSETS if universe == 'bloomberg' else YAHOO_ASSETS
+    if universe == 'bloomberg':
+        asset_specs = BBG_ASSETS
+    elif universe == 'yahoo_mutual':
+        asset_specs = MUTUAL_FUNDS_ASSETS
+    else:
+        asset_specs = YAHOO_ASSETS
 
     out: Dict[str, pd.DataFrame] = {}
     for i, spec in enumerate(asset_specs):
@@ -499,6 +534,8 @@ def build_asset_panel(signals: Dict[str, pd.DataFrame],
     ret_cols, fc_cols, prob_cols = {}, {}, {}
     rf_series = None
 
+    # Use canonical asset order from whichever spec list the signals came from;
+    # all three lists share the same 12 asset names so BBG_ASSETS ordering works universally.
     asset_order = [name for name, *_ in BBG_ASSETS if name in signals]
     if not asset_order:
         asset_order = list(signals.keys())

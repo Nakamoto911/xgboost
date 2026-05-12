@@ -63,8 +63,8 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
 - `misc_scripts/run_portfolio_paper.py` -- CLI script: loads signals + insample_mu, builds panel, runs all 7 portfolios, prints Tables 6/7 vs paper reference.
 - `misc_scripts/smoke_test_portfolio.py` -- Fast smoke test: 3 BBG assets, 4-year window, validates pipeline end-to-end.
 - `misc_scripts/asset_lists.md` -- Three named asset lists for multi-asset benchmark. Parsed by `benchmark_assets.py`:
-  - **Yahoo ETFs** (~1993+): IVV, IJH, IWM, EFA, EEM, AGG, SPTL, HYG, SPBO, IYR, DBC, GLD
-  - **Yahoo Mutual Funds** (~1975+): ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, PCASX, GC=F
+  - **Yahoo ETFs** (~1993+): IVV, IJH, IWM, EFA, EEM, AGG, SPTL, HYG, SPBO, IYR, DBC, GLD (investable ETFs only — DBC's short 2006-02 inception is handled by per-asset partial-window logic)
+  - **Yahoo Mutual Funds** (~1975+): ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, ^SPGSCI, GC=F
   - **Bloomberg Indices** (1989+): SPTR, SPTRMDCP, RU20INTR, NDDUEAFE, NDUEEGF, LBUSTRUU, LUTLTRUU, IBOXHY, LUACTRUU, DJUSRET, DBLCDBCE, GOLDLNPM — loaded from `cache/DATA PAUL.xlsx`
 - `benchmarks/` -- Timestamped experiment reports (MD) and benchmark results (CSV).
 - `cache/` -- Data caches (`data_cache.pkl`, per-ticker caches for multi-asset).
@@ -197,7 +197,7 @@ Claude Code has an auto-memory directory that persists across conversations. The
 
 `cache/DATA PAUL.xlsx` contains all 12 paper total-return series exported from Bloomberg (1989-01-02 to 2026-03-20). Parsed with `skiprows=6`; columns: `['Date', 'SPTR', 'SPTRMDCP', 'RU20INTR', 'NDDUEAFE', 'NDUEEGF', 'LBUSTRUU', 'IBOXHY', 'LUACTRUU', 'DJUSRET', 'DBLCDBCE', 'GOLDLNPM', 'LUTLTRUU']`. Loading is handled by `_load_bbg_raw()` / `_load_bbg_price_series()` in `benchmark_assets.py` — called automatically when ticker is in `BBG_PRICE_COLS`.
 
-**PCASX vs DBLCDBCE:** Both represent Commodity but are NOT interchangeable across lists. PCASX is the Yahoo Finance mutual fund proxy used in "Yahoo Mutual Funds". DBLCDBCE is the Bloomberg column name used in "Bloomberg Indices". Replacing one with the other in the wrong list will silently break data loading.
+**^SPGSCI vs DBLCDBCE:** Both represent Commodity but are NOT interchangeable across lists. ^SPGSCI is the Yahoo Finance index proxy used in "Yahoo Mutual Funds" (replaces delisted PCASX/PCRAX, daily-return corr 0.928 with DBLCDBCE, 1984+ history). DBLCDBCE is the Bloomberg column name used in "Bloomberg Indices". Replacing one with the other in the wrong list will silently break data loading.
 
 **PAPER_EWMA_HL for Bloomberg tickers:** hl=8 for SPTR/SPTRMDCP/RU20INTR/LBUSTRUU/LUTLTRUU/DJUSRET; hl=4 for DBLCDBCE/GOLDLNPM; hl=2 for LUACTRUU; hl=0 for NDUEEGF/NDDUEAFE/IBOXHY. DD excluded: LBUSTRUU, LUTLTRUU, GOLDLNPM.
 

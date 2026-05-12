@@ -92,7 +92,7 @@ PAPER_EWMA_HL = {
     'AGG': 8, 'VBMFX': 8,              # AggBond
     'SPTL': 8, 'VUSTX': 8, 'TLT': 8, 'VGLT': 8,  # Treasury
     # hl=4: Commodity, Gold
-    'DBC': 4, 'PCASX': 4, 'DBLCDBCE': 4,      # Commodity
+    'DBC': 4, '^SPGSCI': 4, 'DBLCDBCE': 4,    # Commodity
     'GLD': 4, 'GC=F': 4, 'IAU': 4, 'GOLDLNPM': 4,  # Gold
     # hl=2: Corporate
     'SPBO': 2, 'VWESX': 2, 'LUACTRUU': 2,     # Corporate

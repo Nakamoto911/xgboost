@@ -222,7 +222,7 @@ PAPER_EWMA_HL = {
     # smoothing differs from Bloomberg Russell 2000 TR index.
     'NAESX': 2,
     # hl=4: Commodity, Gold
-    'DBC': 4, 'PCASX': 4, 'DBLCDBCE': 4,
+    'DBC': 4, '^SPGSCI': 4, 'DBLCDBCE': 4,
     'GLD': 4, 'GC=F': 4, 'IAU': 4, 'GOLDLNPM': 4,
     # hl=2: Corporate
     'SPBO': 2, 'VWESX': 2, 'LUACTRUU': 2,
@@ -275,12 +275,12 @@ PAPER_TABLE4 = {
 
 # Mapping from ticker (all three asset lists) to paper asset name in PAPER_TABLE4
 TICKER_TO_PAPER_ASSET = {
-    # Yahoo Mutual Funds proxies
+    # Yahoo Mutual Funds proxies (^SPGSCI replaces delisted PCASX; closest corr with DBLCDBCE + long history)
     '^SP500TR': 'LargeCap', 'VIMSX': 'MidCap',  'NAESX': 'SmallCap',
     'FDIVX':    'EAFE',     'VEIEX': 'EM',       'VBMFX': 'AggBond',
     'VUSTX':    'Treasury', 'VWEHX': 'HighYield','VWESX': 'Corporate',
-    'FRESX':    'REIT',     'PCASX': 'Commodity','GC=F':  'Gold',
-    # Yahoo ETFs
+    'FRESX':    'REIT',     '^SPGSCI':'Commodity','GC=F':  'Gold',
+    # Yahoo ETFs (investable only; DBC has 11mo pre-2007 but partial-window logic handles it)
     'IVV':  'LargeCap', 'IJH':  'MidCap',  'IWM':  'SmallCap',
     'EFA':  'EAFE',     'EEM':  'EM',       'AGG':  'AggBond',
     'SPTL': 'Treasury', 'HYG':  'HighYield','SPBO': 'Corporate',

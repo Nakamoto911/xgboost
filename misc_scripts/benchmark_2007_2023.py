@@ -40,7 +40,7 @@ PAPER_SHARPE = {
     'VUSTX': 0.38,
     'VWEHX': 1.88,
     'VWESX': 0.76,
-    'PCASX': 0.23,
+    '^SPGSCI': 0.23,
     'GC=F': 0.31,
 }
 

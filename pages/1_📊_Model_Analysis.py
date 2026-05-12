@@ -71,7 +71,7 @@ KNOWN_ASSETS = {
     "VWEHX":    "VWEHX — Vanguard High-Yield Corp",
     "VWESX":    "VWESX — Vanguard Long-Term Corp",
     "FRESX":    "FRESX — Fidelity Real Estate",
-    "PCASX":    "PCASX — PIMCO Commodity Real Ret",
+    "^SPGSCI":  "^SPGSCI — S&P GSCI Commodity Index",
     "GC=F":     "GC=F — Gold Futures",
     "Custom…":  "Custom…",
 }

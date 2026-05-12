@@ -164,7 +164,7 @@ python misc_scripts/benchmark_assets.py list            # Show available asset l
 
 **Asset lists** are defined in `misc_scripts/asset_lists.md`. Each list has a name, tickers with asset class groupings, and a `data_start` date. Two lists are included:
 - **Default ETFs** (12 ETFs: IVV, IJH, IWM, EFA, EEM, AGG, SPTL, HYG, SPBO, IYR, DBC, GLD)
-- **Yahoo Mutual Funds** (12 mutual fund proxies, data back to 1975-1998: ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, PCASX, GC=F)
+- **Yahoo Mutual Funds** (12 mutual fund proxies, data back to 1975-1998: ^SP500TR, VIMSX, NAESX, FDIVX, VEIEX, VBMFX, VUSTX, VWEHX, VWESX, FRESX, ^SPGSCI, GC=F)
 - **Bloomberg Indices** (12 paper-aligned total-return series from DATA PAUL.xlsx, 1989+: SPTR, SPTRMDCP, RU20INTR, NDDUEAFE, NDUEEGF, LBUSTRUU, LUTLTRUU, IBOXHY, LUACTRUU, DJUSRET, DBLCDBCE, GOLDLNPM)
 
 To add a new list, add a `## List Name` section with `data_start:` and a ticker table to `misc_scripts/asset_lists.md`.

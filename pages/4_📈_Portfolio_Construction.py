@@ -40,14 +40,26 @@ with st.sidebar:
 
     universe = st.selectbox(
         "Asset universe",
-        options=["bloomberg", "yahoo"],
+        options=["bloomberg", "yahoo", "yahoo_mutual"],
         index=0,
-        format_func=lambda x: {"bloomberg": "Bloomberg (DATA PAUL.xlsx) — 12 assets",
-                               "yahoo": "Yahoo ETFs — 12 ETFs"}[x],
-        help="Bloomberg matches the paper. Yahoo ETFs use IVV/IJH/IWM/EFA/EEM/IYR/AGG/SPTL/HYG/SPBO/DBC/GLD.",
+        format_func=lambda x: {
+            "bloomberg":    "Bloomberg (DATA PAUL.xlsx) — 12 assets",
+            "yahoo":        "Yahoo ETFs — 12 investable ETFs",
+            "yahoo_mutual": "Yahoo Mutual Funds — 12 long-history proxies",
+        }[x],
+        help=(
+            "Bloomberg matches the paper exactly. "
+            "Yahoo ETFs are investable (IVV/IJH/IWM/EFA/EEM/IYR/AGG/SPTL/HYG/SPBO/DBC/GLD). "
+            "Yahoo Mutual Funds use long-history proxies optimised for paper replication "
+            "(^SP500TR/VIMSX/NAESX/FDIVX/VEIEX/FRESX/VBMFX/VUSTX/VWEHX/VWESX/^SPGSCI/GC=F)."
+        ),
     )
 
     if universe == "bloomberg":
+        oos_start_default = "2007-01-01"
+        oos_end_default   = "2023-12-31"
+    elif universe == "yahoo_mutual":
+        # Mutual funds have data back to ~1990 via ^VIX constraint; full paper window available.
         oos_start_default = "2007-01-01"
         oos_end_default   = "2023-12-31"
     else:
