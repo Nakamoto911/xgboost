@@ -408,19 +408,21 @@ st.dataframe(gap_summary, use_container_width=True)
 
 st.subheader("4. Figure 3 — Cumulative wealth")
 
+_FOCUSED = {'60/40', 'MV(JM-XGB)'}
+
 fig = go.Figure()
 for label in portfolio.STRATEGY_LABELS:
     if label not in results:
         continue
     r = results[label]['returns']
     wealth = (1 + r).cumprod()
-    line_style = dict(width=2.5)
-    if 'JM-XGB' in label:
-        line_style['width'] = 2.5
-    elif label in ('60/40',):
-        line_style['dash'] = 'dash'
+    is_focused = label in _FOCUSED
+    if is_focused:
+        line_style = dict(width=2.5)
+        if label == '60/40':
+            line_style['dash'] = 'dash'
     else:
-        line_style['dash'] = 'dot'
+        line_style = dict(width=0.8, color='rgba(180, 180, 180, 0.25)')
     fig.add_trace(go.Scatter(x=wealth.index, y=wealth.values, name=label, line=line_style))
 
 fig.update_layout(title=f"Cumulative wealth (1 = ${oos_start}), rebalanced {rebal_freq}",
@@ -441,9 +443,12 @@ st.caption("Stacked bar chart of MVO weights per period. "
 
 _comp_col1, _comp_col2 = st.columns([2, 1])
 with _comp_col1:
+    _strategy_options = [l for l in portfolio.STRATEGY_LABELS if l in results]
+    _default_idx = _strategy_options.index('MV(JM-XGB)') if 'MV(JM-XGB)' in _strategy_options else 0
     comp_strategy = st.selectbox(
         "Strategy",
-        options=[l for l in portfolio.STRATEGY_LABELS if l in results],
+        options=_strategy_options,
+        index=_default_idx,
         key="comp_strategy_sel",
     )
 with _comp_col2:
@@ -566,7 +571,14 @@ for label in portfolio.STRATEGY_LABELS:
     r = results[label]['returns']
     wealth = (1 + r).cumprod()
     dd = (wealth / wealth.cummax() - 1) * 100
-    fig_dd.add_trace(go.Scatter(x=dd.index, y=dd.values, name=label, line=dict(width=1.5)))
+    is_focused = label in _FOCUSED
+    if is_focused:
+        line_style = dict(width=1.8)
+        if label == '60/40':
+            line_style['dash'] = 'dash'
+    else:
+        line_style = dict(width=0.8, color='rgba(180, 180, 180, 0.25)')
+    fig_dd.add_trace(go.Scatter(x=dd.index, y=dd.values, name=label, line=line_style))
 
 fig_dd.update_layout(
     title="Drawdown from running peak",
@@ -598,9 +610,12 @@ ann_df.index = ann_df.index.year
 
 fig_ann = go.Figure()
 for label in ann_df.columns:
+    is_focused = label in _FOCUSED
+    bar_opacity = 1.0 if is_focused else 0.25
     fig_ann.add_trace(go.Bar(
         x=ann_df.index.astype(str), y=ann_df[label].round(2),
         name=label,
+        marker=dict(opacity=bar_opacity),
         hovertemplate="%{x}: %{y:.1f}%<extra>" + label + "</extra>",
     ))
 
