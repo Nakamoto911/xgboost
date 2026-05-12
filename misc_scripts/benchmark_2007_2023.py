@@ -82,13 +82,13 @@ def main():
 
     if n_workers > 1:
         with Pool(n_workers) as pool:
-            for i, result_list in enumerate(pool.imap_unordered(backtest_single_asset, args_list)):
+            for i, (result_list, _) in enumerate(pool.imap_unordered(backtest_single_asset, args_list)):
                 ticker = result_list[0]['Ticker'] if result_list else '?'
                 print(f"  Completed {ticker} ({i+1}/{len(args_list)})")
                 all_results.extend(result_list)
     else:
         for args in args_list:
-            result_list = backtest_single_asset(args)
+            result_list, _ = backtest_single_asset(args)
             ticker = result_list[0]['Ticker'] if result_list else '?'
             print(f"  Completed {ticker}")
             all_results.extend(result_list)

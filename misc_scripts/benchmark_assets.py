@@ -672,10 +672,11 @@ def calculate_metrics(returns_series, rf_series):
 # ── Single-Asset Full Backtest ────────────────────────────────────────────────
 
 def backtest_single_asset(args):
-    """Run full walk-forward backtest for one ETF. Returns list of result dicts."""
+    """Run full walk-forward backtest for one ETF. Returns (result_dicts, full_period_ts_or_None)."""
     ticker, df, config, data_start = args
     results = []
     cache = {}  # per-asset forecast cache
+    full_period_ts = None  # timeseries for the full OOS period (State_Prob, Forecast_State, Target_Return, RF_Rate)
 
     for period_name, oos_start, oos_end in TIME_PERIODS:
         oos_start_dt = pd.to_datetime(oos_start)
@@ -866,7 +867,10 @@ def backtest_single_asset(args):
             'EWMA_HL': best_ewma_hl,
         })
 
-    return results
+        if period_name == 'Full (2007-2025)':
+            full_period_ts = jm_xgb_df[['State_Prob', 'Forecast_State', 'Target_Return', 'RF_Rate']].copy()
+
+    return results, full_period_ts
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -930,26 +934,33 @@ def generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers
             lines.append(f"**JM-XGB beats B&H on Sharpe: {wins}/{total} assets ({wins/total*100:.0f}%)**")
             lines.append(f"")
 
-        lines.append(f"| Ticker | JM-XGB | B&H | Sharpe Delta | JM-XGB MDD | B&H MDD | Verdict |")
-        lines.append(f"|---|---:|---:|---:|---:|---:|---|")
+        lines.append(f"| Asset | Ticker | JM-XGB Ret | JM-XGB Vol | JM-XGB | B&H Ret | B&H Vol | B&H | Sharpe Delta | JM-XGB MDD | B&H MDD | Verdict |")
+        lines.append(f"|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
         for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
+            asset = TICKER_TO_PAPER_ASSET.get(ticker, ticker)
             if j.empty or b.empty:
-                lines.append(f"| {ticker} | N/A | N/A | N/A | N/A | N/A | N/A |")
+                lines.append(f"| {asset} | {ticker} | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |")
                 continue
             js, bs = j.iloc[0]['Sharpe'], b.iloc[0]['Sharpe']
+            jr, br = j.iloc[0]['Ann_Ret'], b.iloc[0]['Ann_Ret']
+            jv, bv = j.iloc[0]['Ann_Vol'], b.iloc[0]['Ann_Vol']
             delta = js - bs
             jmdd, bmdd = j.iloc[0]['Max_DD'], b.iloc[0]['Max_DD']
             verdict = 'WIN' if js > bs else 'LOSE'
-            lines.append(f"| {ticker} | {js:.2f} | {bs:.2f} | {delta:+.2f} | {jmdd*100:.1f}% | {bmdd*100:.1f}% | **{verdict}** |")
+            lines.append(f"| {asset} | {ticker} | {jr*100:.1f}% | {jv*100:.1f}% | {js:.2f} | {br*100:.1f}% | {bv*100:.1f}% | {bs:.2f} | {delta:+.2f} | {jmdd*100:.1f}% | {bmdd*100:.1f}% | **{verdict}** |")
 
         if not jm_full.empty and not bh_full.empty:
             avg_j = jm_full['Sharpe'].mean()
             avg_b = bh_full['Sharpe'].mean()
+            avg_jr = jm_full['Ann_Ret'].mean()
+            avg_br = bh_full['Ann_Ret'].mean()
+            avg_jv = jm_full['Ann_Vol'].mean()
+            avg_bv = bh_full['Ann_Vol'].mean()
             avg_jmdd = jm_full['Max_DD'].mean()
             avg_bmdd = bh_full['Max_DD'].mean()
-            lines.append(f"| **AVG** | **{avg_j:.2f}** | **{avg_b:.2f}** | **{avg_j-avg_b:+.2f}** | **{avg_jmdd*100:.1f}%** | **{avg_bmdd*100:.1f}%** | |")
+            lines.append(f"| | **AVG** | **{avg_jr*100:.1f}%** | **{avg_jv*100:.1f}%** | **{avg_j:.2f}** | **{avg_br*100:.1f}%** | **{avg_bv*100:.1f}%** | **{avg_b:.2f}** | **{avg_j-avg_b:+.2f}** | **{avg_jmdd*100:.1f}%** | **{avg_bmdd*100:.1f}%** | |")
         lines.append(f"")
 
         # Asset class summary
@@ -1180,19 +1191,24 @@ def main():
     args_list = [(ticker, df, config, data_start) for ticker, df in asset_data.items()]
 
     all_results = []
+    all_timeseries = {}  # ticker -> full-period DataFrame (State_Prob, Forecast_State, Target_Return, RF_Rate)
     n_workers = min(cpu_count(), len(args_list))
     if n_workers > 1:
         with Pool(n_workers) as pool:
-            for i, result_list in enumerate(pool.imap_unordered(backtest_single_asset, args_list)):
+            for i, (result_list, ts_df) in enumerate(pool.imap_unordered(backtest_single_asset, args_list)):
                 ticker = result_list[0]['Ticker'] if result_list else '?'
                 print(f"  Completed {ticker} ({i+1}/{len(args_list)})")
                 all_results.extend(result_list)
+                if ts_df is not None:
+                    all_timeseries[ticker] = ts_df
     else:
         for args in args_list:
-            result_list = backtest_single_asset(args)
+            result_list, ts_df = backtest_single_asset(args)
             ticker = result_list[0]['Ticker'] if result_list else '?'
             print(f"  Completed {ticker}")
             all_results.extend(result_list)
+            if ts_df is not None:
+                all_timeseries[ticker] = ts_df
 
     elapsed = time.time() - t0
     print(f"\nBacktest completed in {elapsed:.1f}s")
@@ -1202,6 +1218,13 @@ def main():
 
     csv_path = os.path.join(BENCHMARKS_DIR, f'benchmark_results_{timestamp}.csv')
     results_df.to_csv(csv_path, index=False)
+
+    # Save per-ticker full-period regime timeseries for Diagnostics Launcher charts
+    if all_timeseries:
+        import pickle as _pickle
+        regimes_path = os.path.join(BENCHMARKS_DIR, f'benchmark_regimes_{timestamp}.pkl')
+        with open(regimes_path, 'wb') as f:
+            _pickle.dump({'timeseries': all_timeseries, 'asset_names': TICKER_TO_PAPER_ASSET, 'list_name': selected_name}, f)
 
     # 4. Generate and save markdown report
     md_content = generate_markdown_report(results_df, elapsed, timestamp, asset_data, tickers, asset_classes, selected_name, config, data_start, preset_name)
@@ -1260,27 +1283,35 @@ def main():
         if total > 0:
             print(f"\n  JM-XGB beats B&H on Sharpe: {wins}/{total} assets ({wins/total*100:.0f}%)")
 
-        print(f"\n  {'Ticker':<8} │ {'JM-XGB':>8} │ {'B&H':>8} │ {'Sharpe Δ':>9} │ {'JM-XGB MDD':>10} │ {'B&H MDD':>9} │ {'Verdict':>8}")
-        print(f"  {'─'*8}─┼─{'─'*8}─┼─{'─'*8}─┼─{'─'*9}─┼─{'─'*10}─┼─{'─'*9}─┼─{'─'*8}")
+        print(f"\n  {'Asset':<10} {'Ticker':<10} │ {'JM Ret':>7} {'JM Vol':>7} {'JM-XGB':>8} │ {'BH Ret':>7} {'BH Vol':>7} {'B&H':>8} │ {'Sharpe Δ':>9} │ {'JM MDD':>7} {'BH MDD':>7} │ {'Verdict':>8}")
+        sep = f"  {'─'*10} {'─'*10}─┼─{'─'*7} {'─'*7} {'─'*8}─┼─{'─'*7} {'─'*7} {'─'*8}─┼─{'─'*9}─┼─{'─'*7} {'─'*7}─┼─{'─'*8}"
+        print(sep)
         for ticker in tickers:
             j = jm_full[jm_full['Ticker'] == ticker]
             b = bh_full[bh_full['Ticker'] == ticker]
+            asset = TICKER_TO_PAPER_ASSET.get(ticker, ticker)
             if j.empty or b.empty:
-                print(f"  {ticker:<8} │ {'N/A':>8} │ {'N/A':>8} │ {'N/A':>9} │ {'N/A':>10} │ {'N/A':>9} │ {'N/A':>8}")
+                print(f"  {asset:<10} {ticker:<10} │ {'N/A':>7} {'N/A':>7} {'N/A':>8} │ {'N/A':>7} {'N/A':>7} {'N/A':>8} │ {'N/A':>9} │ {'N/A':>7} {'N/A':>7} │ {'N/A':>8}")
                 continue
             js, bs = j.iloc[0]['Sharpe'], b.iloc[0]['Sharpe']
+            jr, br = j.iloc[0]['Ann_Ret'], b.iloc[0]['Ann_Ret']
+            jv, bv = j.iloc[0]['Ann_Vol'], b.iloc[0]['Ann_Vol']
             delta = js - bs
             jmdd, bmdd = j.iloc[0]['Max_DD'], b.iloc[0]['Max_DD']
             verdict = 'WIN' if js > bs else 'LOSE'
-            print(f"  {ticker:<8} │ {js:>8.2f} │ {bs:>8.2f} │ {delta:>+9.2f} │ {jmdd*100:>9.1f}% │ {bmdd*100:>8.1f}% │ {verdict:>8}")
+            print(f"  {asset:<10} {ticker:<10} │ {jr*100:>6.1f}% {jv*100:>6.1f}% {js:>8.2f} │ {br*100:>6.1f}% {bv*100:>6.1f}% {bs:>8.2f} │ {delta:>+9.2f} │ {jmdd*100:>6.1f}% {bmdd*100:>6.1f}% │ {verdict:>8}")
 
         if not jm_full.empty and not bh_full.empty:
-            print(f"  {'─'*8}─┼─{'─'*8}─┼─{'─'*8}─┼─{'─'*9}─┼─{'─'*10}─┼─{'─'*9}─┼─{'─'*8}")
+            print(sep)
             avg_j = jm_full['Sharpe'].mean()
             avg_b = bh_full['Sharpe'].mean()
+            avg_jr = jm_full['Ann_Ret'].mean()
+            avg_br = bh_full['Ann_Ret'].mean()
+            avg_jv = jm_full['Ann_Vol'].mean()
+            avg_bv = bh_full['Ann_Vol'].mean()
             avg_jmdd = jm_full['Max_DD'].mean()
             avg_bmdd = bh_full['Max_DD'].mean()
-            print(f"  {'AVG':<8} │ {avg_j:>8.2f} │ {avg_b:>8.2f} │ {avg_j-avg_b:>+9.2f} │ {avg_jmdd*100:>9.1f}% │ {avg_bmdd*100:>8.1f}% │ {'':>8}")
+            print(f"  {'':10} {'AVG':<10} │ {avg_jr*100:>6.1f}% {avg_jv*100:>6.1f}% {avg_j:>8.2f} │ {avg_br*100:>6.1f}% {avg_bv*100:>6.1f}% {avg_b:>8.2f} │ {avg_j-avg_b:>+9.2f} │ {avg_jmdd*100:>6.1f}% {avg_bmdd*100:>6.1f}% │ {'':>8}")
 
     print(f"\nOutputs saved to:")
     print(f"  CSV: {csv_path}")

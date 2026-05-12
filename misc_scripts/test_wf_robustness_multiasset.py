@@ -67,7 +67,7 @@ def run_one(args):
     _, df = fetch_etf_data(ticker, DATA_START)
     if df is None:
         return (ticker, strat_name, None, None)
-    result = backtest_single_asset((ticker, df, config, DATA_START))
+    result, _ = backtest_single_asset((ticker, df, config, DATA_START))
     jmxgb = [r for r in result if r['Strategy'] == 'JM-XGB' and r['Period'] == TEST_PERIOD[0]]
     bh = [r for r in result if r['Strategy'] == 'B&H' and r['Period'] == TEST_PERIOD[0]]
     sharpe = jmxgb[0]['Sharpe'] if jmxgb and not np.isnan(jmxgb[0]['Sharpe']) else None

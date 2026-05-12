@@ -3,9 +3,12 @@ import subprocess
 import glob
 import os
 import json
+import pickle
 import datetime
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import main as backend
 from config import StrategyConfig
 
@@ -474,3 +477,129 @@ if os.path.exists(benchmarks_dir):
         st.info("No markdown reports found in the 'benchmarks' folder.")
 else:
     st.info("The 'benchmarks' folder does not exist yet. Run a diagnostic script above to generate reports.")
+
+st.divider()
+
+# =============================================================================
+# Benchmark Regime Charts
+# =============================================================================
+st.subheader("📊 Benchmark Asset Regime Charts")
+
+if os.path.exists(benchmarks_dir):
+    # Derive regimes file from the already-selected report (same timestamp)
+    selected_regimes_file = None
+    if os.path.exists(benchmarks_dir) and md_files and 'selected_file' in dir():
+        basename = os.path.basename(selected_file)  # e.g. benchmark_report_20260512_143000.md
+        timestamp_part = basename.replace('benchmark_report_', '').replace('.md', '')
+        candidate = os.path.join(benchmarks_dir, f'benchmark_regimes_{timestamp_part}.pkl')
+        if os.path.exists(candidate):
+            selected_regimes_file = candidate
+
+    if selected_regimes_file:
+        with open(selected_regimes_file, 'rb') as f:
+            regimes_data = pickle.load(f)
+
+        timeseries = regimes_data.get('timeseries', {})
+        asset_names = regimes_data.get('asset_names', {})
+        list_name = regimes_data.get('list_name', '')
+
+        if timeseries:
+            tickers_with_data = [t for t in timeseries if not timeseries[t].empty]
+
+            # ── Regime Heatmap ───────────────────────────────────────────────
+            ctrl_res, ctrl_range, _ = st.columns([1, 2, 2])
+
+            resolution = ctrl_res.selectbox(
+                "Resolution",
+                ["Daily", "Weekly", "Monthly", "Quarterly"],
+                index=2,
+                key="regime_heatmap_res",
+            )
+            resample_rule = {"Daily": None, "Weekly": "W", "Monthly": "ME", "Quarterly": "QE"}[resolution]
+
+            range_label = ctrl_range.radio(
+                "Time range",
+                ["1M", "6M", "1Y", "5Y", "ALL"],
+                index=4,
+                horizontal=True,
+                key="regime_heatmap_range",
+            )
+            _range_offsets = {
+                "1M": pd.DateOffset(months=1),
+                "6M": pd.DateOffset(months=6),
+                "1Y": pd.DateOffset(years=1),
+                "5Y": pd.DateOffset(years=5),
+            }
+
+            # Determine global date range across all tickers
+            all_dates = pd.DatetimeIndex(sorted({
+                d for t in tickers_with_data for d in timeseries[t].index
+            }))
+            global_end = all_dates[-1]
+            global_start = (global_end - _range_offsets[range_label]) if range_label != "ALL" else all_dates[0]
+
+            # Date format string for x-axis labels
+            date_fmt = {
+                "Daily": "%Y-%m-%d",
+                "Weekly": "%Y-%m-%d",
+                "Monthly": "%Y-%m",
+                "Quarterly": "%Y-Q%q",
+            }[resolution]
+
+            # Build heatmap matrix: rows = assets, cols = periods
+            labels = [f"{asset_names.get(t, t)} ({t})" for t in tickers_with_data]
+            resampled_cols = None
+            z_matrix = []
+            hover_dates = []
+            for ticker in tickers_with_data:
+                ts = timeseries[ticker]
+                filtered = ts.loc[global_start:global_end, 'State_Prob']
+                if resample_rule is None:
+                    resampled = filtered
+                else:
+                    resampled = filtered.resample(resample_rule).mean()
+                if resampled_cols is None:
+                    resampled_cols = resampled.index
+                    hover_dates = [d.strftime('%Y-%m-%d') for d in resampled_cols]
+                vals = resampled.reindex(resampled_cols).values
+                z_matrix.append([None if np.isnan(v) else v for v in vals])
+
+            if resolution == "Quarterly":
+                x_labels = [f"{d.year}-Q{(d.month - 1) // 3 + 1}" for d in resampled_cols]
+            else:
+                x_labels = [d.strftime(date_fmt) for d in resampled_cols]
+
+            fig_heat = go.Figure(go.Heatmap(
+                z=z_matrix,
+                x=x_labels,
+                y=labels,
+                colorscale=[
+                    [0.0,  'rgb(34,139,34)'],
+                    [0.5,  'rgb(255,215,0)'],
+                    [1.0,  'rgb(200,30,30)'],
+                ],
+                zmin=0, zmax=1,
+                customdata=[[d] * len(tickers_with_data) for d in hover_dates],
+                hovertemplate="<b>%{y}</b><br>%{x}<br>P(Bear): %{z:.0%}<extra></extra>",
+                colorbar=dict(
+                    title="P(Bear)",
+                    tickformat=".0%",
+                    tickvals=[0, 0.25, 0.5, 0.75, 1],
+                    len=0.6,
+                ),
+                xgap=1, ygap=2,
+            ))
+            row_height_px = 36
+            fig_heat.update_layout(
+                height=max(300, row_height_px * len(tickers_with_data) + 80),
+                template="plotly_dark",
+                plot_bgcolor='rgb(55,55,55)',  # NaN cells are transparent; this dark gray shows through
+                margin=dict(l=10, r=10, t=10, b=60),
+                xaxis=dict(side="bottom", tickangle=-45, tickfont=dict(size=10)),
+                yaxis=dict(tickfont=dict(size=11), autorange="reversed"),
+            )
+            st.plotly_chart(fig_heat, use_container_width=True)
+        else:
+            st.info("No timeseries data found in the selected regimes file.")
+    else:
+        st.info("No regime chart data for the selected report. Re-run Benchmark Assets to generate charts.")
