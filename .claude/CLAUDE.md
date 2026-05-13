@@ -50,7 +50,7 @@ There is no formal test framework (pytest/unittest). All tests, diagnostics, ben
   - `pages/1_📊_Model_Analysis.py`: Full backtest portal with parameter tuning via `st.form`, performance metrics, SHAP analysis, feature charts, JM audit, XGBoost evaluation, and PDF/JSON export. Tabs: Performance & Tracking, Feature Impact Analysis, Feature Charts, JM Audit, XGBoost Eval.
   - `pages/2_🛠️_Diagnostics_Launcher.py`: Control center for background scripts and MD report viewer.
   - `pages/3_🔍_Data_Quality_Audit.py`: Go/no-go data quality checks. Reads from existing caches (no pipeline re-run). Cache Freshness banner at top (os.path.getmtime for all cache files). Three sections: Raw Data Health (Yahoo + FRED, stale streaks, outliers, coverage, FRED yields), Feature Health (missing data summary with NaN% bar chart, z-score extremes, Sortino clipping, Stock-Bond Corr), Proxy Reliability (mutual fund vs ETF comparison — correlation, tracking error, return drift for all Yahoo Mutual Funds proxy pairs). Ticker selector at top.
-  - `pages/4_📈_Portfolio_Construction.py`: Multi-asset MVO portfolio page reproducing paper Tables 6/7 and Figure 3. Universe selector (Bloomberg default / Yahoo ETFs), configurable rebalance frequency (daily default), MVO params (γ_risk, γ_trade, w_ub, covariance hl, μ lookbacks), in-sample μ toggle. Runs 7 paper strategies (MV/MinVar/EW × baseline/JM-XGB + ERC). Displays Table 6 (ours vs paper), Figure 3 (log-scale cumulative wealth), Table 7 (forecast correlation), diagnostics, and structural-gap explanation.
+  - `pages/4_📈_Portfolio_Construction.py`: Multi-asset MVO portfolio page reproducing paper Tables 6/7 and Figure 3. Universe selector (Bloomberg default / Yahoo ETFs / Yahoo Mutual / Hybrid), configurable rebalance frequency (daily default), MVO params (γ_risk, γ_trade, w_ub, covariance hl, μ lookbacks), in-sample μ toggle. Runs 7 paper strategies (MV/MinVar/EW × baseline/JM-XGB + ERC). Displays Table 6 (ours vs paper), Figure 3 (log-scale cumulative wealth), Table 7 (forecast correlation), diagnostics, and structural-gap explanation. **Sidebar "🏗️ Build full cache" button** pre-builds signals + insample_mu + MVO results for all 4 universes in parallel (`n_jobs` configurable); after that, universe and OOS-date changes are free trims (see "Portfolio Cache Build" section below).
   - Sidebar parameters use `StrategyConfig`. Uses `walk_forward_backtest()` for execution through `main.py` alias `backend`. Experiment preset selector (all 11 experiments + Custom) auto-fills all StrategyConfig params.
 - `run_experiments.py` (~300 lines) -- Experiment runner. Tests strategy variants via `StrategyConfig`, compares vs B&H, generates timestamped MD reports with sub-period analysis and lambda stability tracking.
 - `misc_scripts/benchmark_assets.py` (~880 lines) -- Multi-asset benchmark. Tests configurable asset lists across 5 market periods with parallel execution. Asset lists defined in `misc_scripts/asset_lists.md`.
@@ -171,9 +171,19 @@ All data caches **auto-refresh** when stale — no manual deletion needed.
 - `cache/fred_cache.pkl` -- FRED Treasury yields (DGS2, DGS10), ticker-independent, shared across all backtest runs. Auto-refreshes if >7 days behind `END_DATE`.
 - `cache/data_cache_{ticker}_{date}_v2.pkl` -- Per-ticker caches for multi-asset benchmark (`benchmark_assets.py`). Auto-refreshes if >30 days stale.
 - `cache/backtest_cache.pkl` -- Used by `app.py` for dashboard session persistence (also read by Data Quality Audit page).
-- `cache/portfolio_signals_{universe}_{oos_start}_{oos_end}.pkl` -- Per-universe portfolio signals cache (`portfolio.py`). Contains walk_forward_backtest results for all 12 assets. Refreshed via force-refresh button in page 4.
-- `cache/portfolio_insample_mu_{universe}_{oos_start}_{oos_end}.pkl` -- In-sample JM regime means cache (`portfolio.py`). Contains μ_bull/μ_bear per asset per biannual anchor. Refreshed via force-refresh button in page 4.
+- `cache/portfolio_signals_{universe}_{oos_start}_{oos_end}.pkl` -- Per-universe portfolio signals cache (`portfolio.py`). Contains walk_forward_backtest results for all 12 assets. Filename's `oos_start`/`oos_end` tokens reflect the **actual data span** in the file (not the request). Refreshed via force-refresh button in page 4.
+- `cache/portfolio_insample_mu_{universe}_{oos_start}_{oos_end}.pkl` -- In-sample JM regime means cache (`portfolio.py`). Contains μ_bull/μ_bear per asset per biannual anchor. `compute_insample_regime_means` saves only when at least one worker added new μ rows (see Session 23 bug fix below).
+- `cache/portfolio_results_{universe}_{oos_start}_{oos_end}_{params_hash}.pkl` -- MVO portfolio results cache (`run_all_portfolios_cached` in `portfolio.py`). `params_hash` is a 12-char md5 of all MVO params + `signal_mtime` + `insample_mu_mtime` + `use_insample_mu`. Any mtime drift invalidates the cache.
 - `_forecast_cache` -- In-memory dict keyed by `(date, lambda, include_xgboost, constrain_xgb)`, lives only during script execution.
+
+### Cache Picker (Session 23)
+
+The pickers in `portfolio.py` (`_pick_signal_cache_path`, `_pick_insample_mu_cache_path`) scan across **both `oos_start` and `oos_end` filename prefixes**:
+- **Covering** (cache_start ≤ request_start AND cache_end ≥ request_end): free trim, no recompute, no rewrite.
+- **Same-start extension** (cache_start == request_start, cache_end < request_end): walk-forward extends forward from the cache's last anchor.
+- **Earlier-start extension** (cache_start ≤ request_start, cache_end < request_end): same — extend forward, keep the wider cache start.
+
+When extending, the saved filename preserves the original start token and updates the end token to the **actual data max**, then removes the old file. This keeps filenames honest and prevents fragmentation. mtime updates only when new data is written.
 
 ### Staleness Rules
 - `main.py` (`fetch_and_prepare_data`, `_fetch_fred_data`): compares cached data end date vs `END_DATE`; re-fetches if gap >7 calendar days (tolerates weekends/holidays).
@@ -194,6 +204,32 @@ Claude Code has an auto-memory directory that persists across conversations. The
 4. **After findings:** Update `performance_gaps.md` if gap analysis changed. Update `MEMORY.md` current performance numbers.
 5. Keep `MEMORY.md` as a concise index (<200 lines); use topic files for details.
 6. Ask user before major restructuring of memory files.
+
+## Portfolio Cache Build (Session 23)
+
+The Portfolio Construction page (`portfolio_construction.py`) has a sidebar **🏗️ Build full cache (all 4 universes)** button. It calls `portfolio.build_full_cache_all_universes(tc_mode, n_jobs, mvo_params, use_insample_mu, ...)` which iterates over BBG / Yahoo / Yahoo Mutual / Hybrid and pre-builds three caches per universe:
+
+1. **signals** — `compute_asset_signals` walk-forward for all 12 assets at the paper-aligned window (2007/2010 → today; BBG end capped at `DATA PAUL.xlsx` last common date).
+2. **insample_mu** — `compute_insample_regime_means` (depends on signals' `lambda_dates`).
+3. **MVO results** — `run_all_portfolios_cached` with the **current sidebar MVO params** so the hash matches what the page would compute on first load.
+
+After running once, switching universe or trimming OOS dates in the UI is a free trim — no recompute, no spinner.
+
+### Parallelism
+
+`compute_asset_signals` and `compute_insample_regime_means` dispatch per-asset work via `joblib.Parallel(backend='loky', n_jobs=N, inner_max_num_threads=1, return_as='generator_unordered')`. Each asset runs in its own subprocess with isolated `_main` globals (TARGET_TICKER, dates, λ grid, TRANSACTION_COST). `_limit_inner_threads()` caps OpenMP / MKL / OpenBLAS / VECLIB / NUMEXPR thread counts to 1 in workers so XGBoost doesn't oversubscribe the CPU pool.
+
+`n_jobs` default = `min(cpu_count, 12)`. On a 10-core machine, a full 4-universe build runs in ~25-35 min (vs ~3-5 hours sequentially).
+
+The parent pre-warms `_load_bbg_raw()` before launching workers so they don't all race on the same Yahoo VIX/IRX fetch.
+
+### Critical Invariant: μ Cache mtime Must Be Stable
+
+The MVO `params_hash` includes `signal_mtime` and `insample_mu_mtime`. If either cache file is rewritten between the build and a page load, the hash drifts and the disk cache misses.
+
+**Failure mode (fixed in Session 23):** Several assets have permanently-missing early μ anchors because their feature history doesn't extend 11 years back from the OOS start (yahoo Corporate / HighYield / Treasury / Commodity — SPBO inception 2012-02 etc.). The old `compute_insample_regime_means` saved the file unconditionally after running workers; even when workers returned None for every asset (no new rows), the file's mtime advanced → MVO cache missed on the next call. Fix: track `did_work`; return without saving when no new rows added.
+
+**Spinner suppression:** `portfolio.mvo_results_cache_will_hit(...)` checks for an exact or covering MVO disk cache before the page wraps the call in `st.spinner("Solving MVO portfolios…")`. On a hit, the page uses `contextlib.nullcontext()` so the spinner doesn't flash.
 
 ## Bloomberg Data Source
 

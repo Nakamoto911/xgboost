@@ -112,6 +112,30 @@ Run `python misc_scripts/compare_data_sources.py` (or via Diagnostics Launcher) 
 - Streamlit Portfolio Construction page (`portfolio_construction.py`) → universe dropdown
 - Python: `portfolio.compute_asset_signals(universe='hybrid')`
 
+## Session 23 (2026-05-13): One-click Portfolio Cache + Parallelism
+
+**Feature: "🏗️ Build full cache" button on Portfolio Construction page**
+- Pre-builds **signals + insample_mu + MVO results** for all 4 universes at paper-aligned windows (2007/2010 → today; BBG capped at xlsx last common date).
+- After build: switching universe or trimming OOS dates in the UI is a **free trim** of the wider cache — no recompute.
+
+**Parallelism (joblib loky, ~8-10× speedup on 10-core machine):**
+- `compute_asset_signals` and `compute_insample_regime_means` now dispatch per-asset work via `Parallel(backend='loky', n_jobs=N, inner_max_num_threads=1)`.
+- Two new picklable worker fns: `_process_one_asset_signals`, `_process_one_asset_insample_mu`. Each sets its own `_main` globals (TARGET_TICKER, dates, λ grid, TC) so subprocesses don't race.
+- `_limit_inner_threads()` caps `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/`OPENBLAS_NUM_THREADS`=1 in workers (prevents XGBoost/BLAS oversubscription).
+- BBG raw load pre-warmed in parent so workers don't race on Yahoo/FRED fetch.
+
+**Cache picker upgrades (`portfolio.py`):**
+- `_pick_signal_cache_path` / `_pick_insample_mu_cache_path` now scan across both `oos_start` and `oos_end` prefixes. A wider cache covers narrower requests via trim; narrower-end caches still serve as extension bases.
+- Cache filename honesty: when extending, save under a filename reflecting actual data span (preserve original start token, update end to true max), delete the old file.
+
+**CRITICAL BUG FIX (`compute_insample_regime_means`):**
+- Old code re-saved μ cache file on every call even when workers added no new rows.
+- Several yahoo assets (Corporate, HighYield, Treasury, Commodity) have permanently-missing early anchors because their feature history doesn't extend 11 years before OOS start (SPBO inception 2012-02, etc.).
+- Result: every page load → workers re-skip those anchors → file rewritten → `insample_mu_mtime` drift → MVO `params_hash` invalidates → "Solving MVO portfolios" spinner on every universe switch.
+- Fix: track `did_work`; return without saving when no new μ rows were added.
+
+**Cosmetic: `mvo_results_cache_will_hit()`** — helper checks for exact/covering disk cache hit before showing the "Solving MVO portfolios" spinner; suppresses it when the cache will serve.
+
 ## User Preferences
 - Wants systematic experiment tracking across sessions
 - Focus on Paper Baseline first before exploring improvements
