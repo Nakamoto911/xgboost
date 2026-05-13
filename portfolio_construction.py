@@ -147,15 +147,35 @@ if force_refresh:
     portfolio.clear_signal_cache(universe)
     cache_exists = False
 
+# Detect whether a stale cache exists that can be extended incrementally
+# (i.e., user asked for a later oos_end than what we have on disk).
+_extensible_cache = (None if force_refresh else
+                     portfolio._load_extensible_signal_cache(universe, oos_start,
+                                                             oos_end, tc_mode))
+_extensible_end = None
+if _extensible_cache is not None:
+    _ends = [df.index.max() for df in _extensible_cache.values() if not df.empty]
+    _extensible_end = max(_ends) if _ends else None
+
 # Check cache and prompt for computation if needed
 _should_compute = not cache_exists
 if _should_compute:
-    st.warning(
-        f"No cached **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**. "
-        f"Click below to compute (this will run walk-forward on each of 12 assets — "
-        f"several minutes total). Net and gross caches are stored separately."
-    )
-    if not st.button("▶️ Compute signals now"):
+    if _extensible_end is not None and _extensible_end >= pd.Timestamp(oos_start):
+        st.info(
+            f"Existing **{mode_label}** signals end **{_extensible_end.date()}**. "
+            f"Extending to **{oos_end}** will only run walk-forward for the new "
+            f"chunks (≈ a few minutes per added 6-month window, vs ~10 minutes "
+            f"to recompute from scratch)."
+        )
+        _btn_label = f"▶️ Extend signals to {oos_end}"
+    else:
+        st.warning(
+            f"No cached **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**. "
+            f"Click below to compute (this will run walk-forward on each of 12 assets — "
+            f"several minutes total). Net and gross caches are stored separately."
+        )
+        _btn_label = "▶️ Compute signals now"
+    if not st.button(_btn_label):
         st.stop()
 
 
@@ -340,11 +360,14 @@ panel = portfolio.build_asset_panel(signals, oos_start, oos_end, insample_mu=ins
 
 
 @st.cache_resource(show_spinner=False)
-def _run_all_portfolios(_panel, rebal_freq, gamma_risk_minvar, gamma_risk_mv_b,
-                        gamma_risk_mv_j, gamma_trade, tc_oneway, w_ub,
-                        cov_hl_days, mu_baseline_hl_yr, mu_jmxgb_lb_yr,
-                        cache_buster):
-    """Cache_buster is the signal cache file's mtime — invalidates results when signals change."""
+def _run_all_portfolios(_panel, universe, oos_start, oos_end, tc_mode,
+                        use_insample_mu, rebal_freq, gamma_risk_minvar,
+                        gamma_risk_mv_b, gamma_risk_mv_j, gamma_trade,
+                        tc_oneway, w_ub, cov_hl_days, mu_baseline_hl_yr,
+                        mu_jmxgb_lb_yr, signal_mtime, insample_mu_mtime):
+    """Thin wrapper around `portfolio.run_all_portfolios_cached` — the disk
+    cache there is the source of truth, the streamlit cache just keeps it warm
+    for the current session."""
     progress_bar = st.progress(0.0)
     status_box   = st.empty()
 
@@ -352,8 +375,15 @@ def _run_all_portfolios(_panel, rebal_freq, gamma_risk_minvar, gamma_risk_mv_b,
         progress_bar.progress(min(1.0, (i + 1) / n))
         status_box.write(f"Portfolio {i+1}/{n}: **{label}**")
 
-    out = portfolio.run_all_portfolios(
+    out = portfolio.run_all_portfolios_cached(
         _panel,
+        universe=universe,
+        oos_start=oos_start,
+        oos_end=oos_end,
+        tc_mode=tc_mode,
+        use_insample_mu=use_insample_mu,
+        signal_mtime=signal_mtime,
+        insample_mu_mtime=insample_mu_mtime,
         rebal_freq=rebal_freq,
         gamma_risk_minvar=gamma_risk_minvar,
         gamma_risk_mv_baseline=gamma_risk_mv_b,
@@ -370,14 +400,18 @@ def _run_all_portfolios(_panel, rebal_freq, gamma_risk_minvar, gamma_risk_mv_b,
     return out
 
 
-cache_buster = (os.path.getmtime(cache_path) if os.path.exists(cache_path) else 0,
-                bool(insample_mu))
+signal_mtime = os.path.getmtime(cache_path) if os.path.exists(cache_path) else 0.0
+insample_mu_mtime = (os.path.getmtime(insample_mu_path)
+                     if insample_mu_path and os.path.exists(insample_mu_path) else 0.0)
+
 with st.spinner("Solving MVO portfolios…"):
-    results = _run_all_portfolios(panel, rebal_freq,
+    results = _run_all_portfolios(panel, universe, oos_start, oos_end, tc_mode,
+                                  bool(use_insample_mu),
+                                  rebal_freq,
                                   gamma_risk_minvar, gamma_risk_mv_b, gamma_risk_mv_j,
                                   gamma_trade, tc_oneway, w_ub,
                                   cov_hl_days, mu_baseline_hl_yr, mu_jmxgb_lb_yr,
-                                  cache_buster)
+                                  signal_mtime, insample_mu_mtime)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Table 6 — performance metrics

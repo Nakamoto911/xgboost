@@ -226,6 +226,94 @@ def _insample_mu_cache_path(universe: str, oos_start: str, oos_end: str,
     return os.path.join(CACHE_DIR, fname)
 
 
+def _asset_specs_for(universe: str):
+    if universe == 'bloomberg':
+        return BBG_ASSETS
+    if universe == 'yahoo':
+        return YAHOO_ASSETS
+    if universe == 'yahoo_mutual':
+        return MUTUAL_FUNDS_ASSETS
+    raise ValueError(f'Unknown universe: {universe!r}')
+
+
+def _start_date_for(universe: str) -> str:
+    # Wide enough to give the 11-year JM lookback room
+    if universe == 'bloomberg':
+        return '1991-01-01'
+    if universe == 'yahoo_mutual':
+        return '1990-01-01'  # ^VIX (1990-01-02) is the binding constraint
+    return '1996-01-01'
+
+
+def _features_for_asset(universe: str, spec, start_date: str, oos_end: str):
+    """Build the feature DataFrame for one asset spec from the appropriate source."""
+    if universe == 'bloomberg':
+        asset_name, bbg_col, hl_proxy, include_dd = spec
+        df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
+    else:
+        asset_name, ticker, hl_proxy, include_dd = spec
+        df_feat = _build_yahoo_features(ticker, start_date, oos_end, include_dd=include_dd)
+    return asset_name, hl_proxy, include_dd, df_feat
+
+
+def _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
+                                tc_mode, start_date):
+    """Run walk-forward for one asset between oos_start and oos_end.
+
+    Returns the result DataFrame (with .attrs) or None on failure.
+    Caller is responsible for setting/restoring _main.TRANSACTION_COST.
+    """
+    import main as _main
+    from config import StrategyConfig
+
+    try:
+        asset_name, hl_proxy, include_dd, df_feat = _features_for_asset(
+            universe, spec, start_date, oos_end)
+    except Exception as e:
+        spec_name = spec[0]
+        print(f'[portfolio] {spec_name}: feature build failed — {e}')
+        return None
+
+    _main.TARGET_TICKER = hl_proxy
+    _main._forecast_cache.clear()
+    _main.OOS_START_DATE = oos_start
+    _main.END_DATE = oos_end
+    _main.START_DATE_DATA = start_date
+    _main.LAMBDA_GRID = list(GRID_8PT)
+
+    cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}', ewma_mode='paper')
+    try:
+        r = _main.walk_forward_backtest(df_feat, cfg)
+    except Exception as e:
+        print(f'[portfolio] {asset_name}: walk_forward failed — {e}')
+        return None
+    if r is None or r.empty:
+        return None
+
+    r.attrs['hl_proxy'] = hl_proxy
+    r.attrs['include_dd'] = include_dd
+    r.attrs['tc_mode'] = tc_mode
+    if universe == 'bloomberg':
+        r.attrs['source_col'] = spec[1]
+    else:
+        r.attrs['source_ticker'] = spec[1]
+    return r
+
+
+def _signals_max_end(signals: Dict[str, pd.DataFrame]) -> Optional[pd.Timestamp]:
+    ends = [df.index.max() for df in signals.values() if not df.empty]
+    return max(ends) if ends else None
+
+
+def _next_anchor_after(df: pd.DataFrame) -> Optional[pd.Timestamp]:
+    """Find the next 6-month anchor after the last computed one (== start of the
+    next uncomputed chunk). Returns None if no anchors exist."""
+    lam_dates = pd.to_datetime(df.attrs.get('lambda_dates', []))
+    if len(lam_dates) == 0:
+        return None
+    return lam_dates[-1] + pd.DateOffset(months=6)
+
+
 def compute_asset_signals(universe: str = 'bloomberg',
                           oos_start: str = '2007-01-01',
                           oos_end: str = '2023-12-31',
@@ -237,110 +325,108 @@ def compute_asset_signals(universe: str = 'bloomberg',
         Target_Return, RF_Rate, Forecast_State, Raw_Prob (when JM-XGB),
         and lambda_history attribute under .attrs.
 
+    Caching strategy:
+      • Exact cache hit (same universe/start/end/tc_mode) → returned as-is.
+      • Cache exists but is older than `oos_end` → incremental extension:
+        for each asset, run walk-forward only from `last_anchor + 6mo` to
+        `oos_end` and merge into the existing series. EWMA smoothing is then
+        re-applied on the full merged Raw_Prob so the boundary is seamless.
+      • No cache (or `force_refresh=True`) → full computation.
+
     tc_mode='net'  → walk-forward tunes λ on net-of-TC Sharpe (5 bps default).
     tc_mode='gross' → tunes on gross Sharpe (TC=0) — apples-to-apples with paper
-                      Tables 4/6/7 (gross-of-TC).  Forecasts differ from 'net'
-                      because λ choices differ, so this caches separately.
-
-    Cached on disk under cache/portfolio_signals_<universe>_<oos>[_gross].pkl.
+                      Tables 4/6/7. Caches separately by filename suffix.
     """
     if tc_mode not in ('net', 'gross'):
         raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
     cache_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
+    target_end = pd.Timestamp(oos_end)
 
-    if not force_refresh and os.path.exists(cache_path):
-        try:
-            with open(cache_path, 'rb') as fh:
-                signals = pickle.load(fh)
-            if all(isinstance(v, pd.DataFrame) for v in signals.values()):
-                return signals
-        except Exception:
-            pass  # fall through to recompute
+    # Try existing cache (either exact or extensible). We allow extension across
+    # different oos_end files: glob for any matching universe/oos_start/tc_mode.
+    existing: Optional[Dict[str, pd.DataFrame]] = None
+    if not force_refresh:
+        existing = _load_extensible_signal_cache(universe, oos_start, oos_end, tc_mode)
+
+    if existing is not None:
+        max_end = _signals_max_end(existing)
+        if max_end is not None and max_end >= target_end - pd.Timedelta(days=1):
+            # Already covers the requested window — trim and return.
+            return {k: v[v.index <= target_end] for k, v in existing.items()}
 
     import main as _main
     from config import StrategyConfig
 
-    # Configure pipeline-level constants
-    _main.OOS_START_DATE = oos_start
-    _main.END_DATE = oos_end
-    _main.LAMBDA_GRID = list(GRID_8PT)
-    # Wide enough to give the 11-year JM lookback room
-    if universe == 'bloomberg':
-        _main.START_DATE_DATA = '1991-01-01'
-    elif universe == 'yahoo_mutual':
-        _main.START_DATE_DATA = '1990-01-01'  # ^VIX (1990-01-02) is the binding constraint
-    else:
-        _main.START_DATE_DATA = '1996-01-01'
+    start_date = _start_date_for(universe)
+    asset_specs = _asset_specs_for(universe)
 
-    # tc_mode='gross': zero out TC during walk-forward so λ-selection uses gross
-    # Sharpe (matches paper Table 4). Restored in the finally block.
+    # tc_mode='gross': zero out TC during walk-forward so λ-selection uses gross Sharpe.
     original_tc = _main.TRANSACTION_COST
     if tc_mode == 'gross':
         _main.TRANSACTION_COST = 0.0
 
-    if universe == 'bloomberg':
-        asset_specs = BBG_ASSETS
-    elif universe == 'yahoo':
-        asset_specs = YAHOO_ASSETS
-    elif universe == 'yahoo_mutual':
-        asset_specs = MUTUAL_FUNDS_ASSETS
-    else:
-        raise ValueError(f'Unknown universe: {universe!r}')
-
-    signals: Dict[str, pd.DataFrame] = {}
+    signals: Dict[str, pd.DataFrame] = dict(existing) if existing else {}
 
     try:
         for i, spec in enumerate(asset_specs):
-            if universe == 'bloomberg':
-                asset_name, bbg_col, hl_proxy, include_dd = spec
-                try:
-                    df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
-                except Exception as e:
-                    print(f'[portfolio] {asset_name}: feature build failed — {e}')
-                    continue
-            else:
-                asset_name, ticker, hl_proxy, include_dd = spec
-                try:
-                    df_feat = _build_yahoo_features(ticker, _main.START_DATE_DATA, oos_end,
-                                                    include_dd=include_dd)
-                except Exception as e:
-                    print(f'[portfolio] {asset_name}: feature build failed — {e}')
-                    continue
-
-            # Drive PAPER_EWMA_HL lookup via TARGET_TICKER
-            _main.TARGET_TICKER = hl_proxy
-            _main._forecast_cache.clear()
-
-            cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
-                                 ewma_mode='paper')
+            asset_name = spec[0]
             if progress_callback is not None:
                 progress_callback(i, len(asset_specs), asset_name)
 
-            try:
-                r = _main.walk_forward_backtest(df_feat, cfg)
-            except Exception as e:
-                print(f'[portfolio] {asset_name}: walk_forward failed — {e}')
-                continue
-
-            if r is None or r.empty:
-                print(f'[portfolio] {asset_name}: empty result')
-                continue
-
-            # Attach JM-only Forecast_State for later regime-conditional μ computation
-            # (We re-run JM at each biannual anchor using the selected λ trace.)
-            r.attrs['hl_proxy'] = hl_proxy
-            r.attrs['include_dd'] = include_dd
-            r.attrs['tc_mode'] = tc_mode
-            if universe == 'bloomberg':
-                r.attrs['source_col'] = bbg_col
+            df_existing = signals.get(asset_name)
+            # Decide: full run or incremental extension?
+            if df_existing is not None and not df_existing.empty:
+                next_anchor = _next_anchor_after(df_existing)
+                if next_anchor is None or next_anchor >= target_end:
+                    # Asset already covers target_end; nothing to do.
+                    continue
+                # Incremental: run only the new chunks
+                r_new = _run_walk_forward_for_asset(
+                    spec, universe, next_anchor.strftime('%Y-%m-%d'),
+                    oos_end, tc_mode, start_date)
+                if r_new is None or r_new.empty:
+                    continue
+                # Drop overlap defensively, then concat
+                r_new = r_new[r_new.index > df_existing.index.max()]
+                if r_new.empty:
+                    continue
+                merged = pd.concat([df_existing, r_new])
+                ewma_hl = df_existing.attrs.get(
+                    'ewma_halflife', r_new.attrs.get('ewma_halflife', 0))
+                # Re-apply post-processing on the full merged Raw_Prob (EWMA needs
+                # continuity across the boundary).
+                cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
+                                     ewma_mode='paper')
+                merged = _main._finalize_walk_forward(merged, cfg, ewma_hl)
+                merged.attrs['lambda_history'] = (
+                    list(df_existing.attrs.get('lambda_history', []))
+                    + list(r_new.attrs.get('lambda_history', [])))
+                merged.attrs['lambda_dates'] = (
+                    list(df_existing.attrs.get('lambda_dates', []))
+                    + list(r_new.attrs.get('lambda_dates', [])))
+                merged.attrs['ewma_halflife'] = ewma_hl
+                merged.attrs['hl_proxy'] = df_existing.attrs.get(
+                    'hl_proxy', r_new.attrs.get('hl_proxy'))
+                merged.attrs['include_dd'] = df_existing.attrs.get(
+                    'include_dd', r_new.attrs.get('include_dd', True))
+                merged.attrs['tc_mode'] = tc_mode
+                if universe == 'bloomberg':
+                    merged.attrs['source_col'] = df_existing.attrs.get(
+                        'source_col', spec[1])
+                else:
+                    merged.attrs['source_ticker'] = df_existing.attrs.get(
+                        'source_ticker', spec[1])
+                signals[asset_name] = merged
             else:
-                r.attrs['source_ticker'] = ticker
-
-            signals[asset_name] = r
+                # Fresh run
+                r = _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
+                                                tc_mode, start_date)
+                if r is None:
+                    continue
+                signals[asset_name] = r
     finally:
         _main.TRANSACTION_COST = original_tc
 
-    # Cache
     try:
         with open(cache_path, 'wb') as fh:
             pickle.dump(signals, fh)
@@ -350,6 +436,57 @@ def compute_asset_signals(universe: str = 'bloomberg',
     if progress_callback is not None:
         progress_callback(len(asset_specs), len(asset_specs), 'done')
     return signals
+
+
+def _load_extensible_signal_cache(universe: str, oos_start: str, oos_end: str,
+                                  tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """Find the best existing signals cache to extend from.
+
+    Looks for (a) an exact match on the cache_path, then (b) any cache file
+    with the same universe/oos_start/tc_mode and an end date ≤ oos_end (we
+    can extend forward but never shrink). Returns the dict or None.
+    """
+    import glob
+    # Exact match first
+    exact = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
+    candidates: List[Tuple[pd.Timestamp, str]] = []
+    if os.path.exists(exact):
+        candidates.append((pd.Timestamp(oos_end), exact))
+
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    pattern = f'portfolio_signals_{universe}_{oos_start[:7]}_*{suffix}.pkl'
+    target = pd.Timestamp(oos_end)
+    for path in glob.glob(os.path.join(CACHE_DIR, pattern)):
+        base = os.path.basename(path)
+        # Expected: portfolio_signals_<universe>_<oos_start_prefix>_<oos_end_prefix>[<suffix>].pkl
+        stem = base[:-4]  # drop .pkl
+        if suffix and stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+        # Extract oos_end prefix (last "_<YYYY-MM>")
+        parts = stem.rsplit('_', 1)
+        if len(parts) < 2:
+            continue
+        end_token = parts[1]
+        try:
+            end_ts = pd.Timestamp(end_token + '-01') + pd.offsets.MonthEnd(0)
+        except Exception:
+            continue
+        if end_ts <= target + pd.Timedelta(days=1):
+            candidates.append((end_ts, path))
+
+    if not candidates:
+        return None
+    # Pick the candidate with the latest end date (most up-to-date base for extension)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    chosen = candidates[0][1]
+    try:
+        with open(chosen, 'rb') as fh:
+            signals = pickle.load(fh)
+        if all(isinstance(v, pd.DataFrame) for v in signals.values()):
+            return signals
+    except Exception:
+        pass
+    return None
 
 
 def clear_signal_cache(universe: Optional[str] = None) -> List[str]:
@@ -383,6 +520,38 @@ def clear_signal_cache(universe: Optional[str] = None) -> List[str]:
 # In-sample regime means — paper's exact spec for MV(JM-XGB) μ
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _load_extensible_insample_mu_cache(universe: str, oos_start: str, oos_end: str,
+                                       tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """Find any prior in-sample μ cache for the same universe/oos_start/tc_mode
+    so we can extend it with newly-computed anchors."""
+    import glob
+    exact = _insample_mu_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
+    paths: List[str] = []
+    if os.path.exists(exact):
+        paths.append(exact)
+
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    pattern = f'portfolio_insample_mu_{universe}_{oos_start[:7]}_*{suffix}.pkl'
+    paths.extend(glob.glob(os.path.join(CACHE_DIR, pattern)))
+
+    # Pick the file with the most cached anchors (largest pickle is a decent proxy)
+    best: Optional[Dict[str, pd.DataFrame]] = None
+    best_count = -1
+    for p in paths:
+        try:
+            with open(p, 'rb') as fh:
+                cached = pickle.load(fh)
+            if not all(isinstance(v, pd.DataFrame) for v in cached.values()):
+                continue
+            count = sum(len(v) for v in cached.values())
+            if count > best_count:
+                best = cached
+                best_count = count
+        except Exception:
+            continue
+    return best
+
+
 def compute_insample_regime_means(universe: str,
                                   oos_start: str = '2007-01-01',
                                   oos_end: str = '2023-12-31',
@@ -397,28 +566,24 @@ def compute_insample_regime_means(universe: str,
         dict {asset_name: DataFrame(index=anchor_date,
                                    columns=['mu_bull', 'mu_bear'])}
 
-    The means represent the mean **daily total return** for bullish (state 0)
-    and bearish (state 1) days as labeled by the in-sample JM fit. This
-    matches paper Section 4.5's spec for MV(JM-XGB).
-
-    tc_mode is propagated to the signal lookup so λ traces match the
-    requested TC regime; cache is keyed by mode.
+    Caching is incremental: only anchors that are present in the signal cache
+    but not yet in the μ cache are re-computed. Cache is keyed by
+    (universe, oos_start, oos_end, tc_mode) so each window has its own file,
+    but a prior cache file (same universe, earlier oos_end) is reused as the
+    starting point for an extension.
     """
     if tc_mode not in ('net', 'gross'):
         raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
     cache_path = _insample_mu_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 
-    if not force_refresh and os.path.exists(cache_path):
-        try:
-            with open(cache_path, 'rb') as fh:
-                cached = pickle.load(fh)
-            if all(isinstance(v, pd.DataFrame) for v in cached.values()):
-                return cached
-        except Exception:
-            pass
+    existing: Dict[str, pd.DataFrame] = {}
+    if not force_refresh:
+        loaded = _load_extensible_insample_mu_cache(universe, oos_start, oos_end, tc_mode)
+        if loaded is not None:
+            existing = loaded
 
     import main as _main
-    from config import StrategyConfig
+    from config import StrategyConfig  # noqa: F401 (kept for symmetry / consistent imports)
 
     sig_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
     if not os.path.exists(sig_path):
@@ -427,33 +592,38 @@ def compute_insample_regime_means(universe: str,
     with open(sig_path, 'rb') as fh:
         signals = pickle.load(fh)
 
+    asset_specs = _asset_specs_for(universe)
+    start_date = _start_date_for(universe)
+    _main.START_DATE_DATA = start_date
     _main.OOS_START_DATE = oos_start
     _main.END_DATE = oos_end
     _main.LAMBDA_GRID = list(GRID_8PT)
-    if universe == 'bloomberg':
-        _main.START_DATE_DATA = '1991-01-01'
-    elif universe == 'yahoo_mutual':
-        _main.START_DATE_DATA = '1990-01-01'
-    else:
-        _main.START_DATE_DATA = '1996-01-01'
 
-    if universe == 'bloomberg':
-        asset_specs = BBG_ASSETS
-    elif universe == 'yahoo_mutual':
-        asset_specs = MUTUAL_FUNDS_ASSETS
-    else:
-        asset_specs = YAHOO_ASSETS
+    out: Dict[str, pd.DataFrame] = {k: v.copy() for k, v in existing.items()}
+    # Quick check — fast-path if every asset's anchors are already cached.
+    needs_work = False
+    for spec in asset_specs:
+        asset_name = spec[0]
+        if asset_name not in signals:
+            continue
+        sig_anchors = pd.to_datetime(signals[asset_name].attrs.get('lambda_dates', []))
+        cached_anchors = (pd.to_datetime(out[asset_name].index)
+                          if asset_name in out else pd.DatetimeIndex([]))
+        if sig_anchors.difference(cached_anchors).size > 0:
+            needs_work = True
+            break
 
-    out: Dict[str, pd.DataFrame] = {}
+    if not needs_work and out:
+        # Persist under the requested cache_path so subsequent loads hit fast.
+        try:
+            with open(cache_path, 'wb') as fh:
+                pickle.dump(out, fh)
+        except Exception as e:
+            print(f'[portfolio] failed to cache in-sample μ: {e}')
+        return out
+
     for i, spec in enumerate(asset_specs):
-        if universe == 'bloomberg':
-            asset_name, bbg_col, hl_proxy, include_dd = spec
-            df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
-        else:
-            asset_name, ticker, hl_proxy, include_dd = spec
-            df_feat = _build_yahoo_features(ticker, _main.START_DATE_DATA, oos_end,
-                                            include_dd=include_dd)
-
+        asset_name = spec[0]
         if asset_name not in signals:
             continue
         if progress_callback is not None:
@@ -464,32 +634,52 @@ def compute_insample_regime_means(universe: str,
         if len(lambda_history) == 0:
             continue
 
+        # Determine which anchors we still need to compute
+        cached_df = out.get(asset_name)
+        cached_anchors = (pd.to_datetime(cached_df.index)
+                          if cached_df is not None and not cached_df.empty
+                          else pd.DatetimeIndex([]))
+        todo: List[Tuple[pd.Timestamp, float]] = []
+        for a, l in zip(lambda_dates, lambda_history):
+            if a not in cached_anchors:
+                todo.append((a, float(l)))
+        if not todo:
+            continue
+
+        # Build features only when we have new anchors to fill in.
+        try:
+            _, _, _, df_feat = _features_for_asset(universe, spec, start_date, oos_end)
+        except Exception as e:
+            print(f'[portfolio] in-sample μ {asset_name}: feature build failed — {e}')
+            continue
         return_features = [c for c in df_feat.columns
                            if c.startswith(('DD_', 'Avg_Ret_', 'Sortino_'))]
 
-        rows = []
-        for anchor, lmbda in zip(lambda_dates, lambda_history):
+        new_rows = []
+        for anchor, lmbda in todo:
             train_start = anchor - pd.DateOffset(years=11)
             tr = df_feat[(df_feat.index >= train_start) & (df_feat.index < anchor)].copy()
             if len(tr) < 252 * 5:
                 continue
             X = tr[return_features]
             X = (X - X.mean()) / X.std()
-            jm = _main.StatisticalJumpModel(n_states=2, lambda_penalty=float(lmbda))
+            jm = _main.StatisticalJumpModel(n_states=2, lambda_penalty=lmbda)
             states = jm.fit_predict(X.values)
             # Align so state 0 = bullish (higher cumulative excess return)
             cum0 = tr['Excess_Return'][states == 0].sum()
             cum1 = tr['Excess_Return'][states == 1].sum()
             if cum1 > cum0:
                 states = 1 - states
-            # Paper Section 4.1: μ is forecast for *excess* returns.
             mu_bull = float(tr['Excess_Return'][states == 0].mean()) if (states == 0).any() else 0.0
             mu_bear = float(tr['Excess_Return'][states == 1].mean()) if (states == 1).any() else 0.0
-            rows.append({'anchor': anchor, 'mu_bull': mu_bull, 'mu_bear': mu_bear})
+            new_rows.append({'anchor': anchor, 'mu_bull': mu_bull, 'mu_bear': mu_bear})
 
-        if rows:
-            df_out = pd.DataFrame(rows).set_index('anchor')
-            out[asset_name] = df_out
+        if new_rows:
+            new_df = pd.DataFrame(new_rows).set_index('anchor')
+            if cached_df is None or cached_df.empty:
+                out[asset_name] = new_df.sort_index()
+            else:
+                out[asset_name] = pd.concat([cached_df, new_df]).sort_index()
 
     if progress_callback is not None:
         progress_callback(len(asset_specs), len(asset_specs), 'done')
@@ -948,6 +1138,7 @@ def run_portfolio_backtest(panel: AssetPanel, weight_fn, *,
                            rebal_freq: str = 'daily',
                            tc_oneway: float = 0.0005,
                            min_history_days: int = 252,
+                           resume_from: Optional[dict] = None,
                            **weight_kwargs) -> dict:
     """Simulate the portfolio. weight_fn(panel, date, w_pre, history, **kwargs)
     returns the target risky-asset weights. Cash = 1 - sum(w).
@@ -962,6 +1153,13 @@ def run_portfolio_backtest(panel: AssetPanel, weight_fn, *,
         'turnover_daily': daily turnover series
         'rebal_dates': set of dates where MVO was solved
         'mu_forecast': DataFrame of forecasted μ at each rebalance (for Table 7)
+        'final_state': dict {'w_curr', 'cash', 'last_date'} for incremental
+                       resumption on extension.
+
+    `resume_from`: optional dict carrying prior results with `final_state`. When
+    provided, the simulation skips dates ≤ final_state['last_date'] and
+    initializes (w_curr, cash) from the saved state. The result merges the
+    prior series with the newly-simulated tail.
     """
     returns = panel.returns.copy()
     rf_daily = panel.rf_daily.copy()
@@ -969,15 +1167,48 @@ def run_portfolio_backtest(panel: AssetPanel, weight_fn, *,
 
     rebal_dates = _rebalance_dates(returns.index, rebal_freq)
 
-    w_curr = np.zeros(n_assets)
-    cash = 1.0
-    port_rets = []
-    weight_log = []
-    turnover_log = []
+    # Initialize (optionally from a prior cached run)
+    if resume_from is not None and 'final_state' in resume_from:
+        state = resume_from['final_state']
+        last_date = pd.Timestamp(state['last_date'])
+        resume_assets = list(state.get('asset_order', []))
+        w_arr = np.asarray(state['w_curr'], dtype=float)
+        # Re-align to current asset order — assume identical (panel order is stable)
+        if resume_assets and resume_assets != panel.asset_order:
+            ser = pd.Series(w_arr, index=resume_assets)
+            w_curr = ser.reindex(panel.asset_order).fillna(0.0).values
+        else:
+            w_curr = w_arr
+        cash = float(state['cash'])
+        # Pre-load logs from the prior result; only sim dates strictly after last_date.
+        prior_returns = resume_from['returns']
+        prior_weights = resume_from['weights']
+        prior_turnover = resume_from['turnover_daily']
+        prior_mu = resume_from.get('mu_forecast', pd.DataFrame())
 
-    mu_forecast_log = {}
+        sim_mask = returns.index > last_date
+        # Index slicing helpers for the loop
+        start_idx = int(np.searchsorted(returns.index.values, last_date.to_datetime64(), side='right'))
+        port_rets: List[float] = []
+        weight_log: List[np.ndarray] = []
+        turnover_log: List[float] = []
+        mu_forecast_log: Dict[pd.Timestamp, pd.Series] = {}
+    else:
+        last_date = None
+        prior_returns = prior_weights = prior_turnover = None
+        prior_mu = None
+        sim_mask = np.ones(len(returns), dtype=bool)
+        start_idx = 0
+        w_curr = np.zeros(n_assets)
+        cash = 1.0
+        port_rets = []
+        weight_log = []
+        turnover_log = []
+        mu_forecast_log = {}
 
     for t, date in enumerate(returns.index):
+        if t < start_idx:
+            continue
         is_rebal = date in rebal_dates and t >= min_history_days
 
         if is_rebal:
@@ -1055,12 +1286,45 @@ def run_portfolio_backtest(panel: AssetPanel, weight_fn, *,
             w_curr = new_w
             cash = new_cash
 
+    sim_index = returns.index[start_idx:]
+    new_returns = pd.Series(port_rets, index=sim_index, name='Portfolio_Return')
+    new_weights = pd.DataFrame(weight_log, index=sim_index, columns=panel.asset_order)
+    new_turnover = pd.Series(turnover_log, index=sim_index)
+    new_mu = pd.DataFrame(mu_forecast_log).T if mu_forecast_log else pd.DataFrame()
+
+    if resume_from is not None:
+        # Trim prior series to ≤ last_date to be safe, then concat.
+        keep = prior_returns.index <= last_date
+        merged_returns = pd.concat([prior_returns[keep], new_returns])
+        merged_returns.name = 'Portfolio_Return'
+        merged_weights = pd.concat([prior_weights[keep], new_weights])
+        merged_turnover = pd.concat([prior_turnover[keep], new_turnover])
+        if not prior_mu.empty or not new_mu.empty:
+            merged_mu = pd.concat([prior_mu[prior_mu.index <= last_date] if not prior_mu.empty
+                                   else prior_mu, new_mu])
+        else:
+            merged_mu = pd.DataFrame()
+    else:
+        merged_returns = new_returns
+        merged_weights = new_weights
+        merged_turnover = new_turnover
+        merged_mu = new_mu
+
+    final_last_date = merged_returns.index.max() if len(merged_returns) else last_date
+    final_state = {
+        'w_curr': np.asarray(w_curr, dtype=float).copy(),
+        'cash': float(cash),
+        'last_date': final_last_date,
+        'asset_order': list(panel.asset_order),
+    }
+
     return {
-        'returns': pd.Series(port_rets, index=returns.index, name='Portfolio_Return'),
-        'weights': pd.DataFrame(weight_log, index=returns.index, columns=panel.asset_order),
-        'turnover_daily': pd.Series(turnover_log, index=returns.index),
+        'returns': merged_returns,
+        'weights': merged_weights,
+        'turnover_daily': merged_turnover,
         'rebal_dates': rebal_dates,
-        'mu_forecast': pd.DataFrame(mu_forecast_log).T if mu_forecast_log else pd.DataFrame(),
+        'mu_forecast': merged_mu,
+        'final_state': final_state,
     }
 
 
@@ -1165,8 +1429,14 @@ def run_all_portfolios(panel: AssetPanel, *,
                        cov_hl_days: int = 252,
                        mu_baseline_hl_years: float = 5.0,
                        mu_jmxgb_lookback_years: float = 11.0,
+                       resume_from_results: Optional[Dict[str, dict]] = None,
                        progress_callback=None) -> Dict[str, dict]:
-    """Run all 7 portfolios. Returns dict keyed by strategy label."""
+    """Run all 7 portfolios. Returns dict keyed by strategy label.
+
+    `resume_from_results`: optional dict from a prior call (same MVO params,
+    earlier oos_end). When provided, each strategy resumes from its saved
+    `final_state` so the inner loop only sims dates strictly after that point.
+    """
     results: Dict[str, dict] = {}
 
     common = {'tc': tc_oneway, 'w_ub': w_ub, 'cov_hl_days': cov_hl_days}
@@ -1187,11 +1457,158 @@ def run_all_portfolios(panel: AssetPanel, *,
     for i, (label, fn, kwargs) in enumerate(sched):
         if progress_callback is not None:
             progress_callback(i, len(sched), label)
+        resume = None
+        if resume_from_results is not None and label in resume_from_results:
+            prev = resume_from_results[label]
+            if 'final_state' in prev and prev['final_state'].get('last_date') is not None:
+                # Only resume if the cached series ends before the current panel
+                if prev['final_state']['last_date'] < panel.returns.index.max():
+                    resume = prev
         results[label] = run_portfolio_backtest(
-            panel, fn, rebal_freq=rebal_freq, tc_oneway=tc_oneway, **kwargs,
+            panel, fn, rebal_freq=rebal_freq, tc_oneway=tc_oneway,
+            resume_from=resume, **kwargs,
         )
     if progress_callback is not None:
         progress_callback(len(sched), len(sched), 'done')
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Disk-cached orchestrator (instant page load + incremental extension)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _portfolio_results_cache_path(universe: str, oos_start: str, oos_end: str,
+                                  tc_mode: str, params_hash: str) -> str:
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    fname = (f'portfolio_results_{universe}_{oos_start[:7]}_'
+             f'{oos_end[:7]}{suffix}_{params_hash}.pkl')
+    return os.path.join(CACHE_DIR, fname)
+
+
+def _portfolio_params_hash(rebal_freq: str, gamma_risk_minvar: float,
+                           gamma_risk_mv_baseline: float, gamma_risk_mv_jmxgb: float,
+                           gamma_trade: float, tc_oneway: float, w_ub: float,
+                           cov_hl_days: int, mu_baseline_hl_years: float,
+                           mu_jmxgb_lookback_years: float,
+                           use_insample_mu: bool,
+                           signal_mtime: float, insample_mu_mtime: float) -> str:
+    key = repr((
+        rebal_freq,
+        round(float(gamma_risk_minvar), 6),
+        round(float(gamma_risk_mv_baseline), 6),
+        round(float(gamma_risk_mv_jmxgb), 6),
+        round(float(gamma_trade), 6),
+        round(float(tc_oneway), 8),
+        round(float(w_ub), 6),
+        int(cov_hl_days),
+        round(float(mu_baseline_hl_years), 4),
+        round(float(mu_jmxgb_lookback_years), 4),
+        bool(use_insample_mu),
+        round(float(signal_mtime), 3),
+        round(float(insample_mu_mtime), 3),
+    ))
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def _find_extensible_portfolio_results(universe: str, oos_start: str, oos_end: str,
+                                       tc_mode: str, params_hash: str
+                                       ) -> Optional[Dict[str, dict]]:
+    """Locate a cached results file with the same params_hash whose
+    `last_date` is < target oos_end (= a candidate base for incremental
+    extension). Returns the cached results dict or None."""
+    import glob
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    pattern = (f'portfolio_results_{universe}_{oos_start[:7]}_*'
+               f'{suffix}_{params_hash}.pkl')
+    target_end = pd.Timestamp(oos_end)
+    candidates: List[Tuple[pd.Timestamp, str]] = []
+    for path in glob.glob(os.path.join(CACHE_DIR, pattern)):
+        try:
+            with open(path, 'rb') as fh:
+                cached = pickle.load(fh)
+        except Exception:
+            continue
+        if not isinstance(cached, dict) or not cached:
+            continue
+        # Pick the latest 'last_date' across strategies as the file's frontier.
+        ends = [s.get('final_state', {}).get('last_date')
+                for s in cached.values() if isinstance(s, dict)]
+        ends = [pd.Timestamp(e) for e in ends if e is not None]
+        if not ends:
+            continue
+        file_end = max(ends)
+        if file_end < target_end:
+            candidates.append((file_end, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    try:
+        with open(candidates[0][1], 'rb') as fh:
+            return pickle.load(fh)
+    except Exception:
+        return None
+
+
+def run_all_portfolios_cached(panel: AssetPanel, *,
+                              universe: str, oos_start: str, oos_end: str,
+                              tc_mode: str, use_insample_mu: bool,
+                              signal_mtime: float, insample_mu_mtime: float,
+                              progress_callback=None,
+                              **mvo_params) -> Dict[str, dict]:
+    """Disk-cached, optionally incremental wrapper around `run_all_portfolios`.
+
+    Loading paths (fastest first):
+      1. Exact hash hit at the target oos_end → return cached dict (instant).
+      2. Same hash, earlier oos_end → load and resume each strategy from its
+         saved `final_state`; only simulate dates strictly after that point.
+      3. Otherwise → full `run_all_portfolios` from scratch.
+
+    The result is persisted under the target oos_end's cache file.
+    """
+    params_hash = _portfolio_params_hash(
+        rebal_freq=mvo_params['rebal_freq'],
+        gamma_risk_minvar=mvo_params['gamma_risk_minvar'],
+        gamma_risk_mv_baseline=mvo_params['gamma_risk_mv_baseline'],
+        gamma_risk_mv_jmxgb=mvo_params['gamma_risk_mv_jmxgb'],
+        gamma_trade=mvo_params['gamma_trade'],
+        tc_oneway=mvo_params['tc_oneway'],
+        w_ub=mvo_params['w_ub'],
+        cov_hl_days=mvo_params['cov_hl_days'],
+        mu_baseline_hl_years=mvo_params['mu_baseline_hl_years'],
+        mu_jmxgb_lookback_years=mvo_params['mu_jmxgb_lookback_years'],
+        use_insample_mu=use_insample_mu,
+        signal_mtime=signal_mtime,
+        insample_mu_mtime=insample_mu_mtime,
+    )
+    cache_path = _portfolio_results_cache_path(universe, oos_start, oos_end,
+                                               tc_mode, params_hash)
+
+    # 1) Exact hit
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'rb') as fh:
+                cached = pickle.load(fh)
+            if isinstance(cached, dict) and cached:
+                return cached
+        except Exception:
+            pass
+
+    # 2) Extensible base (same hash, earlier end)
+    resume_from = _find_extensible_portfolio_results(
+        universe, oos_start, oos_end, tc_mode, params_hash)
+
+    # 3) Run (full or incremental)
+    results = run_all_portfolios(
+        panel, resume_from_results=resume_from,
+        progress_callback=progress_callback, **mvo_params)
+
+    # Persist
+    try:
+        with open(cache_path, 'wb') as fh:
+            pickle.dump(results, fh)
+    except Exception as e:
+        print(f'[portfolio] failed to cache results: {e}')
+
     return results
 
 

@@ -864,11 +864,27 @@ def walk_forward_backtest(df, config: StrategyConfig = None, fixed_lambda_sequen
 
     if not jm_xgb_results:
         return pd.DataFrame()
-        
-    jm_xgb_df = pd.concat(jm_xgb_results)
 
+    jm_xgb_df = pd.concat(jm_xgb_results)
+    jm_xgb_df = _finalize_walk_forward(jm_xgb_df, config, best_ewma_hl)
+
+    # Attach walk-forward metadata for diagnostics (non-breaking: callers can ignore .attrs)
+    jm_xgb_df.attrs['lambda_history'] = lambda_history
+    jm_xgb_df.attrs['lambda_dates'] = [d.strftime('%Y-%m-%d') for d in lambda_dates]
+    jm_xgb_df.attrs['ewma_halflife'] = best_ewma_hl
+
+    return jm_xgb_df
+
+
+def _finalize_walk_forward(jm_xgb_df, config: StrategyConfig, best_ewma_hl: int):
+    """Re-derive State_Prob/Forecast_State/Strat_Return/Trades on a (possibly
+    concatenated) walk-forward DataFrame.
+
+    Exposed so portfolio.py can re-apply post-processing after incrementally
+    extending an existing signals cache with new chunks — EWMA smoothing must
+    be recomputed on the full merged series, not chunk-by-chunk.
+    """
     if not config.include_xgboost:
-        # JM-only: Forecast_State is already 0/1 from predict_online, no EWMA/prob needed
         trading_signals = jm_xgb_df['Forecast_State'].shift(1).fillna(0)
         alloc_target = 1.0 - trading_signals
     elif best_ewma_hl == 0:
@@ -888,17 +904,11 @@ def walk_forward_backtest(df, config: StrategyConfig = None, fixed_lambda_sequen
             alloc_target = 1.0 - trading_signals
         elif config.allocation_style == "continuous":
             alloc_target = (1.0 - jm_xgb_df['State_Prob']).shift(1).fillna(1.0)
-        
+
     strat_returns = (alloc_target * jm_xgb_df['Target_Return']) + ((1.0 - alloc_target) * jm_xgb_df['RF_Rate'])
     trades = alloc_target.diff().abs().fillna(0)
     jm_xgb_df['Strat_Return'] = strat_returns - (trades * TRANSACTION_COST)
     jm_xgb_df['Trades'] = trades
-
-    # Attach walk-forward metadata for diagnostics (non-breaking: callers can ignore .attrs)
-    jm_xgb_df.attrs['lambda_history'] = lambda_history
-    jm_xgb_df.attrs['lambda_dates'] = [d.strftime('%Y-%m-%d') for d in lambda_dates]
-    jm_xgb_df.attrs['ewma_halflife'] = best_ewma_hl
-
     return jm_xgb_df
 
 # ==============================================================================
