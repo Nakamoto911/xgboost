@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # Ensure project root is on path so `import portfolio` works regardless of CWD
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -25,12 +25,8 @@ import portfolio
 import main as backend
 importlib.reload(portfolio)
 
-st.set_page_config(layout="wide", page_title="Portfolio Construction (Tables 6/7, Fig 3)")
 
-st.title("📈 Portfolio Construction — Tables 6 & 7, Figure 3")
-st.caption("Reproduces the Shu/Yu/Mulvey (2024) MVO/MV/EW portfolios over 12 assets. "
-           "Default: Bloomberg total return indices (matches paper). "
-           "Heavy per-asset signals are cached on disk; click **Force Refresh** to recompute.")
+st.title("📈 Portfolio Construction")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar controls
@@ -145,16 +141,15 @@ with st.sidebar:
 
 cache_path = portfolio._signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 cache_exists = os.path.exists(cache_path)
+mode_label = "Gross (TC=0, paper-faithful)" if tc_mode == "gross" else "Net (5 bps)"
 
 if force_refresh:
     portfolio.clear_signal_cache(universe)
     cache_exists = False
 
-st.subheader("1. Per-asset regime signals")
-mode_label = "Gross (TC=0, paper-faithful)" if tc_mode == "gross" else "Net (5 bps)"
-if cache_exists:
-    st.success(f"Loaded cached **{mode_label}** signals from `cache/{os.path.basename(cache_path)}`")
-else:
+# Check cache and prompt for computation if needed
+_should_compute = not cache_exists
+if _should_compute:
     st.warning(
         f"No cached **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**. "
         f"Click below to compute (this will run walk-forward on each of 12 assets — "
@@ -189,29 +184,129 @@ if not signals:
     st.error("Signal computation produced no output. Check the data files and logs.")
     st.stop()
 
-st.write(f"✓ Computed signals for **{len(signals)} / 12** assets.")
-with st.expander("Signal summary per asset", expanded=False):
-    summary_rows = []
-    for name, df in signals.items():
-        oos = df[(df.index >= oos_start) & (df.index <= oos_end)]
-        bear_pct = float((oos['Forecast_State'] == 1).mean()) if 'Forecast_State' in oos.columns else np.nan
-        shifts = int(oos['Forecast_State'].diff().abs().fillna(0).sum()) if 'Forecast_State' in oos.columns else 0
-        lh = oos.attrs.get('lambda_history', df.attrs.get('lambda_history', []))
-        summary_rows.append({
-            'Asset':      name,
-            'Days':       len(oos),
-            '% Bear':     f"{bear_pct*100:.1f}%",
-            'Shifts':     shifts,
-            'λ̄':          f"{np.mean(lh):.1f}" if len(lh) else "—",
-        })
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 — Asset Regime Heatmap (same chart as Diagnostics Launcher → Benchmark Assets)
+# ─────────────────────────────────────────────────────────────────────────────
+st.subheader("Asset Regime Chart")
+
+_RISK_ORDER = [
+    'Treasury', 'AggBond', 'Corporate', 'HighYield',
+    'LargeCap', 'MidCap', 'SmallCap',
+    'EAFE', 'EM',
+    'REIT', 'Commodity', 'Gold',
+]
+_risk_rank = {name: i for i, name in enumerate(_RISK_ORDER)}
+
+if universe == 'bloomberg':
+    _ticker_map = {name: bbg for name, bbg, _, _ in portfolio.BBG_ASSETS}
+elif universe == 'yahoo':
+    _ticker_map = {name: tkr for name, tkr, _, _ in portfolio.YAHOO_ASSETS}
+else:
+    _ticker_map = {name: tkr for name, tkr, _, _ in portfolio.MUTUAL_FUNDS_ASSETS}
+
+_assets_with_data = sorted(
+    [n for n, df in signals.items() if not df.empty and 'State_Prob' in df.columns],
+    key=lambda n: _risk_rank.get(n, len(_RISK_ORDER)),
+)
+
+if not _assets_with_data:
+    st.info("No State_Prob data in signals — regime chart unavailable.")
+else:
+    ctrl_res, ctrl_range, _ = st.columns([1, 2, 2])
+    resolution = ctrl_res.selectbox(
+        "Resolution",
+        ["Daily", "Weekly", "Monthly", "Quarterly"],
+        index=2,
+        key="portfolio_regime_res",
+    )
+    resample_rule = {"Daily": None, "Weekly": "W", "Monthly": "ME",
+                     "Quarterly": "QE"}[resolution]
+
+    range_label = ctrl_range.radio(
+        "Time range",
+        ["1M", "6M", "1Y", "5Y", "ALL"],
+        index=4,
+        horizontal=True,
+        key="portfolio_regime_range",
+    )
+    _range_offsets = {
+        "1M": pd.DateOffset(months=1),
+        "6M": pd.DateOffset(months=6),
+        "1Y": pd.DateOffset(years=1),
+        "5Y": pd.DateOffset(years=5),
+    }
+
+    _oos_start_ts = pd.Timestamp(oos_start)
+    _oos_end_ts   = pd.Timestamp(oos_end)
+    all_dates = pd.DatetimeIndex(sorted({
+        d for n in _assets_with_data
+        for d in signals[n].loc[_oos_start_ts:_oos_end_ts].index
+    }))
+    global_end = all_dates[-1]
+    global_start = (global_end - _range_offsets[range_label]) if range_label != "ALL" else all_dates[0]
+
+    date_fmt = {
+        "Daily":     "%Y-%m-%d",
+        "Weekly":    "%Y-%m-%d",
+        "Monthly":   "%Y-%m",
+        "Quarterly": "%Y-Q%q",
+    }[resolution]
+
+    labels = [f"{n} ({_ticker_map.get(n, n)})" for n in _assets_with_data]
+    resampled_cols = None
+    z_matrix = []
+    hover_dates = []
+    for name in _assets_with_data:
+        ts = signals[name]
+        filtered = ts.loc[global_start:global_end, 'State_Prob']
+        resampled = filtered if resample_rule is None else filtered.resample(resample_rule).mean()
+        if resampled_cols is None:
+            resampled_cols = resampled.index
+            hover_dates = [d.strftime('%Y-%m-%d') for d in resampled_cols]
+        vals = resampled.reindex(resampled_cols).values
+        z_matrix.append([None if np.isnan(v) else v for v in vals])
+
+    if resolution == "Quarterly":
+        x_labels = [f"{d.year}-Q{(d.month - 1) // 3 + 1}" for d in resampled_cols]
+    else:
+        x_labels = [d.strftime(date_fmt) for d in resampled_cols]
+
+    fig_heat = go.Figure(go.Heatmap(
+        z=z_matrix,
+        x=x_labels,
+        y=labels,
+        colorscale=[
+            [0.0, 'rgb(34,139,34)'],
+            [0.5, 'rgb(255,215,0)'],
+            [1.0, 'rgb(200,30,30)'],
+        ],
+        zmin=0, zmax=1,
+        customdata=[[d] * len(_assets_with_data) for d in hover_dates],
+        hovertemplate="<b>%{y}</b><br>%{x}<br>P(Bear): %{z:.0%}<extra></extra>",
+        colorbar=dict(
+            title="P(Bear)",
+            tickformat=".0%",
+            tickvals=[0, 0.25, 0.5, 0.75, 1],
+            len=0.6,
+        ),
+        xgap=1, ygap=2,
+    ))
+    row_height_px = 36
+    fig_heat.update_layout(
+        height=max(300, row_height_px * len(_assets_with_data) + 80),
+        template="plotly_dark",
+        plot_bgcolor='rgb(55,55,55)',
+        margin=dict(l=10, r=10, t=10, b=60),
+        xaxis=dict(side="bottom", tickangle=-45, tickfont=dict(size=10)),
+        yaxis=dict(tickfont=dict(size=11), autorange="reversed"),
+    )
+    st.plotly_chart(fig_heat, use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2 — assemble panel + run all 7 portfolios
+# Step 2 — assemble panel + run all 7 portfolios (silent computation)
 # ─────────────────────────────────────────────────────────────────────────────
-
-st.subheader("2. Portfolio backtests")
 
 @st.cache_resource(show_spinner=False)
 def _load_insample_mu(universe, oos_start, oos_end, tc_mode, force_refresh_flag):
@@ -234,24 +329,14 @@ def _load_insample_mu(universe, oos_start, oos_end, tc_mode, force_refresh_flag)
 
 
 insample_mu = None
+insample_mu_path = None
 if use_insample_mu:
     insample_mu_path = portfolio._insample_mu_cache_path(universe, oos_start, oos_end,
                                                         tc_mode=tc_mode)
-    if not os.path.exists(insample_mu_path) and not force_refresh:
-        st.info(
-            f"In-sample regime-mean cache not found for **{mode_label}** — computing now "
-            "(refits JM at each biannual anchor × 12 assets, ~2 min). "
-            "This is the paper's exact MV(JM-XGB) μ spec."
-        )
     with st.spinner("Loading in-sample regime means…"):
         insample_mu = _load_insample_mu(universe, oos_start, oos_end, tc_mode, force_refresh)
-    if insample_mu:
-        st.caption(f"✓ In-sample μ loaded for {len(insample_mu)} assets "
-                   f"(`cache/{os.path.basename(insample_mu_path)}`).")
 
 panel = portfolio.build_asset_panel(signals, oos_start, oos_end, insample_mu=insample_mu)
-st.write(f"Panel: **{len(panel.returns)} trading days × {len(panel.asset_order)} assets** "
-         f"({panel.returns.index.min().date()} → {panel.returns.index.max().date()})")
 
 
 @st.cache_resource(show_spinner=False)
@@ -298,55 +383,7 @@ with st.spinner("Solving MVO portfolios…"):
 # Table 6 — performance metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("3. Table 6 — Portfolio performance vs paper")
-
-with st.expander("ℹ️ Why ~3% absolute-return gap remains — and what we fixed", expanded=False):
-    st.markdown("""
-### Paper-faithful spec is now implemented
-
-The MVO follows paper Section 4.1 exactly:
-- **μ is the forecast of excess returns** (not total — Section 4.1 last paragraph)
-- **MV(JM-XGB) μ from in-sample JM regime means**: refit JM at each biannual
-  anchor on the 11-year window with the selected λ; mean excess return per
-  in-sample state. For LargeCap: bull μ = +29.2%/yr, bear μ = −46.1%/yr (capped
-  at −10 bps/day per Section 4.5).
-- **MinVar(JM-XGB) μ**: 10 bps for bullish, 0 for bearish (Section 4.2)
-- **MV baseline μ**: EWM (hl=5y) of excess returns (Section 4.3)
-- **L1 trade penalty** in the convex objective, solved with scipy-SLSQP (and
-  cvxpy/CLARABEL as a cross-check). Mathematically equivalent to paper's Gurobi.
-- **No active-mask restriction** — bearish-forecast assets have μ ≤ 0 and the
-  optimizer naturally drives their weights to 0.
-- **≤3-bullish → 100% cash** fallback rule (Section 4.5)
-
-### What's left and why
-
-The remaining gap (~3% absolute return for MV(JM-XGB), ~0.3 Sharpe) is
-**structural regime-forecast instability**, not a portfolio-layer issue:
-
-| Asset    | Our %bear | Paper Fig 2 | Our shifts | Paper |
-|----------|-----------|-------------|------------|-------|
-| LargeCap | 27.5%     | 20.9%       | 64         | 46    |
-| REIT     | **42.2%** | **18.4%**   | 75         | 46    |
-| AggBond  | 42.9%     | 41.5%       | 74         | 97    |
-
-Our REIT alone flags 24 percentage points more bear days than the paper.
-EM/EAFE/Gold/Treasury show similar over-bearishness. This drives the
-**≤3-bullish cash trigger to fire on 18.9% of days** (paper presumably ~14%),
-which mechanically caps average leverage at ~0.7 vs paper's 0.86.
-
-Per-asset 0/1 Sharpe **matches paper closely** (avg gap −0.023 across 12
-assets, per `MEMORY.md`) — the JM-XGB pipeline is correctly catching bad days.
-It's just more aggressive at calling bear regimes for several assets, so the
-*joint* distribution differs from paper's. This is the same gap documented for
-Table 4 / Figure 2 in `MEMORY.md` — a per-asset λ-grid + EWMA-halflife
-calibration issue that lives below the portfolio layer.
-
-### Possible deeper fixes (out of paper-faithful scope)
-- Tighter λ grid bounds for hl=0 assets (REIT, EM, EAFE) to reduce switching
-- Longer EWMA halflife on probability smoothing (deviates from PAPER_EWMA_HL)
-- Soften the cash trigger from ≤3 to ≤2 (deviates from paper rule)
-""")
-
+st.subheader("Portfolio performance vs paper")
 
 rows = {}
 for label in portfolio.STRATEGY_LABELS:
@@ -406,7 +443,7 @@ st.dataframe(gap_summary, use_container_width=True)
 # Figure 3 — cumulative wealth
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("4. Figure 3 — Cumulative wealth")
+st.subheader("Cumulative wealth")
 
 _FOCUSED = {'60/40', 'MV(JM-XGB)'}
 
@@ -436,7 +473,7 @@ st.plotly_chart(fig, use_container_width=True)
 # Portfolio composition — stacked weights over time
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("5. Portfolio composition over time")
+st.subheader("Portfolio composition over time")
 st.caption("Stacked bar chart of MVO weights per period. "
            "Assets grouped by type; same-type assets share a colour family. "
            "'Cash' = uninvested fraction (1 − Σweights, clipped at 0).")
@@ -589,7 +626,7 @@ st.plotly_chart(fig_comp, use_container_width=True)
 # Drawdown (underwater equity curve)
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("6. Drawdown (underwater equity)")
+st.subheader("Drawdown (underwater equity)")
 st.caption("Fraction below running peak at each point in time — reveals risk episodes "
            "and recovery speed across strategies.")
 
@@ -622,7 +659,7 @@ st.plotly_chart(fig_dd, use_container_width=True)
 # Annual returns bar chart
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("7. Annual returns by strategy")
+st.subheader("Annual returns by strategy")
 st.caption("Grouped bar chart — excess returns per calendar year. Clearly shows which "
            "strategies outperform in crisis years (GFC, COVID) vs bull markets.")
 
@@ -662,7 +699,7 @@ st.plotly_chart(fig_ann, use_container_width=True)
 # Table 7 — Forecast correlation
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.subheader("8. Table 7 — Return forecast correlation with realized")
+st.subheader("Return forecast correlation with realized")
 
 ewma_mu  = results['MV']['mu_forecast']         if 'MV' in results else pd.DataFrame()
 jmxgb_mu = results['MV(JM-XGB)']['mu_forecast'] if 'MV(JM-XGB)' in results else pd.DataFrame()
@@ -728,6 +765,49 @@ with st.expander("9. Regime call panel — bear-state percentage per asset", exp
     }, index=['% bear days']).T
     st.bar_chart(bear_pct)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Portfolio Backtests — setup summary
+# ─────────────────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Portfolio backtests")
+
+if use_insample_mu and insample_mu:
+    st.caption(f"✓ In-sample μ loaded for {len(insample_mu)} assets "
+               f"(`cache/{os.path.basename(insample_mu_path)}`).")
+else:
+    st.caption("In-sample μ not used (falling back to OOS-forecast conditioning).")
+
+st.write(f"Panel: **{len(panel.returns)} trading days × {len(panel.asset_order)} assets** "
+         f"({panel.returns.index.min().date()} → {panel.returns.index.max().date()})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Appendix — Per-asset signal summary
+# ─────────────────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Per-asset regime signals")
+
+if cache_exists:
+    st.success(f"✓ Loaded cached **{mode_label}** signals from `cache/{os.path.basename(cache_path)}`")
+else:
+    st.info(f"✓ Computed **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**")
+
+with st.expander("Signal summary per asset", expanded=False):
+    summary_rows = []
+    for name, df in signals.items():
+        oos = df[(df.index >= oos_start) & (df.index <= oos_end)]
+        bear_pct = float((oos['Forecast_State'] == 1).mean()) if 'Forecast_State' in oos.columns else np.nan
+        shifts = int(oos['Forecast_State'].diff().abs().fillna(0).sum()) if 'Forecast_State' in oos.columns else 0
+        lh = oos.attrs.get('lambda_history', df.attrs.get('lambda_history', []))
+        summary_rows.append({
+            'Asset':      name,
+            'Days':       len(oos),
+            '% Bear':     f"{bear_pct*100:.1f}%",
+            'Shifts':     shifts,
+            'λ̄':          f"{np.mean(lh):.1f}" if len(lh) else "—",
+        })
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
 st.caption(
     f"Cache file: `cache/{os.path.basename(cache_path)}` — "

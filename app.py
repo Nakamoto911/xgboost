@@ -1,23 +1,11 @@
 import streamlit as st
-import os
 
-st.set_page_config(
-    page_title="JM-XGBoost Backtester",
-    page_icon="🚀",
-    layout="wide",
-)
+st.set_page_config(layout="wide", page_title="Portfolio Construction")
 
-st.title("Generative AI & Quant Backtesting Control Center")
-
-st.markdown("""
-Welcome to the JM-XGBoost strategy platform. This tool allows for robust testing, diagnostics, and LLM-assisted analysis of your trading pipeline.
-
-### Use the Sidebar to Navigate:
-
-1. **🚀 Performance Tracker**: A highly optimized, fast, and parameter-heavy dashboard. Use this for rapid iteration and testing of strategy variations without the overhead of heavy ML diagnostics.
-2. **📊 Model Analysis**: A comprehensive dashboard featuring full model analysis including Feature Importances, SHAP values, regime classification details, and tree visualizations.
-3. **🛠️ Diagnostics Launcher**: Control center to run background scripts like `run_experiments.py` or generate reports for LLM consumption.
-4. **🔍 Data Quality Audit**: Go/no-go checks on raw data health, feature engineering artifacts, and regime labeling stability before trusting backtest results.
-""")
-
-st.info("Select a module from the sidebar to begin.")
+pg = st.navigation([
+    st.Page("portfolio_construction.py", title="Portfolio Construction", icon="📈", default=True),
+    st.Page("pages/1_📊_Model_Analysis.py",          title="Model Analysis",        icon="📊"),
+    st.Page("pages/2_🛠️_Diagnostics_Launcher.py",   title="Diagnostics Launcher",  icon="🛠️"),
+    st.Page("pages/3_🔍_Data_Quality_Audit.py",      title="Data Quality Audit",    icon="🔍"),
+])
+pg.run()
