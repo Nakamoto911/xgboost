@@ -71,7 +71,7 @@ OOS_START_DATE = _env('XGB_OOS_START_DATE', '2007-01-01')
 OOS_END_DATE = _env('XGB_END_DATE', _yesterday)
 DATA_START_OVERRIDE = _env('XGB_START_DATE_DATA')  # None if missing → falls back to asset_lists.md
 VALIDATION_WINDOW_YRS = int(_env('XGB_VALIDATION_WINDOW_YRS', '5'))
-DATA_SOURCE = (_env('XGB_DATA_SOURCE', 'yahoo') or 'yahoo').lower()  # 'yahoo' | 'bloomberg'
+DATA_SOURCE = (_env('XGB_DATA_SOURCE', 'yahoo') or 'yahoo').lower()  # 'yahoo' | 'bloomberg' | 'hybrid'
 
 BENCHMARKS_DIR = os.path.join(PROJECT_ROOT, 'benchmarks')
 os.makedirs(BENCHMARKS_DIR, exist_ok=True)
@@ -588,14 +588,22 @@ def main():
             print(f"  {tk:<10} OK ({len(asset_data[tk])} rows, "
                   f"{asset_data[tk].index[0].date()} → {asset_data[tk].index[-1].date()})")
     else:
-        list_label = ASSET_LIST_NAME
-        source_label = f"Yahoo Finance ({ASSET_LIST_NAME})"
+        # 'yahoo' (default → Yahoo ETFs list) or 'hybrid' (→ BBG+Yahoo ETF Hybrid list).
+        # Both branches go through ba.fetch_etf_data, which routes composite "<BBG>+<ETF>"
+        # tickers to the return-space splice loader.
+        if DATA_SOURCE == 'hybrid':
+            current_list_name = 'BBG+Yahoo ETF Hybrid'
+            source_label = f"BBG+Yahoo ETF Hybrid (splice in return-space)"
+        else:
+            current_list_name = ASSET_LIST_NAME
+            source_label = f"Yahoo Finance ({ASSET_LIST_NAME})"
+        list_label = current_list_name
         all_lists = ba.load_asset_lists()
-        if ASSET_LIST_NAME not in all_lists:
-            print(f"Error: '{ASSET_LIST_NAME}' not found in asset_lists.md")
+        if current_list_name not in all_lists:
+            print(f"Error: '{current_list_name}' not found in asset_lists.md")
             print("Available lists:", ', '.join(f"'{n}'" for n in all_lists))
             sys.exit(1)
-        selected = all_lists[ASSET_LIST_NAME]
+        selected = all_lists[current_list_name]
         tickers = selected['tickers']
         data_start = DATA_START_OVERRIDE or selected['data_start'] or '1993-01-01'
         paper_hl_map = ba.PAPER_EWMA_HL

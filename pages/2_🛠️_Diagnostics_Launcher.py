@@ -399,6 +399,7 @@ with col1:
         _options = ["Yahoo ETFs"]
         if _bbg_available:
             _options.append("Bloomberg Indices")
+            _options.append("BBG+Yahoo ETF Hybrid")
         _selected_source = st.selectbox(
             "Data Source:",
             _options,
@@ -406,15 +407,20 @@ with col1:
             help=(
                 "Yahoo ETFs: 12 investable ETFs (some lack pre-2007 history → N/A). "
                 "Bloomberg Indices: 12 paper-aligned total-return series from `cache/DATA PAUL.xlsx` "
-                "with full 1989+ history."
+                "with full 1989+ history. "
+                "BBG+Yahoo ETF Hybrid: BBG pre-ETF inception spliced with Yahoo ETF post-inception "
+                "(return-space splice). Paper-accurate lookback + investable OOS."
             ),
         )
-        st.session_state.ablation_source_value = (
-            'bloomberg' if _selected_source.startswith('Bloomberg') else 'yahoo'
-        )
+        if _selected_source.startswith('Bloomberg'):
+            st.session_state.ablation_source_value = 'bloomberg'
+        elif _selected_source.startswith('BBG+'):
+            st.session_state.ablation_source_value = 'hybrid'
+        else:
+            st.session_state.ablation_source_value = 'yahoo'
         if not _bbg_available:
-            st.caption(f"💡 Place `DATA PAUL.xlsx` under `cache/` to enable Bloomberg mode.")
-        elif _selected_source.startswith('Bloomberg'):
+            st.caption(f"💡 Place `DATA PAUL.xlsx` under `cache/` to enable Bloomberg / Hybrid mode.")
+        elif _selected_source.startswith('Bloomberg') or _selected_source.startswith('BBG+'):
             st.caption("📅 Bloomberg covers 1987+. Paper OOS window: 2007-01-01 → 2023-12-31.")
             _is_auto = st.session_state.get('ewma_mode', 'auto') == 'auto'
             _full_oos = (

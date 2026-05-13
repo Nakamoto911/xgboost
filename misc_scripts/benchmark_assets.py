@@ -87,6 +87,66 @@ def _load_bbg_price_series(ticker: str) -> pd.Series:
     return s
 
 
+# ── BBG + Yahoo ETF Hybrid loader ─────────────────────────────────────────────
+# Tickers are composite "<BBG>+<YETF>". BBG drives history up to ETF inception
+# (exclusive); ETF drives from inception onward. Splice is performed in
+# return-space and a synthetic continuous price series is rebuilt — so the
+# JM/XGB pipeline sees one seamless series and no scale discontinuity.
+
+def _parse_hybrid_ticker(ticker: str):
+    """Return (bbg_ticker, etf_ticker) if `ticker` is a hybrid spec, else None."""
+    if '+' not in ticker:
+        return None
+    bbg, etf = ticker.split('+', 1)
+    if bbg not in BBG_PRICE_COLS:
+        return None
+    return bbg, etf
+
+
+def _load_hybrid_price_series(bbg_ticker: str, etf_ticker: str,
+                              data_start: str, fetch_end: str) -> pd.Series:
+    """Splice BBG (pre-ETF) and Yahoo ETF (post-inception) into one price series.
+
+    Splice is in return-space: BBG daily returns up to (ETF first date - 1),
+    then ETF daily returns afterwards. The returned price series is the
+    cumulative product re-based to BBG's starting level, so feature
+    engineering downstream sees a continuous synthetic price.
+    """
+    bbg_series = _load_bbg_price_series(bbg_ticker)
+    bbg_series = bbg_series[bbg_series.index >= pd.Timestamp(data_start)]
+
+    etf_df = yf.download(etf_ticker, start=data_start, end=fetch_end,
+                         auto_adjust=False, progress=False)
+    if etf_df.empty:
+        raise ValueError(f"Hybrid loader: Yahoo returned no data for {etf_ticker}")
+    if isinstance(etf_df.columns, pd.MultiIndex):
+        if 'Adj Close' in etf_df.columns.get_level_values(0):
+            etf_series = etf_df['Adj Close'].iloc[:, 0]
+        else:
+            etf_series = etf_df.iloc[:, 0]
+    else:
+        etf_series = etf_df.get('Adj Close', etf_df.get('Close', etf_df.iloc[:, 0]))
+    etf_series = etf_series.dropna().sort_index()
+
+    # Splice: BBG returns up to AND INCLUDING the ETF's inception date (BBG has a
+    # complete return on that day; ETF's pct_change on its first day is NaN).
+    # ETF returns from the day AFTER inception onward.
+    splice_date = etf_series.index.min()
+    bbg_rets = bbg_series.pct_change()
+    etf_rets = etf_series.pct_change()
+
+    bbg_pre = bbg_rets[bbg_rets.index <= splice_date]
+    etf_post = etf_rets[etf_rets.index > splice_date]
+    combined_rets = pd.concat([bbg_pre, etf_post]).sort_index()
+    combined_rets = combined_rets[~combined_rets.index.duplicated(keep='last')]
+
+    base_level = float(bbg_series.iloc[0])
+    growth = (1.0 + combined_rets.fillna(0.0)).cumprod()
+    price = base_level * growth
+    price.name = f"{bbg_ticker}+{etf_ticker}"
+    return price
+
+
 # ── Asset List Loading ────────────────────────────────────────────────────────
 
 ASSET_LISTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asset_lists.md')
@@ -166,6 +226,7 @@ def parse_asset_list_selection(args, all_lists):
         print("  (no argument)       Use 'Yahoo ETFs' list")
         print("  \"Yahoo Mutual Funds\"  Use mutual fund long-history proxies (Yahoo Finance)")
         print("  \"Bloomberg Indices\"   Use paper-aligned total-return indices (DATA PAUL.xlsx)")
+        print("  \"BBG+Yahoo ETF Hybrid\" BBG history pre-ETF inception + Yahoo ETF post-inception (return-space splice)")
         print("  list                Show all available asset lists")
         return None
 
@@ -233,6 +294,12 @@ PAPER_EWMA_HL = {
     # Bloomberg Indices (hl=8: equity, AggBond, Treasury, REIT)
     'SPTR': 8, 'SPTRMDCP': 8, 'RU20INTR': 8,
     'LBUSTRUU': 8, 'LUTLTRUU': 8, 'DJUSRET': 8,
+    # BBG+Yahoo ETF Hybrid — same hl as ETF leg (paper-prescribed for each asset class)
+    'SPTR+IVV': 8, 'SPTRMDCP+IJH': 8, 'RU20INTR+IWM': 8,
+    'DJUSRET+IYR': 8, 'LBUSTRUU+AGG': 8, 'LUTLTRUU+SPTL': 8,
+    'DBLCDBCE+DBC': 4, 'GOLDLNPM+GLD': 4,
+    'LUACTRUU+SPBO': 2,
+    'NDUEEGF+EEM': 0, 'NDDUEAFE+EFA': 0, 'IBOXHY+HYG': 0,
 }
 VALIDATION_WINDOW_YRS = 5
 
@@ -241,7 +308,8 @@ VALIDATION_WINDOW_YRS = 5
 DD_EXCLUDE_TICKERS = {'AGG', 'VBMFX',                    # AggBond
                       'SPTL', 'VUSTX', 'IEF', 'TLT', 'VGLT',  # Treasury
                       'GLD', 'GC=F', 'IAU',               # Gold (Yahoo)
-                      'LBUSTRUU', 'LUTLTRUU', 'GOLDLNPM'} # Bloomberg AggBond/Treasury/Gold
+                      'LBUSTRUU', 'LUTLTRUU', 'GOLDLNPM', # Bloomberg AggBond/Treasury/Gold
+                      'LBUSTRUU+AGG', 'LUTLTRUU+SPTL', 'GOLDLNPM+GLD'}  # Hybrid AggBond/Treasury/Gold
 
 # ── Paper Table 4 reference (2007-2023, Bloomberg, gross of TC) ───────────────
 # Source: arXiv 2406.09578v2, Table 4. Values are GROSS of transaction costs.
@@ -290,6 +358,11 @@ TICKER_TO_PAPER_ASSET = {
     'NDDUEAFE': 'EAFE',     'NDUEEGF':  'EM',         'LBUSTRUU': 'AggBond',
     'LUTLTRUU': 'Treasury', 'IBOXHY':   'HighYield',  'LUACTRUU': 'Corporate',
     'DJUSRET':  'REIT',     'DBLCDBCE': 'Commodity',  'GOLDLNPM': 'Gold',
+    # BBG+Yahoo ETF Hybrid
+    'SPTR+IVV':      'LargeCap', 'SPTRMDCP+IJH':  'MidCap',    'RU20INTR+IWM':  'SmallCap',
+    'NDDUEAFE+EFA':  'EAFE',     'NDUEEGF+EEM':   'EM',         'LBUSTRUU+AGG':  'AggBond',
+    'LUTLTRUU+SPTL': 'Treasury', 'IBOXHY+HYG':    'HighYield',  'LUACTRUU+SPBO': 'Corporate',
+    'DJUSRET+IYR':   'REIT',     'DBLCDBCE+DBC':  'Commodity',  'GOLDLNPM+GLD':  'Gold',
 }
 
 # ── Statistical Jump Model (same as main.py) ─────────────────────────────────
@@ -399,7 +472,8 @@ def fetch_etf_data(ticker, data_start=None):
         data_start = DATA_START
     exclude_dd = ticker in DD_EXCLUDE_TICKERS
     cache_suffix = '_noDD' if exclude_dd else ''
-    cache_file = os.path.join(CACHE_DIR, f'data_cache_{ticker}_{data_start.replace("-", "")}{cache_suffix}_v2.pkl')
+    cache_ticker = ticker.replace('+', '_PLUS_')  # hybrid tickers contain '+', not legal in filenames on some FS
+    cache_file = os.path.join(CACHE_DIR, f'data_cache_{cache_ticker}_{data_start.replace("-", "")}{cache_suffix}_v2.pkl')
     if os.path.exists(cache_file):
         cached_df = pd.read_pickle(cache_file)
         # Check staleness: re-fetch if cache is >30 days behind today
@@ -415,7 +489,25 @@ def fetch_etf_data(ticker, data_start=None):
 
         # Bloomberg Indices list: load price from DATA PAUL.xlsx,
         # then fetch auxiliary series (VIX, IRX, LargeCap, AggBond) from Yahoo.
-        if ticker in BBG_PRICE_COLS:
+        hybrid_spec = _parse_hybrid_ticker(ticker)
+        if hybrid_spec is not None:
+            bbg_t, etf_t = hybrid_spec
+            spliced = _load_hybrid_price_series(bbg_t, etf_t, data_start, fetch_end)
+            aux_tickers = dict.fromkeys([BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
+            raw = {ticker: spliced}
+            for t in aux_tickers:
+                df_t = yf.download(t, start=data_start, end=fetch_end, auto_adjust=False, progress=False)
+                if df_t.empty:
+                    continue
+                if isinstance(df_t.columns, pd.MultiIndex):
+                    if 'Adj Close' in df_t.columns.get_level_values(0):
+                        s = df_t['Adj Close'].iloc[:, 0].rename(t)
+                    else:
+                        s = df_t.iloc[:, 0].rename(t)
+                else:
+                    s = df_t.get('Adj Close', df_t.get('Close', df_t.iloc[:, 0])).rename(t)
+                raw[t] = s
+        elif ticker in BBG_PRICE_COLS:
             bbg_series = _load_bbg_price_series(ticker)
             aux_tickers = dict.fromkeys([BOND_TICKER, RISK_FREE_TICKER, VIX_TICKER, LARGECAP_TICKER])
             raw = {ticker: bbg_series}

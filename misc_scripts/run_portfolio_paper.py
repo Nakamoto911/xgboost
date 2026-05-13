@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Run the portfolio reproduction on Bloomberg data, 2007-2023, and compare
+"""Run the portfolio reproduction over the chosen universe, 2007-2023, and compare
 to paper Tables 6 & 7. This is the canonical paper-comparison script.
 
-After running, the on-disk cache cache/portfolio_signals_bloomberg_2007-01_2023-12.pkl
+Usage:
+    python misc_scripts/run_portfolio_paper.py                # bloomberg (default)
+    python misc_scripts/run_portfolio_paper.py bloomberg
+    python misc_scripts/run_portfolio_paper.py yahoo
+    python misc_scripts/run_portfolio_paper.py yahoo_mutual
+    python misc_scripts/run_portfolio_paper.py hybrid         # BBG lookback + Yahoo ETF OOS
+
+After running, the on-disk cache cache/portfolio_signals_<universe>_2007-01_2023-12.pkl
 will be populated, making the Streamlit page instant on the first visit.
 """
 import sys, os
@@ -18,8 +25,14 @@ import main as backend
 OOS_START = '2007-01-01'
 OOS_END   = '2023-12-31'
 
+UNIVERSE = sys.argv[1].lower() if len(sys.argv) > 1 else 'bloomberg'
+VALID_UNIVERSES = {'bloomberg', 'yahoo', 'yahoo_mutual', 'hybrid'}
+if UNIVERSE not in VALID_UNIVERSES:
+    print(f"Unknown universe {UNIVERSE!r}. Valid: {sorted(VALID_UNIVERSES)}")
+    sys.exit(2)
+
 print("=" * 78)
-print("Portfolio reproduction: Bloomberg, 2007-2023")
+print(f"Portfolio reproduction: {UNIVERSE}, 2007-2023")
 print("=" * 78)
 
 def cb(i, n, name):
@@ -27,7 +40,7 @@ def cb(i, n, name):
 
 t0 = time.time()
 signals = portfolio.compute_asset_signals(
-    universe='bloomberg',
+    universe=UNIVERSE,
     oos_start=OOS_START, oos_end=OOS_END,
     force_refresh=False,
     progress_callback=cb,
@@ -38,7 +51,7 @@ print(f"\n✓ Computed signals for {len(signals)}/12 assets in {elapsed/60:.1f} 
 print("\nLoading in-sample regime means (paper-faithful MV(JM-XGB) μ)…")
 t0 = time.time()
 insample_mu = portfolio.compute_insample_regime_means(
-    universe='bloomberg', oos_start=OOS_START, oos_end=OOS_END,
+    universe=UNIVERSE, oos_start=OOS_START, oos_end=OOS_END,
     progress_callback=cb)
 print(f"✓ In-sample μ ready in {(time.time()-t0)/60:.1f} min")
 

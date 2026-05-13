@@ -45,6 +45,18 @@ def _universe_date_range(universe: str):
         first_dates = {c: raw[c].dropna().index.min() for c in portfolio.BBG_COLUMNS}
         last_dates  = {c: raw[c].dropna().index.max() for c in portfolio.BBG_COLUMNS}
         return max(first_dates.values()), min(last_dates.values())
+    elif universe == "hybrid":
+        # Hybrid uses BBG history pre-ETF inception and Yahoo ETF afterwards.
+        # All-assets-available range is bounded by BBG (start) and today (end).
+        xlsx = os.path.join(portfolio.CACHE_DIR, "DATA PAUL.xlsx")
+        if not os.path.exists(xlsx):
+            return None, None
+        raw = pd.read_excel(xlsx, header=None, skiprows=6)
+        raw.columns = ["Date"] + portfolio.BBG_COLUMNS
+        raw["Date"] = pd.to_datetime(raw["Date"])
+        raw = raw.set_index("Date")
+        first_dates = {c: raw[c].dropna().index.min() for c in portfolio.BBG_COLUMNS}
+        return max(first_dates.values()), pd.Timestamp.today().normalize()
     else:
         today = pd.Timestamp.today().normalize()
         if universe == "yahoo":
@@ -65,18 +77,22 @@ with st.sidebar:
 
     universe = st.selectbox(
         "Asset universe",
-        options=["bloomberg", "yahoo", "yahoo_mutual"],
+        options=["bloomberg", "yahoo", "yahoo_mutual", "hybrid"],
         index=0,
         format_func=lambda x: {
             "bloomberg":    "Bloomberg (DATA PAUL.xlsx) — 12 assets",
             "yahoo":        "Yahoo ETFs — 12 investable ETFs",
             "yahoo_mutual": "Yahoo Mutual Funds — 12 long-history proxies",
+            "hybrid":       "BBG+Yahoo ETF Hybrid — paper-accurate lookback + investable OOS",
         }[x],
         help=(
             "Bloomberg matches the paper exactly. "
             "Yahoo ETFs are investable (IVV/IJH/IWM/EFA/EEM/IYR/AGG/SPTL/HYG/SPBO/DBC/GLD). "
             "Yahoo Mutual Funds use long-history proxies optimised for paper replication "
-            "(^SP500TR/VIMSX/NAESX/FDIVX/VEIEX/FRESX/VBMFX/VUSTX/VWEHX/VWESX/^SPGSCI/GC=F)."
+            "(^SP500TR/VIMSX/NAESX/FDIVX/VEIEX/FRESX/VBMFX/VUSTX/VWEHX/VWESX/^SPGSCI/GC=F). "
+            "Hybrid splices BBG history (pre-ETF inception) with Yahoo ETF returns "
+            "(post-inception) in return-space: paper-accurate JM lookback + investable OOS. "
+            "Fixes the Commodity proxy mismatch; inherits HYG/SPBO/AGG ETF tracking error."
         ),
     )
 
@@ -85,6 +101,10 @@ with st.sidebar:
         oos_end_default   = "2023-12-31"
     elif universe == "yahoo_mutual":
         # Mutual funds have data back to ~1990 via ^VIX constraint; full paper window available.
+        oos_start_default = "2007-01-01"
+        oos_end_default   = "2023-12-31"
+    elif universe == "hybrid":
+        # BBG drives history pre-ETF inception → full paper window available.
         oos_start_default = "2007-01-01"
         oos_end_default   = "2023-12-31"
     else:
@@ -97,6 +117,8 @@ with st.sidebar:
     _start_str = _dr_start.strftime("%Y-%m-%d") if _dr_start is not None else "unknown"
     _end_str   = (_dr_end.strftime("%Y-%m-%d")  if _dr_end   is not None else "unknown") \
                  if universe == "bloomberg" else "today"
+    if universe == "hybrid":
+        _start_str += " (BBG); ETF inception varies per asset (IVV 2000, SPBO 2011)"
 
     oos_start = st.text_input("OOS start", value=oos_start_default,
                               help=f"Out-of-sample start date (paper: 2007-01-01). "
@@ -183,8 +205,8 @@ if force_refresh:
     portfolio.clear_signal_cache(universe)
     cache_exists = False
 
-# Detect whether a stale cache exists that can be extended incrementally
-# (i.e., user asked for a later oos_end than what we have on disk).
+# Detect whether an existing cache can be reused (covering = trim it; shorter =
+# incremental extension). Trimming a covering cache is free, so no prompt.
 _extensible_cache = (None if force_refresh else
                      portfolio._load_extensible_signal_cache(universe, oos_start,
                                                              oos_end, tc_mode))
@@ -193,8 +215,13 @@ if _extensible_cache is not None:
     _ends = [df.index.max() for df in _extensible_cache.values() if not df.empty]
     _extensible_end = max(_ends) if _ends else None
 
-# Check cache and prompt for computation if needed
-_should_compute = not cache_exists
+_oos_end_ts = pd.Timestamp(oos_end)
+_covers_request = (_extensible_end is not None
+                   and _extensible_end >= _oos_end_ts - pd.Timedelta(days=1))
+
+# Prompt only when walk-forward would actually run (i.e., we need to extend
+# forward or compute from scratch). A covering cache just gets trimmed.
+_should_compute = not cache_exists and not _covers_request
 if _should_compute:
     if _extensible_end is not None and _extensible_end >= pd.Timestamp(oos_start):
         st.info(
@@ -258,6 +285,9 @@ if universe == 'bloomberg':
     _ticker_map = {name: bbg for name, bbg, _, _ in portfolio.BBG_ASSETS}
 elif universe == 'yahoo':
     _ticker_map = {name: tkr for name, tkr, _, _ in portfolio.YAHOO_ASSETS}
+elif universe == 'hybrid':
+    # Show "<BBG>+<ETF>" so users see the splice composition
+    _ticker_map = {name: f'{bbg}+{etf}' for name, bbg, etf, _, _ in portfolio.HYBRID_ASSETS}
 else:
     _ticker_map = {name: tkr for name, tkr, _, _ in portfolio.MUTUAL_FUNDS_ASSETS}
 
@@ -436,9 +466,12 @@ def _run_all_portfolios(_panel, universe, oos_start, oos_end, tc_mode,
     return out
 
 
-signal_mtime = os.path.getmtime(cache_path) if os.path.exists(cache_path) else 0.0
-insample_mu_mtime = (os.path.getmtime(insample_mu_path)
-                     if insample_mu_path and os.path.exists(insample_mu_path) else 0.0)
+# Pin to the source file's mtime (not the per-oos_end file's). Different oos_end
+# values served from the same underlying signal cache share the same mtime, so
+# the MVO disk cache's params_hash stays stable on date-only changes.
+signal_mtime = portfolio.signal_cache_mtime(universe, oos_start, oos_end, tc_mode)
+insample_mu_mtime = (portfolio.insample_mu_cache_mtime(universe, oos_start, oos_end, tc_mode)
+                     if use_insample_mu else 0.0)
 
 with st.spinner("Solving MVO portfolios…"):
     results = _run_all_portfolios(panel, universe, oos_start, oos_end, tc_mode,
@@ -858,8 +891,15 @@ st.write(f"Panel: **{len(panel.returns)} trading days × {len(panel.asset_order)
 st.divider()
 st.subheader("Per-asset regime signals")
 
+_display_cache_path = (portfolio._pick_signal_cache_path(universe, oos_start, oos_end, tc_mode)
+                       or cache_path)
 if cache_exists:
-    st.success(f"✓ Loaded cached **{mode_label}** signals from `cache/{os.path.basename(cache_path)}`")
+    st.success(f"✓ Loaded cached **{mode_label}** signals from "
+               f"`cache/{os.path.basename(_display_cache_path)}`")
+elif _covers_request:
+    st.success(f"✓ Reused covering **{mode_label}** cache "
+               f"`cache/{os.path.basename(_display_cache_path)}` — trimmed to "
+               f"**{oos_start}→{oos_end}** (no recompute).")
 else:
     st.info(f"✓ Computed **{mode_label}** signals for **{universe} {oos_start}→{oos_end}**")
 
@@ -879,8 +919,10 @@ with st.expander("Signal summary per asset", expanded=False):
         })
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
+_caption_size = (os.path.getsize(_display_cache_path) / 1024
+                 if os.path.exists(_display_cache_path) else 0)
 st.caption(
-    f"Cache file: `cache/{os.path.basename(cache_path)}` — "
-    f"size ≈ {os.path.getsize(cache_path)/1024:.0f} KB. "
+    f"Cache file: `cache/{os.path.basename(_display_cache_path)}` — "
+    f"size ≈ {_caption_size:.0f} KB. "
     "Click **Force Refresh** in the sidebar to recompute."
 )

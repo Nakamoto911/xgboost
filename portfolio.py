@@ -85,6 +85,24 @@ MUTUAL_FUNDS_ASSETS: List[Tuple[str, str, str, bool]] = [
     ('Gold',      'GC=F',    'GC=F',    False),
 ]
 
+# BBG+Yahoo ETF Hybrid — BBG pre-ETF inception spliced with Yahoo ETF post-inception (return-space).
+# hl_proxy = the ETF ticker so PAPER_EWMA_HL lookup matches each asset class.
+# Spec format: (asset_name, bbg_col, etf_ticker, hl_proxy, include_dd)
+HYBRID_ASSETS: List[Tuple[str, str, str, str, bool]] = [
+    ('LargeCap',  'SPTR',     'IVV',  'IVV',  True),
+    ('MidCap',    'SPTRMDCP', 'IJH',  'IJH',  True),
+    ('SmallCap',  'RU20INTR', 'IWM',  'IWM',  True),
+    ('EAFE',      'NDDUEAFE', 'EFA',  'EFA',  True),
+    ('EM',        'NDUEEGF',  'EEM',  'EEM',  True),
+    ('REIT',      'DJUSRET',  'IYR',  'IYR',  True),
+    ('AggBond',   'LBUSTRUU', 'AGG',  'AGG',  False),
+    ('Treasury',  'LUTLTRUU', 'SPTL', 'SPTL', False),
+    ('HighYield', 'IBOXHY',   'HYG',  'HYG',  True),
+    ('Corporate', 'LUACTRUU', 'SPBO', 'SPBO', False),
+    ('Commodity', 'DBLCDBCE', 'DBC',  'DBC',  True),
+    ('Gold',      'GOLDLNPM', 'GLD',  'GLD',  False),
+]
+
 PAPER_60_40 = {
     'LargeCap': 0.10, 'MidCap': 0.05, 'SmallCap': 0.05, 'EAFE': 0.05, 'EM': 0.05,
     'REIT': 0.10, 'HighYield': 0.10, 'Commodity': 0.05, 'Gold': 0.05,
@@ -205,6 +223,92 @@ def _build_yahoo_features(ticker: str, start_date: str, end_date: str,
     return df
 
 
+def _build_hybrid_price_series(bbg_col: str, etf_ticker: str,
+                               start_date: str, end_date: str) -> pd.Series:
+    """Return a continuous synthetic price: BBG returns up to ETF inception
+    (inclusive), then ETF returns afterwards. The result is rebased to BBG's
+    first level so downstream feature engineering sees a single series."""
+    import yfinance as yf
+    raw, _, _, _ = _load_bbg_raw()
+    bbg_series = raw[bbg_col].dropna()
+    bbg_series = bbg_series[bbg_series.index >= pd.Timestamp(start_date)]
+
+    fetch_end = (pd.Timestamp(end_date) + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
+    etf_df = yf.download(etf_ticker, start=start_date, end=fetch_end,
+                         auto_adjust=False, progress=False)
+    if etf_df.empty:
+        raise ValueError(f'hybrid: Yahoo returned no data for {etf_ticker}')
+    if isinstance(etf_df.columns, pd.MultiIndex):
+        if 'Adj Close' in etf_df.columns.get_level_values(0):
+            etf_px = etf_df['Adj Close'].iloc[:, 0]
+        else:
+            etf_px = etf_df.iloc[:, 0]
+    else:
+        etf_px = etf_df.get('Adj Close', etf_df.get('Close', etf_df.iloc[:, 0]))
+    etf_px = etf_px.dropna().sort_index()
+
+    splice_date = etf_px.index.min()
+    bbg_rets = bbg_series.pct_change()
+    etf_rets = etf_px.pct_change()
+    combined = pd.concat([bbg_rets[bbg_rets.index <= splice_date],
+                          etf_rets[etf_rets.index > splice_date]]).sort_index()
+    combined = combined[~combined.index.duplicated(keep='last')]
+
+    base = float(bbg_series.iloc[0])
+    price = base * (1.0 + combined.fillna(0.0)).cumprod()
+    price.name = f'{bbg_col}+{etf_ticker}'
+    return price
+
+
+def _build_hybrid_features(bbg_col: str, etf_ticker: str,
+                           start_date: str, end_date: str,
+                           include_dd: bool = True) -> pd.DataFrame:
+    """Feature panel for a hybrid asset. Reuses the BBG feature pipeline but with
+    the target price replaced by a spliced BBG-then-ETF series. The macro
+    feature columns (Stock_Bond_Corr, yields, VIX) stay sourced from BBG/FRED/Yahoo
+    exactly as in `_build_bbg_features` — only the target series is hybrid."""
+    raw, fred, vix, irx = _load_bbg_raw()
+    target = _build_hybrid_price_series(bbg_col, etf_ticker, start_date, end_date)
+
+    # Build a raw frame with the synthetic target alongside the helper columns
+    # used by the BBG feature path (SPTR for stock-bond corr, LBUSTRUU for bond ret).
+    helper_cols = list(dict.fromkeys(['SPTR', 'LBUSTRUU']))
+    helpers = raw[helper_cols]
+    df = (pd.concat([target.rename('TARGET'), helpers], axis=1)
+            .join(fred, how='inner').join(vix, how='inner')
+            .join(irx, how='inner').ffill().dropna())
+
+    f = pd.DataFrame(index=df.index)
+    tr = df['TARGET'].pct_change().fillna(0)
+    f['Target_Return']        = tr
+    f['Target_Intraday_Ret']  = tr
+    f['Target_Overnight_Ret'] = 0.0
+    f['RF_Rate']       = (df['IRX'] / 100) / 252
+    f['Excess_Return'] = tr - f['RF_Rate']
+
+    dn = np.minimum(f['Excess_Return'], 0)
+    if include_dd:
+        for hl in [5, 21]:
+            ewm_dd = np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(0)
+            f[f'DD_log_{hl}'] = np.log(ewm_dd + 1e-8)
+    for hl in [5, 10, 21]:
+        f[f'Avg_Ret_{hl}'] = f['Excess_Return'].ewm(halflife=hl).mean()
+    for hl in [5, 10, 21]:
+        dd_r = np.maximum(np.sqrt((dn ** 2).ewm(halflife=hl).mean()).fillna(1e-8), 1e-8)
+        f[f'Sortino_{hl}'] = (f[f'Avg_Ret_{hl}'] / dd_r).clip(-10, 10)
+
+    f['Yield_2Y_EWMA_diff']       = df['DGS2'].diff().fillna(0).ewm(halflife=21).mean()
+    sl = df['DGS10'] - df['DGS2']
+    f['Yield_Slope_EWMA_10']      = sl.ewm(halflife=10).mean()
+    f['Yield_Slope_EWMA_diff_21'] = sl.diff().fillna(0).ewm(halflife=21).mean()
+    f['VIX_EWMA_log_diff'] = (np.log(df['VIX'] / df['VIX'].shift(1)).fillna(0)
+                              .ewm(halflife=63).mean())
+    sptr_ret = df['SPTR'].pct_change().fillna(0)
+    bond_ret = df['LBUSTRUU'].pct_change().fillna(0)
+    f['Stock_Bond_Corr'] = sptr_ret.rolling(252).corr(bond_ret).fillna(0)
+    return f.dropna()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-asset signal computation (heavy step — cached to disk)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -233,6 +337,8 @@ def _asset_specs_for(universe: str):
         return YAHOO_ASSETS
     if universe == 'yahoo_mutual':
         return MUTUAL_FUNDS_ASSETS
+    if universe == 'hybrid':
+        return HYBRID_ASSETS
     raise ValueError(f'Unknown universe: {universe!r}')
 
 
@@ -240,6 +346,8 @@ def _start_date_for(universe: str) -> str:
     # Wide enough to give the 11-year JM lookback room
     if universe == 'bloomberg':
         return '1991-01-01'
+    if universe == 'hybrid':
+        return '1991-01-01'  # BBG drives the lookback; ETF takes over later
     if universe == 'yahoo_mutual':
         return '1990-01-01'  # ^VIX (1990-01-02) is the binding constraint
     return '1996-01-01'
@@ -250,6 +358,10 @@ def _features_for_asset(universe: str, spec, start_date: str, oos_end: str):
     if universe == 'bloomberg':
         asset_name, bbg_col, hl_proxy, include_dd = spec
         df_feat = _build_bbg_features(bbg_col, include_dd=include_dd)
+    elif universe == 'hybrid':
+        asset_name, bbg_col, etf_ticker, hl_proxy, include_dd = spec
+        df_feat = _build_hybrid_features(bbg_col, etf_ticker, start_date,
+                                         oos_end, include_dd=include_dd)
     else:
         asset_name, ticker, hl_proxy, include_dd = spec
         df_feat = _build_yahoo_features(ticker, start_date, oos_end, include_dd=include_dd)
@@ -295,6 +407,9 @@ def _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
     r.attrs['tc_mode'] = tc_mode
     if universe == 'bloomberg':
         r.attrs['source_col'] = spec[1]
+    elif universe == 'hybrid':
+        r.attrs['source_col'] = spec[1]      # BBG column
+        r.attrs['source_ticker'] = spec[2]   # ETF ticker
     else:
         r.attrs['source_ticker'] = spec[1]
     return r
@@ -351,7 +466,12 @@ def compute_asset_signals(universe: str = 'bloomberg',
     if existing is not None:
         max_end = _signals_max_end(existing)
         if max_end is not None and max_end >= target_end - pd.Timedelta(days=1):
-            # Already covers the requested window — trim and return.
+            # Covering cache — just trim and return. We deliberately do NOT
+            # persist the trimmed dict under the new oos_end's path: a new file
+            # would have a fresh mtime, which would invalidate downstream
+            # caches (MVO results) whose params_hash pins to the underlying
+            # signal mtime. Other readers (e.g. compute_insample_regime_means)
+            # use _load_extensible_signal_cache, which finds the source file.
             return {k: v[v.index <= target_end] for k, v in existing.items()}
 
     import main as _main
@@ -366,6 +486,7 @@ def compute_asset_signals(universe: str = 'bloomberg',
         _main.TRANSACTION_COST = 0.0
 
     signals: Dict[str, pd.DataFrame] = dict(existing) if existing else {}
+    did_work = False  # set True only when walk-forward actually produced new bars
 
     try:
         for i, spec in enumerate(asset_specs):
@@ -390,6 +511,7 @@ def compute_asset_signals(universe: str = 'bloomberg',
                 r_new = r_new[r_new.index > df_existing.index.max()]
                 if r_new.empty:
                     continue
+                did_work = True
                 merged = pd.concat([df_existing, r_new])
                 ewma_hl = df_existing.attrs.get(
                     'ewma_halflife', r_new.attrs.get('ewma_halflife', 0))
@@ -423,31 +545,36 @@ def compute_asset_signals(universe: str = 'bloomberg',
                                                 tc_mode, start_date)
                 if r is None:
                     continue
+                did_work = True
                 signals[asset_name] = r
     finally:
         _main.TRANSACTION_COST = original_tc
 
-    try:
-        with open(cache_path, 'wb') as fh:
-            pickle.dump(signals, fh)
-    except Exception as e:
-        print(f'[portfolio] failed to cache signals: {e}')
+    # Persist only when new bars were computed. A no-op pass (e.g. requested
+    # oos_end falls on a weekend so every asset's next anchor is past the
+    # target) must NOT bump the file mtime — downstream caches' params_hash
+    # depends on it.
+    if did_work:
+        try:
+            with open(cache_path, 'wb') as fh:
+                pickle.dump(signals, fh)
+        except Exception as e:
+            print(f'[portfolio] failed to cache signals: {e}')
 
     if progress_callback is not None:
         progress_callback(len(asset_specs), len(asset_specs), 'done')
     return signals
 
 
-def _load_extensible_signal_cache(universe: str, oos_start: str, oos_end: str,
-                                  tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
-    """Find the best existing signals cache to extend from.
-
-    Looks for (a) an exact match on the cache_path, then (b) any cache file
-    with the same universe/oos_start/tc_mode and an end date ≤ oos_end (we
-    can extend forward but never shrink). Returns the dict or None.
+def _pick_signal_cache_path(universe: str, oos_start: str, oos_end: str,
+                            tc_mode: str) -> Optional[str]:
+    """Return the path to the signal cache file that backs the requested window:
+      • Exact match if present.
+      • Else the smallest covering cache (end_ts ≥ oos_end) — trim view is free.
+      • Else the latest shorter cache (end_ts < oos_end) — base for extension.
+      • None if no matching cache exists.
     """
     import glob
-    # Exact match first
     exact = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
     candidates: List[Tuple[pd.Timestamp, str]] = []
     if os.path.exists(exact):
@@ -455,7 +582,6 @@ def _load_extensible_signal_cache(universe: str, oos_start: str, oos_end: str,
 
     suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
     pattern = f'portfolio_signals_{universe}_{oos_start[:7]}_*{suffix}.pkl'
-    target = pd.Timestamp(oos_end)
     for path in glob.glob(os.path.join(CACHE_DIR, pattern)):
         base = os.path.basename(path)
         # Expected: portfolio_signals_<universe>_<oos_start_prefix>_<oos_end_prefix>[<suffix>].pkl
@@ -471,14 +597,35 @@ def _load_extensible_signal_cache(universe: str, oos_start: str, oos_end: str,
             end_ts = pd.Timestamp(end_token + '-01') + pd.offsets.MonthEnd(0)
         except Exception:
             continue
-        if end_ts <= target + pd.Timedelta(days=1):
-            candidates.append((end_ts, path))
+        candidates.append((end_ts, path))
 
     if not candidates:
         return None
-    # Pick the candidate with the latest end date (most up-to-date base for extension)
+    target = pd.Timestamp(oos_end)
+    covering = [c for c in candidates if c[0] >= target - pd.Timedelta(days=1)]
+    if covering:
+        covering.sort(key=lambda x: x[0])
+        return covering[0][1]
     candidates.sort(key=lambda x: x[0], reverse=True)
-    chosen = candidates[0][1]
+    return candidates[0][1]
+
+
+def signal_cache_mtime(universe: str, oos_start: str, oos_end: str,
+                       tc_mode: str) -> float:
+    """mtime of the file that actually backs the requested window. Stable
+    across different oos_end values served from the same underlying cache —
+    so downstream caches (MVO results) don't invalidate just because the
+    user changed the displayed window."""
+    path = _pick_signal_cache_path(universe, oos_start, oos_end, tc_mode)
+    return os.path.getmtime(path) if path else 0.0
+
+
+def _load_extensible_signal_cache(universe: str, oos_start: str, oos_end: str,
+                                  tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """Load the signal cache picked by `_pick_signal_cache_path`."""
+    chosen = _pick_signal_cache_path(universe, oos_start, oos_end, tc_mode)
+    if chosen is None:
+        return None
     try:
         with open(chosen, 'rb') as fh:
             signals = pickle.load(fh)
@@ -520,36 +667,52 @@ def clear_signal_cache(universe: Optional[str] = None) -> List[str]:
 # In-sample regime means — paper's exact spec for MV(JM-XGB) μ
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _load_extensible_insample_mu_cache(universe: str, oos_start: str, oos_end: str,
-                                       tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
-    """Find any prior in-sample μ cache for the same universe/oos_start/tc_mode
-    so we can extend it with newly-computed anchors."""
+def _pick_insample_mu_cache_path(universe: str, oos_start: str,
+                                 tc_mode: str) -> Optional[str]:
+    """Return the in-sample μ cache file with the most cached anchors for
+    this universe/oos_start/tc_mode. None if no cache exists."""
     import glob
-    exact = _insample_mu_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
-    paths: List[str] = []
-    if os.path.exists(exact):
-        paths.append(exact)
-
     suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
     pattern = f'portfolio_insample_mu_{universe}_{oos_start[:7]}_*{suffix}.pkl'
-    paths.extend(glob.glob(os.path.join(CACHE_DIR, pattern)))
-
-    # Pick the file with the most cached anchors (largest pickle is a decent proxy)
-    best: Optional[Dict[str, pd.DataFrame]] = None
+    best_path: Optional[str] = None
     best_count = -1
-    for p in paths:
+    for p in glob.glob(os.path.join(CACHE_DIR, pattern)):
         try:
             with open(p, 'rb') as fh:
                 cached = pickle.load(fh)
+            if not isinstance(cached, dict):
+                continue
             if not all(isinstance(v, pd.DataFrame) for v in cached.values()):
                 continue
             count = sum(len(v) for v in cached.values())
             if count > best_count:
-                best = cached
+                best_path = p
                 best_count = count
         except Exception:
             continue
-    return best
+    return best_path
+
+
+def insample_mu_cache_mtime(universe: str, oos_start: str, oos_end: str,
+                            tc_mode: str) -> float:
+    """mtime of the in-sample μ file actually backing the requested window.
+    See `signal_cache_mtime` for the rationale."""
+    path = _pick_insample_mu_cache_path(universe, oos_start, tc_mode)
+    return os.path.getmtime(path) if path else 0.0
+
+
+def _load_extensible_insample_mu_cache(universe: str, oos_start: str, oos_end: str,
+                                       tc_mode: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """Find any prior in-sample μ cache for the same universe/oos_start/tc_mode
+    so we can extend it with newly-computed anchors."""
+    path = _pick_insample_mu_cache_path(universe, oos_start, tc_mode)
+    if path is None:
+        return None
+    try:
+        with open(path, 'rb') as fh:
+            return pickle.load(fh)
+    except Exception:
+        return None
 
 
 def compute_insample_regime_means(universe: str,
@@ -585,12 +748,11 @@ def compute_insample_regime_means(universe: str,
     import main as _main
     from config import StrategyConfig  # noqa: F401 (kept for symmetry / consistent imports)
 
-    sig_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
-    if not os.path.exists(sig_path):
-        raise FileNotFoundError(f'Signals cache not found: {sig_path}. '
-                                f'Run compute_asset_signals(tc_mode={tc_mode!r}) first.')
-    with open(sig_path, 'rb') as fh:
-        signals = pickle.load(fh)
+    signals = _load_extensible_signal_cache(universe, oos_start, oos_end, tc_mode)
+    if signals is None:
+        raise FileNotFoundError(
+            f'No signals cache covering {universe}/{oos_start}/{oos_end}/{tc_mode}. '
+            f'Run compute_asset_signals(tc_mode={tc_mode!r}) first.')
 
     asset_specs = _asset_specs_for(universe)
     start_date = _start_date_for(universe)
@@ -614,12 +776,11 @@ def compute_insample_regime_means(universe: str,
             break
 
     if not needs_work and out:
-        # Persist under the requested cache_path so subsequent loads hit fast.
-        try:
-            with open(cache_path, 'wb') as fh:
-                pickle.dump(out, fh)
-        except Exception as e:
-            print(f'[portfolio] failed to cache in-sample μ: {e}')
+        # All anchors already cached on disk under some earlier cache file —
+        # return as-is. We deliberately do NOT write a new file under the
+        # current oos_end: a fresh mtime would invalidate downstream caches
+        # (MVO results) whose params_hash pins to the in-sample-μ mtime,
+        # forcing a recompute every time the user shifts oos_end.
         return out
 
     for i, spec in enumerate(asset_specs):
@@ -1510,18 +1671,17 @@ def _portfolio_params_hash(rebal_freq: str, gamma_risk_minvar: float,
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
 
-def _find_extensible_portfolio_results(universe: str, oos_start: str, oos_end: str,
-                                       tc_mode: str, params_hash: str
-                                       ) -> Optional[Dict[str, dict]]:
-    """Locate a cached results file with the same params_hash whose
-    `last_date` is < target oos_end (= a candidate base for incremental
-    extension). Returns the cached results dict or None."""
+def _enumerate_portfolio_results_caches(universe: str, oos_start: str,
+                                        tc_mode: str, params_hash: str
+                                        ) -> List[Tuple[pd.Timestamp, str, Dict[str, dict]]]:
+    """Return (file_end, path, cached_dict) for every results cache that matches
+    the same universe/oos_start/tc_mode/params_hash. file_end is the latest
+    `last_date` across strategies in the file."""
     import glob
     suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
     pattern = (f'portfolio_results_{universe}_{oos_start[:7]}_*'
                f'{suffix}_{params_hash}.pkl')
-    target_end = pd.Timestamp(oos_end)
-    candidates: List[Tuple[pd.Timestamp, str]] = []
+    out: List[Tuple[pd.Timestamp, str, Dict[str, dict]]] = []
     for path in glob.glob(os.path.join(CACHE_DIR, pattern)):
         try:
             with open(path, 'rb') as fh:
@@ -1530,23 +1690,88 @@ def _find_extensible_portfolio_results(universe: str, oos_start: str, oos_end: s
             continue
         if not isinstance(cached, dict) or not cached:
             continue
-        # Pick the latest 'last_date' across strategies as the file's frontier.
         ends = [s.get('final_state', {}).get('last_date')
                 for s in cached.values() if isinstance(s, dict)]
         ends = [pd.Timestamp(e) for e in ends if e is not None]
         if not ends:
             continue
-        file_end = max(ends)
-        if file_end < target_end:
-            candidates.append((file_end, path))
+        out.append((max(ends), path, cached))
+    return out
+
+
+def _find_extensible_portfolio_results(universe: str, oos_start: str, oos_end: str,
+                                       tc_mode: str, params_hash: str
+                                       ) -> Optional[Dict[str, dict]]:
+    """Locate a cached results file with the same params_hash whose
+    `last_date` is < target oos_end (= a candidate base for incremental
+    extension). Returns the cached results dict or None."""
+    target_end = pd.Timestamp(oos_end)
+    candidates = [(end, path, cached) for end, path, cached
+                  in _enumerate_portfolio_results_caches(universe, oos_start,
+                                                        tc_mode, params_hash)
+                  if end < target_end]
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[0], reverse=True)
-    try:
-        with open(candidates[0][1], 'rb') as fh:
-            return pickle.load(fh)
-    except Exception:
+    return candidates[0][2]
+
+
+def _find_covering_portfolio_results(universe: str, oos_start: str, oos_end: str,
+                                     tc_mode: str, params_hash: str
+                                     ) -> Optional[Dict[str, dict]]:
+    """Locate a cached results file with the same params_hash whose
+    `last_date` is ≥ target oos_end. Returns the cached (untrimmed) dict so
+    the caller can slice it; prefers the smallest covering cache."""
+    target_end = pd.Timestamp(oos_end)
+    candidates = [(end, path, cached) for end, path, cached
+                  in _enumerate_portfolio_results_caches(universe, oos_start,
+                                                        tc_mode, params_hash)
+                  if end >= target_end - pd.Timedelta(days=1)]
+    if not candidates:
         return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][2]
+
+
+def _trim_portfolio_results(results: Dict[str, dict],
+                            target_end: pd.Timestamp) -> Dict[str, dict]:
+    """Slice each strategy's per-day series down to dates ≤ target_end.
+
+    `final_state` is intentionally invalidated (cash=None, last_date=None) so
+    the trimmed dict is NOT used as a resume base — `cash` drifts with rf
+    accrual and TC, and we can't reconstruct it from the trimmed tail."""
+    target_end = pd.Timestamp(target_end)
+    out: Dict[str, dict] = {}
+    for label, res in results.items():
+        if not isinstance(res, dict):
+            out[label] = res
+            continue
+
+        def _slice(obj):
+            if isinstance(obj, (pd.Series, pd.DataFrame)) and len(obj):
+                return obj[obj.index <= target_end]
+            return obj
+
+        trimmed_returns  = _slice(res.get('returns'))
+        trimmed_weights  = _slice(res.get('weights'))
+        trimmed_turnover = _slice(res.get('turnover_daily'))
+        trimmed_mu       = _slice(res.get('mu_forecast'))
+        rebal_dates = res.get('rebal_dates', [])
+        if hasattr(rebal_dates, '__iter__'):
+            trimmed_rebal = type(rebal_dates)(
+                d for d in rebal_dates if pd.Timestamp(d) <= target_end)
+        else:
+            trimmed_rebal = rebal_dates
+        out[label] = {
+            'returns':        trimmed_returns,
+            'weights':        trimmed_weights,
+            'turnover_daily': trimmed_turnover,
+            'rebal_dates':    trimmed_rebal,
+            'mu_forecast':    trimmed_mu,
+            'final_state': {'w_curr': None, 'cash': None, 'last_date': None,
+                            'asset_order': res.get('final_state', {}).get('asset_order')},
+        }
+    return out
 
 
 def run_all_portfolios_cached(panel: AssetPanel, *,
@@ -1592,6 +1817,14 @@ def run_all_portfolios_cached(panel: AssetPanel, *,
                 return cached
         except Exception:
             pass
+
+    # 1b) Covering cache (same hash, end ≥ target): trim and return.
+    # NOT persisted to disk — `final_state` cannot be reconstructed from a
+    # trimmed tail, so the original longer cache stays the resume base.
+    covering = _find_covering_portfolio_results(
+        universe, oos_start, oos_end, tc_mode, params_hash)
+    if covering is not None:
+        return _trim_portfolio_results(covering, pd.Timestamp(oos_end))
 
     # 2) Extensible base (same hash, earlier end)
     resume_from = _find_extensible_portfolio_results(

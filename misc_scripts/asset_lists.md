@@ -56,3 +56,24 @@ data_start: 1989-01-01
 | DJUSRET  | Real Assets  | Dow Jones US Real Estate Total Return (BBG)    |
 | DBLCDBCE | Real Assets  | Deutsche Bank DBIQ Optimum Yield Commodity (BBG)|
 | GOLDLNPM | Real Assets  | LBMA Gold Price PM USD (Bloomberg)             |
+
+## BBG+Yahoo ETF Hybrid
+
+data_start: 1989-01-01
+
+Splices Bloomberg total-return index history (pre-ETF inception) with the Yahoo Finance ETF return series (post-inception). Goal: paper-accurate JM lookback + investable OOS returns. Splice is in return space, so cumulative price series stays continuous. Ticker format `<BBG>+<YETF>`; the BBG leg drives history before ETF inception, the ETF leg drives history after.
+
+| Ticker            | Asset Class  | Description                                            |
+|-------------------|--------------|--------------------------------------------------------|
+| SPTR+IVV          | US Equity    | SPTR pre-2000-05, then IVV (S&P 500)                   |
+| SPTRMDCP+IJH      | US Equity    | SPTRMDCP pre-2000-05, then IJH (S&P MidCap 400)        |
+| RU20INTR+IWM      | US Equity    | RU20INTR pre-2000-05, then IWM (Russell 2000)          |
+| NDDUEAFE+EFA      | Intl Equity  | NDDUEAFE pre-2001-08, then EFA (MSCI EAFE)             |
+| NDUEEGF+EEM       | Intl Equity  | NDUEEGF pre-2003-04, then EEM (MSCI EM)                |
+| LBUSTRUU+AGG      | Fixed Income | LBUSTRUU pre-2003-09, then AGG (US Aggregate Bond)     |
+| LUTLTRUU+SPTL     | Fixed Income | LUTLTRUU pre-2007-05, then SPTL (Long Treasury)        |
+| IBOXHY+HYG        | Fixed Income | IBOXHY pre-2007-04, then HYG (HY Corporate)            |
+| LUACTRUU+SPBO     | Fixed Income | LUACTRUU pre-2011-04, then SPBO (IG Corporate)         |
+| DJUSRET+IYR       | Real Assets  | DJUSRET pre-2000-06, then IYR (US Real Estate)         |
+| DBLCDBCE+DBC      | Real Assets  | DBLCDBCE pre-2006-02, then DBC (DB Commodity)          |
+| GOLDLNPM+GLD      | Real Assets  | GOLDLNPM pre-2004-11, then GLD (SPDR Gold)             |

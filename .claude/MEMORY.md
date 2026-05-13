@@ -73,6 +73,45 @@
 - **Oracle λ gives paper results** for all assets (Sessions 12, 15) — gap = WF λ selection noise
 - **Binary 0/1 signal essential** — continuous/threshold changes destroy performance
 
+## Data Source Analysis (Session 22, 2026-05-13)
+
+Run `python misc_scripts/compare_data_sources.py` (or via Diagnostics Launcher) for full pair-wise stats. Findings classify the 12 paper assets into four divergence tiers:
+
+| Tier | Assets | Root cause | Fixable? |
+|---|---|---|---|
+| **1. Clean** (6/12) | LargeCap, MidCap, SmallCap, REIT, Treasury, Gold | Yahoo ≈ Bloomberg (ρ≥0.94) | n/a |
+| **2. Credit-ETF liquidity premium** (3/12) | HighYield (HYG, vol +5.3%), Corporate (SPBO, vol +1.8%), AggBond (AGG, vol +1.2%) | ETF trades at bid-ask spread + premium/discount to NAV; BBG indices are NAV-based | Use MF proxies (VWEHX/VWESX/VBMFX) — already in Yahoo Mutual Funds list |
+| **3. International timezone mismatch** (2/12) | EAFE (EFA, vol +4.5%), EM (EEM, vol +9.7%) | US-listed ETFs trade past Asian/European local closes; BBG marks at local close + FX | MF proxies (FDIVX/VEIEX) help (ρ 0.73-0.78 vs ETF 0.64-0.69); structurally unfixable without BBG |
+| **4. Wrong-index proxy** (1/12) | Commodity (^SPGSCI vs DBLCDBCE) | GSCI ≈ 60% energy; BCOM ≈ 30% energy — different baskets | Use DBC ETF (inception 2006-02). Only available pre-2006 via BBG → use the new Hybrid list |
+
+**Implication for MVO leverage gap (0.71 ours vs paper 0.86):**
+- MVO uses μ, σ as inputs. Tier-2 and Tier-3 inflate σ on Yahoo data → optimizer underweights those assets.
+- Bloomberg run already eliminates the Yahoo data noise but leverage gap persists → joint forecast distribution issue, not single-asset data quality.
+
+## BBG+Yahoo ETF Hybrid Asset List (Session 22)
+
+4th asset list added to `misc_scripts/asset_lists.md` + `portfolio.py` `HYBRID_ASSETS`. Composite tickers `<BBG>+<ETF>` (e.g. `SPTR+IVV`). BBG drives history up to AND INCLUDING the ETF's first available date; Yahoo ETF drives returns from the day after. Splice is in return-space (no scale discontinuity); a synthetic continuous price is rebuilt for downstream feature engineering.
+
+**Purpose:** Paper-accurate JM lookback + investable OOS returns.
+
+**B&H Sharpe vs paper Table 4 (smoke test, 2007-2023):**
+
+| Tier | Hybrid Sharpe | Gap vs paper | Status |
+|---|---|---|---|
+| 8/12 (LargeCap, MidCap, SmallCap, EAFE, EM, Treasury, REIT, Gold) | matches | within ±0.03 | ✓ clean |
+| **Commodity (DBLCDBCE+DBC)** | **0.047** | **+0.02** | **FIXED** (was ^SPGSCI mismatch) |
+| AggBond (LBUSTRUU+AGG) | 0.364 | −0.10 | inherits AGG ETF drift |
+| Corporate (LUACTRUU+SPBO) | 0.412 | −0.13 | inherits SPBO drift (post-2011-04) |
+| HighYield (IBOXHY+HYG) | 0.360 | −0.31 | inherits HYG drift |
+
+**Where it's selectable (Session 22 wiring):**
+- CLI: `python misc_scripts/benchmark_assets.py "BBG+Yahoo ETF Hybrid"`
+- CLI: `python misc_scripts/run_portfolio_paper.py hybrid`
+- CLI: `XGB_DATA_SOURCE=hybrid python misc_scripts/run_multi_asset_ablation.py`
+- Streamlit page 2 → Benchmark Assets and Multi-Asset Macro Ablation selectors
+- Streamlit Portfolio Construction page (`portfolio_construction.py`) → universe dropdown
+- Python: `portfolio.compute_asset_signals(universe='hybrid')`
+
 ## User Preferences
 - Wants systematic experiment tracking across sessions
 - Focus on Paper Baseline first before exploring improvements
