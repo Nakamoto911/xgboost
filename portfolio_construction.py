@@ -26,6 +26,35 @@ import main as backend
 importlib.reload(portfolio)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _universe_date_range(universe: str):
+    """Return (first_all_assets_date, last_all_assets_date) for the given universe.
+
+    For Bloomberg: reads DATA PAUL.xlsx once and finds the max first-date and min
+    last-date across all 12 columns (i.e. the window where every asset has data).
+    For Yahoo universes: end = today (live feed); start = latest known inception date.
+    """
+    if universe == "bloomberg":
+        xlsx = os.path.join(portfolio.CACHE_DIR, "DATA PAUL.xlsx")
+        if not os.path.exists(xlsx):
+            return None, None
+        raw = pd.read_excel(xlsx, header=None, skiprows=6)
+        raw.columns = ["Date"] + portfolio.BBG_COLUMNS
+        raw["Date"] = pd.to_datetime(raw["Date"])
+        raw = raw.set_index("Date")
+        first_dates = {c: raw[c].dropna().index.min() for c in portfolio.BBG_COLUMNS}
+        last_dates  = {c: raw[c].dropna().index.max() for c in portfolio.BBG_COLUMNS}
+        return max(first_dates.values()), min(last_dates.values())
+    else:
+        today = pd.Timestamp.today().normalize()
+        if universe == "yahoo":
+            # SPBO (Corporate bond ETF) inception 2012-02-02 is the binding constraint
+            return pd.Timestamp("2012-02-02"), today
+        else:  # yahoo_mutual
+            # ^VIX 1990-01-02 is the binding constraint
+            return pd.Timestamp("1990-01-02"), today
+
+
 st.title("📈 Portfolio Construction")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,10 +93,17 @@ with st.sidebar:
         oos_start_default = "2010-01-01"
         oos_end_default   = "2023-12-31"
 
+    _dr_start, _dr_end = _universe_date_range(universe)
+    _start_str = _dr_start.strftime("%Y-%m-%d") if _dr_start is not None else "unknown"
+    _end_str   = (_dr_end.strftime("%Y-%m-%d")  if _dr_end   is not None else "unknown") \
+                 if universe == "bloomberg" else "today"
+
     oos_start = st.text_input("OOS start", value=oos_start_default,
-                              help="Out-of-sample start date (paper: 2007-01-01).")
+                              help=f"Out-of-sample start date (paper: 2007-01-01). "
+                                   f"All assets in this universe have data from **{_start_str}**.")
     oos_end   = st.text_input("OOS end",   value=oos_end_default,
-                              help="Out-of-sample end date (paper: 2023-12-31).")
+                              help=f"Out-of-sample end date (paper: 2023-12-31). "
+                                   f"All assets in this universe have data through **{_end_str}**.")
 
     st.markdown("**TC mode**")
     tc_mode = st.radio(
