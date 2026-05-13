@@ -313,6 +313,158 @@ def _build_hybrid_features(bbg_col: str, etf_ticker: str,
 # Per-asset signal computation (heavy step — cached to disk)
 # ──────────────────────────────────────────────────────────────────────────────
 
+UNIVERSES: List[str] = ['bloomberg', 'yahoo', 'yahoo_mutual', 'hybrid']
+
+# Default MVO parameters — match the Portfolio Construction page sidebar defaults.
+# Used by `build_full_cache_all_universes` to pre-build MVO results so the page
+# loads instantly. If the user changes any MVO param in the sidebar, those
+# values will not hit this cache (one fresh compute, then cached).
+DEFAULT_MVO_PARAMS: Dict[str, object] = {
+    'rebal_freq': 'daily',
+    'gamma_risk_minvar': 10.0,
+    'gamma_risk_mv_baseline': 5.0,
+    'gamma_risk_mv_jmxgb': 10.0,
+    'gamma_trade': 1.0,
+    'w_ub': 0.40,
+    'cov_hl_days': 252,
+    'mu_baseline_hl_years': 5.0,
+    'mu_jmxgb_lookback_years': 11.0,
+}
+
+
+def full_cache_window(universe: str) -> Tuple[str, str]:
+    """Return (oos_start, oos_end) — the longest-window cache settings for this
+    universe. Paper-aligned oos_start (2007-01-01 for BBG/Hybrid/Yahoo Mutual,
+    2010-01-01 for Yahoo ETFs because SPBO inception is 2012-02-02 and the
+    walk-forward handles partial coverage from 2010). oos_end is today, capped
+    at the BBG file's last common date for the Bloomberg universe.
+    """
+    today = pd.Timestamp.today().normalize()
+    if universe == 'bloomberg':
+        oos_start = '2007-01-01'
+        xlsx = os.path.join(CACHE_DIR, 'DATA PAUL.xlsx')
+        if os.path.exists(xlsx):
+            try:
+                raw_bbg = pd.read_excel(xlsx, header=None, skiprows=6)
+                raw_bbg.columns = ['Date'] + BBG_COLUMNS
+                raw_bbg['Date'] = pd.to_datetime(raw_bbg['Date'])
+                raw_bbg = raw_bbg.set_index('Date')
+                last_dates = [raw_bbg[c].dropna().index.max() for c in BBG_COLUMNS]
+                oos_end_ts = min(last_dates) if last_dates else today
+            except Exception:
+                oos_end_ts = today
+        else:
+            oos_end_ts = today
+    elif universe == 'hybrid':
+        oos_start = '2007-01-01'
+        oos_end_ts = today
+    elif universe == 'yahoo':
+        oos_start = '2010-01-01'
+        oos_end_ts = today
+    elif universe == 'yahoo_mutual':
+        oos_start = '2007-01-01'
+        oos_end_ts = today
+    else:
+        raise ValueError(f'Unknown universe: {universe!r}')
+    return oos_start, oos_end_ts.strftime('%Y-%m-%d')
+
+
+def build_full_cache_all_universes(tc_mode: str = 'net',
+                                   force_refresh: bool = False,
+                                   n_jobs: Optional[int] = None,
+                                   mvo_params: Optional[dict] = None,
+                                   use_insample_mu: bool = True,
+                                   progress_callback=None
+                                   ) -> Dict[str, Tuple[str, str]]:
+    """Build full-window signal + in-sample-μ + MVO-result caches for all 4
+    universes. After this, opening the Portfolio Construction page hits all
+    three caches and renders instantly.
+
+    `mvo_params` overrides `DEFAULT_MVO_PARAMS` (e.g. when the user has tweaked
+    sidebar values). `tc_oneway` is added automatically from `tc_mode`.
+
+    `progress_callback(uni_idx, uni_total, universe, oos_start, oos_end, stage,
+    asset_idx, asset_total, asset_name)` is called at each step. `stage` ∈
+    {'signals', 'insample_mu', 'mvo', 'done'}.
+
+    Returns the dict of (oos_start, oos_end) windows used per universe.
+    """
+    windows: Dict[str, Tuple[str, str]] = {}
+    total = len(UNIVERSES)
+
+    resolved_mvo = dict(DEFAULT_MVO_PARAMS)
+    if mvo_params:
+        resolved_mvo.update(mvo_params)
+    resolved_mvo.setdefault('tc_oneway', 0.0 if tc_mode == 'gross' else 0.0005)
+
+    for i, universe in enumerate(UNIVERSES):
+        oos_start, oos_end = full_cache_window(universe)
+        windows[universe] = (oos_start, oos_end)
+
+        def _asset_cb_signals(a_idx, a_total, a_name, _i=i, _u=universe,
+                              _s=oos_start, _e=oos_end):
+            if progress_callback is not None:
+                progress_callback(_i, total, _u, _s, _e, 'signals',
+                                  a_idx, a_total, a_name)
+
+        def _asset_cb_mu(a_idx, a_total, a_name, _i=i, _u=universe,
+                         _s=oos_start, _e=oos_end):
+            if progress_callback is not None:
+                progress_callback(_i, total, _u, _s, _e, 'insample_mu',
+                                  a_idx, a_total, a_name)
+
+        if progress_callback is not None:
+            progress_callback(i, total, universe, oos_start, oos_end, 'signals',
+                              0, 0, '')
+        compute_asset_signals(universe=universe, oos_start=oos_start, oos_end=oos_end,
+                              tc_mode=tc_mode, force_refresh=force_refresh,
+                              n_jobs=n_jobs,
+                              progress_callback=_asset_cb_signals)
+        if progress_callback is not None:
+            progress_callback(i, total, universe, oos_start, oos_end, 'insample_mu',
+                              0, 0, '')
+        compute_insample_regime_means(universe=universe, oos_start=oos_start,
+                                      oos_end=oos_end, tc_mode=tc_mode,
+                                      force_refresh=force_refresh,
+                                      n_jobs=n_jobs,
+                                      progress_callback=_asset_cb_mu)
+
+        # MVO: build the panel and run all 7 portfolios. Writes the disk cache
+        # under the params_hash matching the resolved MVO params so the page
+        # hits this cache on first load.
+        if progress_callback is not None:
+            progress_callback(i, total, universe, oos_start, oos_end, 'mvo',
+                              0, 0, '')
+        try:
+            signals_for_panel = _load_extensible_signal_cache(
+                universe, oos_start, oos_end, tc_mode) or {}
+            insample_mu_for_panel = None
+            if use_insample_mu:
+                try:
+                    insample_mu_for_panel = _load_extensible_insample_mu_cache(
+                        universe, oos_start, oos_end, tc_mode)
+                except Exception:
+                    insample_mu_for_panel = None
+            panel = build_asset_panel(signals_for_panel, oos_start, oos_end,
+                                       insample_mu=insample_mu_for_panel)
+            sig_mtime = signal_cache_mtime(universe, oos_start, oos_end, tc_mode)
+            mu_mtime = (insample_mu_cache_mtime(universe, oos_start, oos_end, tc_mode)
+                        if use_insample_mu else 0.0)
+            run_all_portfolios_cached(
+                panel,
+                universe=universe, oos_start=oos_start, oos_end=oos_end,
+                tc_mode=tc_mode, use_insample_mu=use_insample_mu,
+                signal_mtime=sig_mtime, insample_mu_mtime=mu_mtime,
+                **resolved_mvo,
+            )
+        except Exception as e:
+            print(f'[portfolio] MVO pre-build failed for {universe}: {e}')
+
+    if progress_callback is not None:
+        progress_callback(total, total, '', '', '', 'done', 0, 0, '')
+    return windows
+
+
 def _signal_cache_path(universe: str, oos_start: str, oos_end: str,
                        tc_mode: str = 'net') -> str:
     # Backwards-compat: 'net' (5 bps, default) keeps the original filename.
@@ -372,8 +524,9 @@ def _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
                                 tc_mode, start_date):
     """Run walk-forward for one asset between oos_start and oos_end.
 
-    Returns the result DataFrame (with .attrs) or None on failure.
-    Caller is responsible for setting/restoring _main.TRANSACTION_COST.
+    Returns the result DataFrame (with .attrs) or None on failure. Sets all
+    needed `_main` globals internally (including TRANSACTION_COST per tc_mode)
+    so the function is safe to call from a worker subprocess.
     """
     import main as _main
     from config import StrategyConfig
@@ -392,6 +545,7 @@ def _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
     _main.END_DATE = oos_end
     _main.START_DATE_DATA = start_date
     _main.LAMBDA_GRID = list(GRID_8PT)
+    _main.TRANSACTION_COST = 0.0 if tc_mode == 'gross' else 0.0005
 
     cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}', ewma_mode='paper')
     try:
@@ -415,6 +569,79 @@ def _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
     return r
 
 
+def _limit_inner_threads():
+    """Cap OpenMP / BLAS / MKL thread counts to 1 so that subprocess workers
+    in a Parallel pool don't oversubscribe the CPU (XGBoost, OpenBLAS, numpy
+    each default to all-cores). Must be called before heavy compute. Idempotent."""
+    import os
+    for k in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+             'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ.setdefault(k, '1')
+
+
+def _process_one_asset_signals(spec, universe, oos_start, oos_end, tc_mode,
+                               start_date, existing_df):
+    """Picklable worker for parallel asset-level signal computation.
+
+    Returns (asset_name, df_or_none). Self-contained: sets all required `_main`
+    globals (TARGET_TICKER, dates, λ grid, TC) so subprocess workers don't need
+    parent-side bootstrap. `existing_df` is the per-asset cached DataFrame
+    (with .attrs) when extending, or None for a fresh run.
+    """
+    _limit_inner_threads()
+    import main as _main
+    from config import StrategyConfig
+
+    asset_name = spec[0]
+
+    if existing_df is not None and not existing_df.empty:
+        next_anchor = _next_anchor_after(existing_df)
+        if next_anchor is None or next_anchor >= pd.Timestamp(oos_end):
+            return asset_name, None  # already covers target
+        r_new = _run_walk_forward_for_asset(
+            spec, universe, next_anchor.strftime('%Y-%m-%d'),
+            oos_end, tc_mode, start_date)
+        if r_new is None or r_new.empty:
+            return asset_name, None
+        r_new = r_new[r_new.index > existing_df.index.max()]
+        if r_new.empty:
+            return asset_name, None
+        merged = pd.concat([existing_df, r_new])
+        ewma_hl = existing_df.attrs.get(
+            'ewma_halflife', r_new.attrs.get('ewma_halflife', 0))
+        cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
+                             ewma_mode='paper')
+        merged = _main._finalize_walk_forward(merged, cfg, ewma_hl)
+        merged.attrs['lambda_history'] = (
+            list(existing_df.attrs.get('lambda_history', []))
+            + list(r_new.attrs.get('lambda_history', [])))
+        merged.attrs['lambda_dates'] = (
+            list(existing_df.attrs.get('lambda_dates', []))
+            + list(r_new.attrs.get('lambda_dates', [])))
+        merged.attrs['ewma_halflife'] = ewma_hl
+        merged.attrs['hl_proxy'] = existing_df.attrs.get(
+            'hl_proxy', r_new.attrs.get('hl_proxy'))
+        merged.attrs['include_dd'] = existing_df.attrs.get(
+            'include_dd', r_new.attrs.get('include_dd', True))
+        merged.attrs['tc_mode'] = tc_mode
+        if universe == 'bloomberg':
+            merged.attrs['source_col'] = existing_df.attrs.get(
+                'source_col', spec[1])
+        elif universe == 'hybrid':
+            merged.attrs['source_col'] = existing_df.attrs.get(
+                'source_col', spec[1])
+            merged.attrs['source_ticker'] = existing_df.attrs.get(
+                'source_ticker', spec[2])
+        else:
+            merged.attrs['source_ticker'] = existing_df.attrs.get(
+                'source_ticker', spec[1])
+        return asset_name, merged
+    else:
+        r = _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
+                                         tc_mode, start_date)
+        return asset_name, r
+
+
 def _signals_max_end(signals: Dict[str, pd.DataFrame]) -> Optional[pd.Timestamp]:
     ends = [df.index.max() for df in signals.values() if not df.empty]
     return max(ends) if ends else None
@@ -434,6 +661,7 @@ def compute_asset_signals(universe: str = 'bloomberg',
                           oos_end: str = '2023-12-31',
                           force_refresh: bool = False,
                           tc_mode: str = 'net',
+                          n_jobs: Optional[int] = None,
                           progress_callback=None) -> Dict[str, pd.DataFrame]:
     """Run walk-forward backtest for each of the 12 assets and return a dict
     keyed by asset name. Each value is a DataFrame containing at least:
@@ -454,110 +682,141 @@ def compute_asset_signals(universe: str = 'bloomberg',
     """
     if tc_mode not in ('net', 'gross'):
         raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
-    cache_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
+    target_start = pd.Timestamp(oos_start)
     target_end = pd.Timestamp(oos_end)
 
-    # Try existing cache (either exact or extensible). We allow extension across
-    # different oos_end files: glob for any matching universe/oos_start/tc_mode.
+    # Try existing cache (exact, covering, or extension candidate). The picker
+    # scans across both oos_start and oos_end prefixes so a wider-window cache
+    # can serve a narrower request via a free trim.
     existing: Optional[Dict[str, pd.DataFrame]] = None
+    existing_path: Optional[str] = None
     if not force_refresh:
+        existing_path = _pick_signal_cache_path(universe, oos_start, oos_end, tc_mode)
         existing = _load_extensible_signal_cache(universe, oos_start, oos_end, tc_mode)
 
     if existing is not None:
         max_end = _signals_max_end(existing)
         if max_end is not None and max_end >= target_end - pd.Timedelta(days=1):
-            # Covering cache — just trim and return. We deliberately do NOT
-            # persist the trimmed dict under the new oos_end's path: a new file
-            # would have a fresh mtime, which would invalidate downstream
-            # caches (MVO results) whose params_hash pins to the underlying
-            # signal mtime. Other readers (e.g. compute_insample_regime_means)
-            # use _load_extensible_signal_cache, which finds the source file.
-            return {k: v[v.index <= target_end] for k, v in existing.items()}
-
-    import main as _main
-    from config import StrategyConfig
+            # Covering cache — trim by both ends and return a view. We
+            # deliberately do NOT persist under a new oos_end/oos_start path:
+            # a fresh file would have a new mtime, invalidating downstream
+            # MVO caches whose params_hash pins to the signal mtime.
+            return {k: v[(v.index >= target_start) & (v.index <= target_end)]
+                    for k, v in existing.items()}
 
     start_date = _start_date_for(universe)
     asset_specs = _asset_specs_for(universe)
 
-    # tc_mode='gross': zero out TC during walk-forward so λ-selection uses gross Sharpe.
-    original_tc = _main.TRANSACTION_COST
-    if tc_mode == 'gross':
-        _main.TRANSACTION_COST = 0.0
+    # Pre-warm shared on-disk caches in the parent so worker subprocesses don't
+    # all race on the same Yahoo/FRED fetch (BBG raw load also caches VIX/IRX).
+    if universe in ('bloomberg', 'hybrid'):
+        try:
+            _load_bbg_raw()
+        except Exception:
+            pass
 
     signals: Dict[str, pd.DataFrame] = dict(existing) if existing else {}
     did_work = False  # set True only when walk-forward actually produced new bars
 
-    try:
-        for i, spec in enumerate(asset_specs):
-            asset_name = spec[0]
-            if progress_callback is not None:
-                progress_callback(i, len(asset_specs), asset_name)
+    # Build the task list. Skip assets that are already fully covered so we
+    # don't waste a worker on a no-op.
+    pending: List[Tuple] = []
+    for spec in asset_specs:
+        asset_name = spec[0]
+        df_existing = signals.get(asset_name)
+        if df_existing is not None and not df_existing.empty:
+            next_anchor = _next_anchor_after(df_existing)
+            if next_anchor is None or next_anchor >= target_end:
+                continue
+        pending.append((spec, df_existing))
 
-            df_existing = signals.get(asset_name)
-            # Decide: full run or incremental extension?
-            if df_existing is not None and not df_existing.empty:
-                next_anchor = _next_anchor_after(df_existing)
-                if next_anchor is None or next_anchor >= target_end:
-                    # Asset already covers target_end; nothing to do.
-                    continue
-                # Incremental: run only the new chunks
-                r_new = _run_walk_forward_for_asset(
-                    spec, universe, next_anchor.strftime('%Y-%m-%d'),
-                    oos_end, tc_mode, start_date)
-                if r_new is None or r_new.empty:
-                    continue
-                # Drop overlap defensively, then concat
-                r_new = r_new[r_new.index > df_existing.index.max()]
-                if r_new.empty:
-                    continue
-                did_work = True
-                merged = pd.concat([df_existing, r_new])
-                ewma_hl = df_existing.attrs.get(
-                    'ewma_halflife', r_new.attrs.get('ewma_halflife', 0))
-                # Re-apply post-processing on the full merged Raw_Prob (EWMA needs
-                # continuity across the boundary).
-                cfg = StrategyConfig(name=f'Portfolio_{universe}_{asset_name}',
-                                     ewma_mode='paper')
-                merged = _main._finalize_walk_forward(merged, cfg, ewma_hl)
-                merged.attrs['lambda_history'] = (
-                    list(df_existing.attrs.get('lambda_history', []))
-                    + list(r_new.attrs.get('lambda_history', [])))
-                merged.attrs['lambda_dates'] = (
-                    list(df_existing.attrs.get('lambda_dates', []))
-                    + list(r_new.attrs.get('lambda_dates', [])))
-                merged.attrs['ewma_halflife'] = ewma_hl
-                merged.attrs['hl_proxy'] = df_existing.attrs.get(
-                    'hl_proxy', r_new.attrs.get('hl_proxy'))
-                merged.attrs['include_dd'] = df_existing.attrs.get(
-                    'include_dd', r_new.attrs.get('include_dd', True))
-                merged.attrs['tc_mode'] = tc_mode
-                if universe == 'bloomberg':
-                    merged.attrs['source_col'] = df_existing.attrs.get(
-                        'source_col', spec[1])
-                else:
-                    merged.attrs['source_ticker'] = df_existing.attrs.get(
-                        'source_ticker', spec[1])
-                signals[asset_name] = merged
-            else:
-                # Fresh run
-                r = _run_walk_forward_for_asset(spec, universe, oos_start, oos_end,
-                                                tc_mode, start_date)
-                if r is None:
-                    continue
-                did_work = True
-                signals[asset_name] = r
-    finally:
-        _main.TRANSACTION_COST = original_tc
+    if not pending:
+        # Everything is already covered — nothing to compute or save.
+        if progress_callback is not None:
+            progress_callback(len(asset_specs), len(asset_specs), 'done')
+        return signals
+
+    # Resolve worker count: default to min(cpu_count, #tasks). n_jobs=1 keeps
+    # the sequential code path (useful for debugging or low-memory runs).
+    if n_jobs is None:
+        import multiprocessing
+        n_jobs = min(multiprocessing.cpu_count(), len(pending))
+    n_jobs = max(1, int(n_jobs))
+
+    if n_jobs == 1:
+        # Sequential path — workers mutate `_main.TRANSACTION_COST` in the
+        # parent process; save/restore so we don't leak the per-tc_mode value
+        # into other code in the same Streamlit session.
+        import main as _main
+        original_tc = _main.TRANSACTION_COST
+        try:
+            for i, (spec, df_existing) in enumerate(pending):
+                asset_name = spec[0]
+                if progress_callback is not None:
+                    progress_callback(i, len(pending), asset_name)
+                try:
+                    _, r = _process_one_asset_signals(
+                        spec, universe, oos_start, oos_end, tc_mode,
+                        start_date, df_existing)
+                except Exception as e:
+                    print(f'[portfolio] {asset_name}: {e}')
+                    r = None
+                if r is not None and not r.empty:
+                    signals[asset_name] = r
+                    did_work = True
+        finally:
+            _main.TRANSACTION_COST = original_tc
+    else:
+        # Parallel: process subprocess pool (loky) — each worker gets isolated
+        # `_main` globals so no inter-asset race on TARGET_TICKER etc.
+        from joblib import Parallel, delayed, parallel_config
+        completed = 0
+        with parallel_config(backend='loky', n_jobs=n_jobs,
+                             inner_max_num_threads=1):
+            parallel = Parallel(return_as='generator_unordered')
+            gen = parallel(
+                delayed(_process_one_asset_signals)(
+                    spec, universe, oos_start, oos_end, tc_mode,
+                    start_date, df_existing
+                ) for spec, df_existing in pending
+            )
+            for asset_name, r in gen:
+                if r is not None and not r.empty:
+                    signals[asset_name] = r
+                    did_work = True
+                if progress_callback is not None:
+                    progress_callback(completed, len(pending), asset_name)
+                completed += 1
 
     # Persist only when new bars were computed. A no-op pass (e.g. requested
     # oos_end falls on a weekend so every asset's next anchor is past the
     # target) must NOT bump the file mtime — downstream caches' params_hash
-    # depends on it.
+    # depends on it. When extending an existing wider cache, preserve its
+    # start token and update the end token to the data's true max — keeping
+    # filenames honest, replacing the old file in place (no fragmentation).
     if did_work:
+        new_max_end = _signals_max_end(signals)
+        if existing_path is not None:
+            existing_tokens = _parse_signal_cache_tokens(existing_path, tc_mode)
+            start_token = existing_tokens[0] if existing_tokens else oos_start[:7]
+        else:
+            start_token = oos_start[:7]
+        end_token = new_max_end.strftime('%Y-%m') if new_max_end is not None \
+                                                  else oos_end[:7]
+        suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+        save_path = os.path.join(
+            CACHE_DIR,
+            f'portfolio_signals_{universe}_{start_token}_{end_token}{suffix}.pkl',
+        )
         try:
-            with open(cache_path, 'wb') as fh:
+            with open(save_path, 'wb') as fh:
                 pickle.dump(signals, fh)
+            if existing_path is not None and existing_path != save_path \
+                    and os.path.exists(existing_path):
+                try:
+                    os.remove(existing_path)
+                except OSError:
+                    pass
         except Exception as e:
             print(f'[portfolio] failed to cache signals: {e}')
 
@@ -566,48 +825,92 @@ def compute_asset_signals(universe: str = 'bloomberg',
     return signals
 
 
-def _pick_signal_cache_path(universe: str, oos_start: str, oos_end: str,
-                            tc_mode: str) -> Optional[str]:
-    """Return the path to the signal cache file that backs the requested window:
-      • Exact match if present.
-      • Else the smallest covering cache (end_ts ≥ oos_end) — trim view is free.
-      • Else the latest shorter cache (end_ts < oos_end) — base for extension.
-      • None if no matching cache exists.
-    """
-    import glob
-    exact = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
-    candidates: List[Tuple[pd.Timestamp, str]] = []
-    if os.path.exists(exact):
-        candidates.append((pd.Timestamp(oos_end), exact))
-
+def _parse_signal_cache_tokens(path: str, tc_mode: str) -> Optional[Tuple[str, str]]:
+    """Return (start_token, end_token) parsed from a signal cache filename, or None."""
     suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
-    pattern = f'portfolio_signals_{universe}_{oos_start[:7]}_*{suffix}.pkl'
+    stem = os.path.basename(path)[:-4]
+    if suffix and stem.endswith(suffix):
+        stem = stem[:-len(suffix)]
+    parts = stem.split('_')
+    if len(parts) < 2:
+        return None
+    return parts[-2], parts[-1]
+
+
+def _scan_signal_caches(universe: str, tc_mode: str
+                        ) -> List[Tuple[pd.Timestamp, pd.Timestamp, str]]:
+    """Return all signal cache files matching the universe / tc_mode as
+    (cache_start, cache_end, path) tuples, parsed from the filename."""
+    import glob
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    prefix = f'portfolio_signals_{universe}_'
+    pattern = f'{prefix}*_*{suffix}.pkl'
+    out: List[Tuple[pd.Timestamp, pd.Timestamp, str]] = []
     for path in glob.glob(os.path.join(CACHE_DIR, pattern)):
-        base = os.path.basename(path)
-        # Expected: portfolio_signals_<universe>_<oos_start_prefix>_<oos_end_prefix>[<suffix>].pkl
-        stem = base[:-4]  # drop .pkl
+        stem = os.path.basename(path)[:-4]
         if suffix and stem.endswith(suffix):
             stem = stem[:-len(suffix)]
-        # Extract oos_end prefix (last "_<YYYY-MM>")
-        parts = stem.rsplit('_', 1)
-        if len(parts) < 2:
+        if not stem.startswith(prefix):
             continue
-        end_token = parts[1]
+        body = stem[len(prefix):]
+        parts = body.split('_')
+        if len(parts) != 2:
+            continue
+        start_token, end_token = parts
         try:
+            start_ts = pd.Timestamp(start_token + '-01')
             end_ts = pd.Timestamp(end_token + '-01') + pd.offsets.MonthEnd(0)
         except Exception:
             continue
-        candidates.append((end_ts, path))
+        out.append((start_ts, end_ts, path))
+    return out
 
+
+def _pick_signal_cache_path(universe: str, oos_start: str, oos_end: str,
+                            tc_mode: str) -> Optional[str]:
+    """Return the path to the signal cache file that backs the requested window.
+
+    Lookup precedence (so the same on-disk file backs as many windows as possible):
+      1. Exact match (cache_start == request_start AND cache_end ≥ request_end-1d).
+      2. Covering cache (cache_start ≤ request_start AND cache_end ≥ request_end-1d).
+         Free trim — no recompute. Picks the cache closest to the request window.
+      3. Same-start extension (cache_start == request_start, cache_end < request_end).
+         Walk-forward extends forward from the cache's last anchor.
+      4. Earlier-start extension (cache_start ≤ request_start, cache_end < request_end).
+         Same as 3 but the cache started earlier — we extend its tail forward.
+      None if no matching cache exists.
+    """
+    candidates = _scan_signal_caches(universe, tc_mode)
     if not candidates:
         return None
-    target = pd.Timestamp(oos_end)
-    covering = [c for c in candidates if c[0] >= target - pd.Timedelta(days=1)]
+    request_start = pd.Timestamp(oos_start)
+    request_end = pd.Timestamp(oos_end)
+    cover_end = request_end - pd.Timedelta(days=1)
+
+    exact_path = _signal_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
+    for s, e, p in candidates:
+        if p == exact_path and e >= cover_end:
+            return p
+
+    covering = [(s, e, p) for s, e, p in candidates
+                if s <= request_start and e >= cover_end]
     if covering:
-        covering.sort(key=lambda x: x[0])
-        return covering[0][1]
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1]
+        # Prefer the cache whose start is closest to (≤) request_start; tiebreak
+        # by smallest cache_end (least excess at the tail).
+        covering.sort(key=lambda c: (request_start - c[0], c[1] - request_end))
+        return covering[0][2]
+
+    same_start = [(s, e, p) for s, e, p in candidates if s == request_start]
+    if same_start:
+        same_start.sort(key=lambda c: c[1], reverse=True)
+        return same_start[0][2]
+
+    earlier = [(s, e, p) for s, e, p in candidates if s <= request_start]
+    if earlier:
+        earlier.sort(key=lambda c: c[1], reverse=True)
+        return earlier[0][2]
+
+    return None
 
 
 def signal_cache_mtime(universe: str, oos_start: str, oos_end: str,
@@ -667,16 +970,98 @@ def clear_signal_cache(universe: Optional[str] = None) -> List[str]:
 # In-sample regime means — paper's exact spec for MV(JM-XGB) μ
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _process_one_asset_insample_mu(spec, universe, oos_start, oos_end, start_date,
+                                    lambda_history, lambda_dates, cached_df):
+    """Picklable worker for parallel in-sample regime-mean computation per asset.
+
+    Returns (asset_name, df_or_none). The caller passes the pre-extracted
+    `lambda_history` / `lambda_dates` lists (small, cheap to pickle) rather
+    than the full signal DataFrame.
+    """
+    _limit_inner_threads()
+    import main as _main
+    _main.START_DATE_DATA = start_date
+    _main.OOS_START_DATE = oos_start
+    _main.END_DATE = oos_end
+    _main.LAMBDA_GRID = list(GRID_8PT)
+
+    asset_name = spec[0]
+    if len(lambda_history) == 0:
+        return asset_name, None
+
+    cached_anchors = (pd.to_datetime(cached_df.index)
+                      if cached_df is not None and not cached_df.empty
+                      else pd.DatetimeIndex([]))
+    todo: List[Tuple[pd.Timestamp, float]] = []
+    lam_dates_ts = pd.to_datetime(lambda_dates)
+    for a, l in zip(lam_dates_ts, lambda_history):
+        if a not in cached_anchors:
+            todo.append((a, float(l)))
+    if not todo:
+        return asset_name, None
+
+    try:
+        _, _, _, df_feat = _features_for_asset(universe, spec, start_date, oos_end)
+    except Exception as e:
+        print(f'[portfolio] in-sample μ {asset_name}: feature build failed — {e}')
+        return asset_name, None
+    return_features = [c for c in df_feat.columns
+                       if c.startswith(('DD_', 'Avg_Ret_', 'Sortino_'))]
+
+    new_rows = []
+    for anchor, lmbda in todo:
+        train_start = anchor - pd.DateOffset(years=11)
+        tr = df_feat[(df_feat.index >= train_start) & (df_feat.index < anchor)].copy()
+        if len(tr) < 252 * 5:
+            continue
+        X = tr[return_features]
+        X = (X - X.mean()) / X.std()
+        jm = _main.StatisticalJumpModel(n_states=2, lambda_penalty=lmbda)
+        states = jm.fit_predict(X.values)
+        cum0 = tr['Excess_Return'][states == 0].sum()
+        cum1 = tr['Excess_Return'][states == 1].sum()
+        if cum1 > cum0:
+            states = 1 - states
+        mu_bull = float(tr['Excess_Return'][states == 0].mean()) if (states == 0).any() else 0.0
+        mu_bear = float(tr['Excess_Return'][states == 1].mean()) if (states == 1).any() else 0.0
+        new_rows.append({'anchor': anchor, 'mu_bull': mu_bull, 'mu_bear': mu_bear})
+
+    if not new_rows:
+        return asset_name, None
+    new_df = pd.DataFrame(new_rows).set_index('anchor')
+    if cached_df is None or cached_df.empty:
+        return asset_name, new_df.sort_index()
+    return asset_name, pd.concat([cached_df, new_df]).sort_index()
+
+
 def _pick_insample_mu_cache_path(universe: str, oos_start: str,
                                  tc_mode: str) -> Optional[str]:
-    """Return the in-sample μ cache file with the most cached anchors for
-    this universe/oos_start/tc_mode. None if no cache exists."""
+    """Return the in-sample μ cache file with the most cached anchors for this
+    universe/tc_mode, restricted to caches whose oos_start ≤ the requested
+    oos_start. None if no eligible cache exists."""
     import glob
     suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
-    pattern = f'portfolio_insample_mu_{universe}_{oos_start[:7]}_*{suffix}.pkl'
+    prefix = f'portfolio_insample_mu_{universe}_'
+    pattern = f'{prefix}*_*{suffix}.pkl'
+    request_start = pd.Timestamp(oos_start)
     best_path: Optional[str] = None
     best_count = -1
     for p in glob.glob(os.path.join(CACHE_DIR, pattern)):
+        stem = os.path.basename(p)[:-4]
+        if suffix and stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+        if not stem.startswith(prefix):
+            continue
+        body = stem[len(prefix):]
+        parts = body.split('_')
+        if len(parts) != 2:
+            continue
+        try:
+            cache_start = pd.Timestamp(parts[0] + '-01')
+        except Exception:
+            continue
+        if cache_start > request_start:
+            continue
         try:
             with open(p, 'rb') as fh:
                 cached = pickle.load(fh)
@@ -720,6 +1105,7 @@ def compute_insample_regime_means(universe: str,
                                   oos_end: str = '2023-12-31',
                                   force_refresh: bool = False,
                                   tc_mode: str = 'net',
+                                  n_jobs: Optional[int] = None,
                                   progress_callback=None) -> Dict[str, pd.DataFrame]:
     """For each asset, at each biannual rebalance anchor, fit JM on the 11-year
     lookback window with the asset's selected λ and compute in-sample
@@ -737,10 +1123,11 @@ def compute_insample_regime_means(universe: str,
     """
     if tc_mode not in ('net', 'gross'):
         raise ValueError(f"tc_mode must be 'net' or 'gross', got {tc_mode!r}")
-    cache_path = _insample_mu_cache_path(universe, oos_start, oos_end, tc_mode=tc_mode)
 
     existing: Dict[str, pd.DataFrame] = {}
+    existing_path: Optional[str] = None
     if not force_refresh:
+        existing_path = _pick_insample_mu_cache_path(universe, oos_start, tc_mode)
         loaded = _load_extensible_insample_mu_cache(universe, oos_start, oos_end, tc_mode)
         if loaded is not None:
             existing = loaded
@@ -756,10 +1143,6 @@ def compute_insample_regime_means(universe: str,
 
     asset_specs = _asset_specs_for(universe)
     start_date = _start_date_for(universe)
-    _main.START_DATE_DATA = start_date
-    _main.OOS_START_DATE = oos_start
-    _main.END_DATE = oos_end
-    _main.LAMBDA_GRID = list(GRID_8PT)
 
     out: Dict[str, pd.DataFrame] = {k: v.copy() for k, v in existing.items()}
     # Quick check — fast-path if every asset's anchors are already cached.
@@ -783,71 +1166,115 @@ def compute_insample_regime_means(universe: str,
         # forcing a recompute every time the user shifts oos_end.
         return out
 
-    for i, spec in enumerate(asset_specs):
+    # Pre-warm shared data caches (same rationale as in compute_asset_signals).
+    if universe in ('bloomberg', 'hybrid'):
+        try:
+            _load_bbg_raw()
+        except Exception:
+            pass
+
+    # Build the per-asset task list, extracting only the metadata each worker
+    # needs (no need to pickle the full signal DataFrame).
+    pending: List[Tuple] = []
+    for spec in asset_specs:
         asset_name = spec[0]
         if asset_name not in signals:
             continue
-        if progress_callback is not None:
-            progress_callback(i, len(asset_specs), asset_name)
-
-        lambda_history = signals[asset_name].attrs.get('lambda_history', [])
-        lambda_dates   = pd.to_datetime(signals[asset_name].attrs.get('lambda_dates', []))
-        if len(lambda_history) == 0:
+        sig_df = signals[asset_name]
+        lambda_history = list(sig_df.attrs.get('lambda_history', []))
+        lambda_dates = list(pd.to_datetime(sig_df.attrs.get('lambda_dates', [])))
+        if not lambda_history:
             continue
-
-        # Determine which anchors we still need to compute
         cached_df = out.get(asset_name)
         cached_anchors = (pd.to_datetime(cached_df.index)
                           if cached_df is not None and not cached_df.empty
                           else pd.DatetimeIndex([]))
-        todo: List[Tuple[pd.Timestamp, float]] = []
-        for a, l in zip(lambda_dates, lambda_history):
-            if a not in cached_anchors:
-                todo.append((a, float(l)))
-        if not todo:
+        if pd.DatetimeIndex(lambda_dates).difference(cached_anchors).size == 0:
             continue
+        pending.append((spec, lambda_history, lambda_dates, cached_df))
 
-        # Build features only when we have new anchors to fill in.
-        try:
-            _, _, _, df_feat = _features_for_asset(universe, spec, start_date, oos_end)
-        except Exception as e:
-            print(f'[portfolio] in-sample μ {asset_name}: feature build failed — {e}')
-            continue
-        return_features = [c for c in df_feat.columns
-                           if c.startswith(('DD_', 'Avg_Ret_', 'Sortino_'))]
+    if not pending:
+        if progress_callback is not None:
+            progress_callback(len(asset_specs), len(asset_specs), 'done')
+        return out
 
-        new_rows = []
-        for anchor, lmbda in todo:
-            train_start = anchor - pd.DateOffset(years=11)
-            tr = df_feat[(df_feat.index >= train_start) & (df_feat.index < anchor)].copy()
-            if len(tr) < 252 * 5:
-                continue
-            X = tr[return_features]
-            X = (X - X.mean()) / X.std()
-            jm = _main.StatisticalJumpModel(n_states=2, lambda_penalty=lmbda)
-            states = jm.fit_predict(X.values)
-            # Align so state 0 = bullish (higher cumulative excess return)
-            cum0 = tr['Excess_Return'][states == 0].sum()
-            cum1 = tr['Excess_Return'][states == 1].sum()
-            if cum1 > cum0:
-                states = 1 - states
-            mu_bull = float(tr['Excess_Return'][states == 0].mean()) if (states == 0).any() else 0.0
-            mu_bear = float(tr['Excess_Return'][states == 1].mean()) if (states == 1).any() else 0.0
-            new_rows.append({'anchor': anchor, 'mu_bull': mu_bull, 'mu_bear': mu_bear})
+    if n_jobs is None:
+        import multiprocessing
+        n_jobs = min(multiprocessing.cpu_count(), len(pending))
+    n_jobs = max(1, int(n_jobs))
 
-        if new_rows:
-            new_df = pd.DataFrame(new_rows).set_index('anchor')
-            if cached_df is None or cached_df.empty:
-                out[asset_name] = new_df.sort_index()
-            else:
-                out[asset_name] = pd.concat([cached_df, new_df]).sort_index()
+    did_work = False  # True only if at least one worker added new mu rows
+    if n_jobs == 1:
+        for i, (spec, lh, ld, cached_df) in enumerate(pending):
+            asset_name = spec[0]
+            if progress_callback is not None:
+                progress_callback(i, len(pending), asset_name)
+            try:
+                _, df_out = _process_one_asset_insample_mu(
+                    spec, universe, oos_start, oos_end, start_date,
+                    lh, ld, cached_df)
+            except Exception as e:
+                print(f'[portfolio] in-sample μ {asset_name}: {e}')
+                df_out = None
+            if df_out is not None:
+                out[asset_name] = df_out
+                did_work = True
+    else:
+        from joblib import Parallel, delayed, parallel_config
+        completed = 0
+        with parallel_config(backend='loky', n_jobs=n_jobs,
+                             inner_max_num_threads=1):
+            parallel = Parallel(return_as='generator_unordered')
+            gen = parallel(
+                delayed(_process_one_asset_insample_mu)(
+                    spec, universe, oos_start, oos_end, start_date,
+                    lh, ld, cached_df
+                ) for spec, lh, ld, cached_df in pending
+            )
+            for asset_name, df_out in gen:
+                if df_out is not None:
+                    out[asset_name] = df_out
+                    did_work = True
+                if progress_callback is not None:
+                    progress_callback(completed, len(pending), asset_name)
+                completed += 1
 
     if progress_callback is not None:
         progress_callback(len(asset_specs), len(asset_specs), 'done')
 
+    # Don't save if no new μ rows were added. This is critical: several assets
+    # have permanently-missing early anchors (insufficient 11-year lookback at
+    # the start of the OOS window — e.g. SPBO inception 2012). Without this
+    # guard, every call rewrites the file → mtime drift → params_hash changes →
+    # MVO disk cache misses on subsequent calls.
+    if not did_work:
+        return out
+
+    # Save with filename reflecting the actual data span. Preserve the existing
+    # cache's start when extending; update the end to the latest anchor.
+    if existing_path is not None:
+        existing_tokens = _parse_signal_cache_tokens(existing_path, tc_mode)
+        start_token = existing_tokens[0] if existing_tokens else oos_start[:7]
+    else:
+        start_token = oos_start[:7]
+    all_anchors = [df.index.max() for df in out.values() if not df.empty]
+    new_max_anchor = max(all_anchors) if all_anchors else None
+    end_token = new_max_anchor.strftime('%Y-%m') if new_max_anchor is not None \
+                                                 else oos_end[:7]
+    suffix = '' if tc_mode == 'net' else f'_{tc_mode}'
+    save_path = os.path.join(
+        CACHE_DIR,
+        f'portfolio_insample_mu_{universe}_{start_token}_{end_token}{suffix}.pkl',
+    )
     try:
-        with open(cache_path, 'wb') as fh:
+        with open(save_path, 'wb') as fh:
             pickle.dump(out, fh)
+        if existing_path is not None and existing_path != save_path \
+                and os.path.exists(existing_path):
+            try:
+                os.remove(existing_path)
+            except OSError:
+                pass
     except Exception as e:
         print(f'[portfolio] failed to cache in-sample μ: {e}')
     return out
@@ -1772,6 +2199,29 @@ def _trim_portfolio_results(results: Dict[str, dict],
                             'asset_order': res.get('final_state', {}).get('asset_order')},
         }
     return out
+
+
+def mvo_results_cache_will_hit(universe: str, oos_start: str, oos_end: str,
+                               tc_mode: str, use_insample_mu: bool,
+                               signal_mtime: float, insample_mu_mtime: float,
+                               **mvo_params) -> bool:
+    """Return True iff `run_all_portfolios_cached` would serve this request
+    from the on-disk cache (exact hit or covering trim, no compute). Use this
+    to decide whether to show a "Solving MVO portfolios…" spinner."""
+    try:
+        params_hash = _portfolio_params_hash(
+            use_insample_mu=use_insample_mu,
+            signal_mtime=signal_mtime, insample_mu_mtime=insample_mu_mtime,
+            **mvo_params,
+        )
+    except (KeyError, TypeError):
+        return False
+    exact_path = _portfolio_results_cache_path(universe, oos_start, oos_end,
+                                                tc_mode, params_hash)
+    if os.path.exists(exact_path):
+        return True
+    return _find_covering_portfolio_results(
+        universe, oos_start, oos_end, tc_mode, params_hash) is not None
 
 
 def run_all_portfolios_cached(panel: AssetPanel, *,

@@ -6,6 +6,7 @@ Forecasts" (arXiv:2406.09578v2).
 Default data source: Bloomberg total return indices (cache/DATA PAUL.xlsx).
 Alternative: 12 Yahoo ETFs.
 """
+import contextlib
 import os
 import sys
 import importlib
@@ -191,6 +192,115 @@ with st.sidebar:
         deleted = portfolio.clear_signal_cache()
         st.success(f"Removed {len(deleted)} cache files.")
         st.stop()
+
+    st.divider()
+    st.markdown("**🏗️ Full cache builder**")
+    _full_windows = {u: portfolio.full_cache_window(u) for u in portfolio.UNIVERSES}
+    _window_lines = "\n".join(
+        f"• `{u}`: **{s} → {e}**" for u, (s, e) in _full_windows.items()
+    )
+    st.caption(
+        "One-click build of signal + in-sample-μ caches at the longest paper-aligned "
+        "windows for **all 4 universes**. After this, switching universe or trimming "
+        f"`OOS start`/`OOS end` in the UI is a free trim — no recompute.\n\n{_window_lines}\n\n"
+        f"Built for the selected **tc_mode = {tc_mode}**. Takes 30+ minutes the first "
+        "time; subsequent runs are fast (skips assets already covered)."
+    )
+    build_full_cache_now = st.button(
+        "🏗️ Build full cache (all 4 universes)",
+        help="Runs compute_asset_signals + compute_insample_regime_means for each "
+             "universe at its full window. Reuses existing caches where possible. "
+             "Per-asset walk-forward runs in parallel across CPU cores."
+    )
+    full_cache_force = st.checkbox(
+        "Force rebuild from scratch", value=False,
+        help="If on, ignores existing caches and recomputes the full window for all 4 "
+             "universes. Off (default) only extends or fills missing data."
+    )
+    import multiprocessing as _mp
+    _cpu = _mp.cpu_count()
+    full_cache_n_jobs = st.number_input(
+        "Parallel workers (n_jobs)",
+        min_value=1, max_value=_cpu, value=min(_cpu, 12), step=1,
+        help=f"Number of subprocess workers. Each handles one asset's walk-forward "
+             f"in parallel. This machine has **{_cpu} CPU cores**. Default = "
+             f"min(cpu_count, 12). Inner threads (XGBoost/BLAS) are capped at 1 per "
+             f"worker to avoid oversubscription.",
+    )
+
+if build_full_cache_now:
+    import time as _time
+    st.subheader("Building full cache for all universes…")
+    _u_status = st.empty()
+    _stage_status = st.empty()
+    _asset_status = st.empty()
+    _elapsed_status = st.empty()
+    _progress = st.progress(0.0)
+    _start_t = _time.time()
+
+    _STAGES_PER_UNI = 3  # 'signals' → 'insample_mu' → 'mvo'
+    _STAGE_OFFSETS = {'signals': 0, 'insample_mu': 1, 'mvo': 2}
+
+    def _full_cb(uni_idx, uni_total, universe, oos_start, oos_end, stage,
+                 asset_idx, asset_total, asset_name):
+        elapsed = _time.time() - _start_t
+        mins, secs = divmod(int(elapsed), 60)
+        _elapsed_status.caption(f"Elapsed: {mins:02d}:{secs:02d}")
+        if stage == 'done':
+            _progress.progress(1.0)
+            _u_status.markdown("**All universes built.**")
+            _stage_status.empty()
+            _asset_status.empty()
+            return
+        stage_offset = _STAGE_OFFSETS.get(stage, 0)
+        sub_frac = (asset_idx / asset_total) if asset_total else 0.0
+        frac = min(
+            1.0,
+            (uni_idx * _STAGES_PER_UNI + stage_offset + sub_frac)
+            / (uni_total * _STAGES_PER_UNI),
+        )
+        _progress.progress(frac)
+        _u_status.markdown(f"**Universe {uni_idx+1}/{uni_total}: `{universe}`** "
+                           f"({oos_start} → {oos_end})")
+        _stage_status.write(f"Stage: **{stage}**")
+        if asset_total > 0 and asset_name:
+            _asset_status.write(f"Asset {asset_idx+1}/{asset_total}: **{asset_name}**")
+        else:
+            _asset_status.empty()
+
+    # Pass the current sidebar MVO params so the pre-built results match what
+    # the page would compute on first load (otherwise the cache misses).
+    _mvo_params = {
+        'rebal_freq':              rebal_freq,
+        'gamma_risk_minvar':       float(gamma_risk_minvar),
+        'gamma_risk_mv_baseline':  float(gamma_risk_mv_b),
+        'gamma_risk_mv_jmxgb':     float(gamma_risk_mv_j),
+        'gamma_trade':             float(gamma_trade),
+        'tc_oneway':               float(tc_oneway),
+        'w_ub':                    float(w_ub),
+        'cov_hl_days':             int(cov_hl_days),
+        'mu_baseline_hl_years':    float(mu_baseline_hl_yr),
+        'mu_jmxgb_lookback_years': float(mu_jmxgb_lb_yr),
+    }
+    try:
+        windows = portfolio.build_full_cache_all_universes(
+            tc_mode=tc_mode, force_refresh=full_cache_force,
+            n_jobs=int(full_cache_n_jobs),
+            mvo_params=_mvo_params,
+            use_insample_mu=bool(use_insample_mu),
+            progress_callback=_full_cb,
+        )
+    except Exception as e:
+        st.error(f"Full-cache build failed: {e}")
+        st.stop()
+    st.success("Full cache built for: " +
+               ", ".join(f"`{u}` ({s}→{e})" for u, (s, e) in windows.items()))
+    # Wipe the in-memory Streamlit cache so the rest of the page picks up the
+    # newly-built on-disk caches without a manual rerun.
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    st.info("Click anywhere or rerun the page to see the freshly-cached results.")
+    st.stop()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,7 +583,24 @@ signal_mtime = portfolio.signal_cache_mtime(universe, oos_start, oos_end, tc_mod
 insample_mu_mtime = (portfolio.insample_mu_cache_mtime(universe, oos_start, oos_end, tc_mode)
                      if use_insample_mu else 0.0)
 
-with st.spinner("Solving MVO portfolios…"):
+_will_hit_mvo = portfolio.mvo_results_cache_will_hit(
+    universe=universe, oos_start=oos_start, oos_end=oos_end, tc_mode=tc_mode,
+    use_insample_mu=bool(use_insample_mu),
+    signal_mtime=signal_mtime, insample_mu_mtime=insample_mu_mtime,
+    rebal_freq=rebal_freq,
+    gamma_risk_minvar=float(gamma_risk_minvar),
+    gamma_risk_mv_baseline=float(gamma_risk_mv_b),
+    gamma_risk_mv_jmxgb=float(gamma_risk_mv_j),
+    gamma_trade=float(gamma_trade),
+    tc_oneway=float(tc_oneway),
+    w_ub=float(w_ub),
+    cov_hl_days=int(cov_hl_days),
+    mu_baseline_hl_years=float(mu_baseline_hl_yr),
+    mu_jmxgb_lookback_years=float(mu_jmxgb_lb_yr),
+)
+_mvo_ctx = (contextlib.nullcontext() if _will_hit_mvo
+            else st.spinner("Solving MVO portfolios…"))
+with _mvo_ctx:
     results = _run_all_portfolios(panel, universe, oos_start, oos_end, tc_mode,
                                   bool(use_insample_mu),
                                   rebal_freq,
