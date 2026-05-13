@@ -441,7 +441,7 @@ st.caption("Stacked bar chart of MVO weights per period. "
            "Assets grouped by type; same-type assets share a colour family. "
            "'Cash' = uninvested fraction (1 − Σweights, clipped at 0).")
 
-_comp_col1, _comp_col2 = st.columns([2, 1])
+_comp_col1, _comp_col2, _comp_col3 = st.columns([2, 1, 2])
 with _comp_col1:
     _strategy_options = [l for l in portfolio.STRATEGY_LABELS if l in results]
     _default_idx = _strategy_options.index('MV(JM-XGB)') if 'MV(JM-XGB)' in _strategy_options else 0
@@ -452,12 +452,21 @@ with _comp_col1:
         key="comp_strategy_sel",
     )
 with _comp_col2:
-    comp_freq_label = st.radio(
-        "Resample to",
-        options=["Weekly", "Monthly", "Quarterly"],
-        index=1,
-        horizontal=True,
+    comp_freq_label = st.selectbox(
+        "Resolution",
+        options=["Daily", "Weekly", "Monthly", "Quarterly"],
+        index=2,
         key="comp_freq_sel",
+    )
+with _comp_col3:
+    _tr_options = ["1M", "6M", "1Y", "5Y", "ALL"]
+    _tr_default = _tr_options.index("ALL")
+    comp_time_range = st.radio(
+        "Time range",
+        options=_tr_options,
+        index=_tr_default,
+        horizontal=True,
+        key="comp_time_range_sel",
     )
 
 # ── asset metadata: colour by type (keyed by friendly name used in panel.asset_order)
@@ -489,9 +498,25 @@ _DRAW_ORDER = [
     'Cash',
 ]
 
-_freq_map = {"Weekly": "W", "Monthly": "ME", "Quarterly": "QE"}
+_freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "ME", "Quarterly": "QE"}
 _w = results[comp_strategy]['weights'].copy()
-_w_rs = _w.resample(_freq_map[comp_freq_label]).mean()
+
+# Apply time range filter — anchor from data end, not today
+_data_end = _w.index.max()
+_tr_cutoff_map = {
+    "1M": _data_end - pd.DateOffset(months=1),
+    "6M": _data_end - pd.DateOffset(months=6),
+    "1Y": _data_end - pd.DateOffset(years=1),
+    "5Y": _data_end - pd.DateOffset(years=5),
+    "ALL": _w.index.min(),
+}
+_tr_cutoff = _tr_cutoff_map[comp_time_range]
+_w = _w[_w.index >= _tr_cutoff]
+
+if comp_freq_label == "Daily":
+    _w_rs = _w.copy()
+else:
+    _w_rs = _w.resample(_freq_map[comp_freq_label]).mean()
 _w_rs['Cash'] = (1 - _w_rs.sum(axis=1)).clip(lower=0)
 _w_rs = _w_rs[[c for c in _DRAW_ORDER if c in _w_rs.columns]]
 
@@ -518,9 +543,13 @@ for _col in _w_rs.columns:
         hoverinfo='skip',
     ), secondary_y=False)
 
-# Cumulative wealth line on secondary axis
+# Cumulative wealth line on secondary axis — filter to same time range
 _wealth = (1 + results[comp_strategy]['returns']).cumprod()
-_wealth_rs = _wealth.resample(_freq_map[comp_freq_label]).last()
+_wealth = _wealth[_wealth.index >= _tr_cutoff]
+if comp_freq_label == "Daily":
+    _wealth_rs = _wealth.copy()
+else:
+    _wealth_rs = _wealth.resample(_freq_map[comp_freq_label]).last()
 fig_comp.add_trace(go.Scatter(
     x=_wealth_rs.index,
     y=_wealth_rs.values,
@@ -543,7 +572,7 @@ fig_comp.add_trace(go.Scatter(
 
 fig_comp.update_layout(
     barmode='stack',
-    title=f"Portfolio weights & cumulative wealth — {comp_strategy} ({comp_freq_label.lower()})",
+    title=f"Portfolio weights & cumulative wealth — {comp_strategy} ({comp_freq_label.lower()}, {comp_time_range})",
     xaxis_title="Date",
     yaxis_title="Weight",
     yaxis_tickformat=".0%",
