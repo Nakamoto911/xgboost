@@ -297,6 +297,17 @@ SCRIPTS = {
         "file": "misc_scripts/run_multi_asset_ablation.py",
         "description": "Compare Full vs. Return-Only performance across all 12 core assets.",
         "icon": "📊"
+    },
+    "Compare Data Sources": {
+        "file": "misc_scripts/compare_data_sources.py",
+        "description": (
+            "Compare Yahoo ETFs, Yahoo Mutual Funds and Bloomberg total-return series "
+            "for each paper asset on the 2007-2023 OOS window. Pure data-source analysis "
+            "(no strategy) — measures Sharpe/MDD gap vs paper Table 4, pair-wise correlation, "
+            "tracking error, and return drift. Reads existing per-ticker caches; results "
+            "cached in `cache/data_comparison_<asset>.pkl`."
+        ),
+        "icon": "🔬"
     }
 }
 
@@ -343,6 +354,41 @@ with col1:
         selected_asset_list = st.selectbox("Select Asset List:", asset_lists)
         if selected_asset_list:
             st.session_state.selected_asset_list = selected_asset_list
+
+    if selected_script == "Compare Data Sources":
+        _compare_scopes = [
+            ("All 12 assets",                       "all"),
+            ("Tier 1 (LargeCap only)",              "tier1"),
+            ("Tier 2 (LargeCap, REIT, AggBond)",    "tier2"),
+            ("LargeCap",                            "LargeCap"),
+            ("MidCap",                              "MidCap"),
+            ("SmallCap",                            "SmallCap"),
+            ("EAFE",                                "EAFE"),
+            ("EM",                                  "EM"),
+            ("AggBond",                             "AggBond"),
+            ("Treasury",                            "Treasury"),
+            ("HighYield",                           "HighYield"),
+            ("Corporate",                           "Corporate"),
+            ("REIT",                                "REIT"),
+            ("Commodity",                           "Commodity"),
+            ("Gold",                                "Gold"),
+        ]
+        _label = st.selectbox(
+            "Scope:",
+            [s[0] for s in _compare_scopes],
+            key='compare_sources_scope_label',
+            help=(
+                "Selects which assets to compare. Tier 1 = quick LargeCap check. "
+                "Tier 2 = + REIT and AggBond. All 12 assets ≈ 5 seconds (uses caches)."
+            ),
+        )
+        st.session_state.compare_sources_scope_arg = dict(_compare_scopes)[_label]
+        st.checkbox(
+            "Force recompute (--no-cache)",
+            key='compare_sources_no_cache',
+            value=False,
+            help="Bypass cache/data_comparison_<asset>.pkl. Use after any per-ticker cache refresh.",
+        )
 
     if selected_script == "Multi-Asset Macro Ablation":
         _bbg_path = os.path.join(
@@ -408,6 +454,10 @@ with col2:
                 cmd = ["python", "-u", script_to_run]
                 if script_to_run == "misc_scripts/benchmark_assets.py" and "selected_asset_list" in st.session_state:
                     cmd.append(st.session_state.selected_asset_list)
+                if script_to_run == "misc_scripts/compare_data_sources.py":
+                    cmd.append(st.session_state.get('compare_sources_scope_arg', 'all'))
+                    if st.session_state.get('compare_sources_no_cache', False):
+                        cmd.append('--no-cache')
 
                 # Belt-and-suspenders: also export PYTHONUNBUFFERED for any
                 # nested processes the script might spawn (e.g. Pool workers).
@@ -469,7 +519,63 @@ if os.path.exists(benchmarks_dir):
         with open(selected_file, 'r') as f:
             md_content = f.read()
 
-        st.markdown(md_content)
+        # Data Source Comparison reports: render the eager header + one
+        # st.expander per asset, and pull the chart PNG out of the markdown
+        # so we can serve it via st.image() — base64-embedded images froze
+        # the page even inside expanders because browsers decode all of them
+        # at mount time. st.image() with file paths is true lazy-loading.
+        _basename = os.path.basename(selected_file)
+        if _basename.startswith('data_comparison_'):
+            _split_marker = '\n<details>\n'
+            _header, _, _rest = md_content.partition(_split_marker)
+            # Extract chart image refs from the header so st.image can serve
+            # them (markdown can't resolve our relative chart paths).
+            import re as _re
+            _header_imgs = []
+            def _capture_header_img(m):
+                _header_imgs.append(m.group(1))
+                return ''
+            _header_clean = _re.sub(
+                r'^!\[[^\]]*\]\((data_comparison_charts/[^)]+\.png)\)\s*$',
+                _capture_header_img,
+                _header,
+                flags=_re.MULTILINE,
+            )
+            st.markdown(_header_clean, unsafe_allow_html=True)
+            for _rel in _header_imgs:
+                _abs = os.path.join(benchmarks_dir, _rel)
+                if os.path.exists(_abs):
+                    st.image(_abs, use_container_width=True)
+            if _rest:
+                import re as _re
+                _sections = ('<details>\n' + _rest).split('\n<details>\n')
+                _sections = [s for s in _sections if s.strip()]
+                for sec in _sections:
+                    m = _re.search(r'<summary>(.*?)</summary>', sec, _re.DOTALL)
+                    label_html = m.group(1) if m else 'Asset'
+                    label = _re.sub(r'<[^>]+>', '', label_html).strip()
+                    body = _re.sub(r'^<details>\s*<summary>.*?</summary>\s*', '', sec, count=1, flags=_re.DOTALL)
+                    body = body.rstrip()
+                    if body.endswith('</details>'):
+                        body = body[:-len('</details>')].rstrip()
+                    # Pull the chart image line out so we can render it with
+                    # st.image() instead of letting the markdown renderer
+                    # process a path it cannot resolve.
+                    img_match = _re.search(
+                        r'^!\[[^\]]*\]\((data_comparison_charts/[^)]+\.png)\)\s*$',
+                        body,
+                        _re.MULTILINE,
+                    )
+                    img_path = None
+                    if img_match:
+                        img_path = os.path.join(benchmarks_dir, img_match.group(1))
+                        body = body[:img_match.start()] + body[img_match.end():]
+                    with st.expander(label):
+                        st.markdown(body, unsafe_allow_html=True)
+                        if img_path and os.path.exists(img_path):
+                            st.image(img_path, use_container_width=True)
+        else:
+            st.markdown(md_content)
 
         with st.expander("Raw Markdown (Click 'Copy' button in top right of box)"):
             st.code(md_content, language="markdown")

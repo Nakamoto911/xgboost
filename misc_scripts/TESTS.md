@@ -11,6 +11,7 @@ All standalone tests, diagnostics, and benchmarks live in `misc_scripts/`. This 
 | `benchmark.py` | Micro-benchmark comparing two Viterbi implementations (loop-based vs vectorized matrix operations). |
 | `run_portfolio_paper.py` | Reproduces paper Tables 6 & 7 on Bloomberg data (2007–2023): runs walk-forward signals for all 12 assets, then 7 portfolios (60/40, MinVar±, MV±, EW±) and prints side-by-side ours-vs-paper comparison. Populates the on-disk cache used by the Portfolio Construction Streamlit page. |
 | `smoke_test_portfolio.py` | Fast smoke test for `portfolio.py` — runs 3 BBG assets over a short window (2007–2010) to validate end-to-end pipeline and MVO solver wiring. |
+| `compare_data_sources.py` | Compares Yahoo ETFs vs Yahoo Mutual Funds vs Bloomberg total-return series for each paper asset on the 2007-2023 OOS window. Reads existing per-ticker caches only. Computes per-source Sharpe/MDD/skew/kurt + pair-wise Pearson ρ, Spearman ρ, tracking error and return drift; generates MD report with embedded PNG charts (cumulative wealth, drift vs Bloomberg, rolling 1y correlation, return distribution). Results cached in `cache/data_comparison_<asset>.pkl`, incrementally refreshed by source-cache mtime. CLI: `tier1` (LargeCap), `tier2` (+REIT, AggBond), `all`, or one asset name. |
 
 ## Diagnostics
 
