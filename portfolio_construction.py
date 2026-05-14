@@ -610,6 +610,114 @@ with _mvo_ctx:
                                   signal_mtime, insample_mu_mtime)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Metric window — filter the displayed period without re-running the sim
+# ─────────────────────────────────────────────────────────────────────────────
+# The MVO is path-dependent (L1 trading-cost penalty + EWM covariance warm-up
+# + 252-day cash bootstrap), so the cleanest way to evaluate the strategy on a
+# sub-period is to slice the cached results rather than rerun with a new
+# `oos_start`. This slider does exactly that.
+
+st.subheader("Metric window")
+
+_results_full = results
+_panel_idx = panel.returns.index
+_metric_min = _panel_idx.min().date()
+_metric_max = _panel_idx.max().date()
+
+if ('mwin_slider' not in st.session_state
+        or st.session_state.get('mwin_universe') != universe
+        or st.session_state.get('mwin_min') != _metric_min
+        or st.session_state.get('mwin_max') != _metric_max):
+    st.session_state.mwin_slider = (_metric_min, _metric_max)
+    st.session_state.mwin_universe = universe
+    st.session_state.mwin_min = _metric_min
+    st.session_state.mwin_max = _metric_max
+
+
+def _mwin_set(months):
+    if months is None:
+        st.session_state.mwin_slider = (_metric_min, _metric_max)
+    else:
+        new_start = (pd.to_datetime(_metric_max) - pd.DateOffset(months=months)).date()
+        new_start = max(_metric_min, new_start)
+        st.session_state.mwin_slider = (new_start, _metric_max)
+
+
+def _mwin_set_paper():
+    st.session_state.mwin_slider = (
+        max(_metric_min, pd.Timestamp('2007-01-01').date()),
+        min(_metric_max, pd.Timestamp('2023-12-31').date()),
+    )
+
+
+if hasattr(st, 'segmented_control'):
+    def _mwin_from_segment():
+        sel = st.session_state.mwin_seg
+        if sel == "1Y": _mwin_set(12)
+        elif sel == "3Y": _mwin_set(36)
+        elif sel == "5Y": _mwin_set(60)
+        elif sel == "10Y": _mwin_set(120)
+        elif sel == "Paper (2007-2023)": _mwin_set_paper()
+        elif sel == "Max": _mwin_set(None)
+    st.segmented_control(
+        "Quick range",
+        ["1Y", "3Y", "5Y", "10Y", "Paper (2007-2023)", "Max"],
+        key="mwin_seg", on_change=_mwin_from_segment,
+        selection_mode="single", label_visibility="collapsed",
+    )
+else:
+    c1, c2, c3, c4, c5, c6, _ = st.columns([1, 1, 1, 1, 2, 1, 4])
+    with c1: st.button("1Y", on_click=_mwin_set, args=(12,), width='stretch')
+    with c2: st.button("3Y", on_click=_mwin_set, args=(36,), width='stretch')
+    with c3: st.button("5Y", on_click=_mwin_set, args=(60,), width='stretch')
+    with c4: st.button("10Y", on_click=_mwin_set, args=(120,), width='stretch')
+    with c5: st.button("Paper (2007-2023)", on_click=_mwin_set_paper, width='stretch')
+    with c6: st.button("Max", on_click=_mwin_set, args=(None,), width='stretch')
+
+_sel = st.slider(
+    "Period for performance metrics & charts",
+    min_value=_metric_min, max_value=_metric_max,
+    key='mwin_slider', format="YYYY-MM-DD",
+)
+if isinstance(_sel, tuple) and len(_sel) == 2:
+    metric_start, metric_end = _sel
+else:
+    metric_start, metric_end = _metric_min, _metric_max
+if metric_start >= metric_end:
+    st.warning("Metric window start must be before end.")
+    st.stop()
+
+_full_window = (metric_start == _metric_min and metric_end == _metric_max)
+if not _full_window:
+    st.caption(
+        f"📐 Displaying metrics for **{metric_start} → {metric_end}**. "
+        f"The MVO simulation itself ran over the full OOS window "
+        f"({_metric_min} → {_metric_max}) — this slider only trims the displayed "
+        f"period. Paper Table 6 numbers correspond to **2007-01-01 → 2023-12-31**."
+    )
+
+
+def _slice_result(r, s, e):
+    """Return a shallow copy of one strategy's result dict with time-series
+    fields trimmed to [s, e]. Non-series fields pass through unchanged."""
+    s_ts, e_ts = pd.Timestamp(s), pd.Timestamp(e)
+    out = dict(r)
+    for k in ('returns', 'turnover_daily'):
+        if k in out and isinstance(out[k], pd.Series):
+            out[k] = out[k].loc[s_ts:e_ts]
+    if isinstance(out.get('weights'), pd.DataFrame):
+        out['weights'] = out['weights'].loc[s_ts:e_ts]
+    if isinstance(out.get('mu_forecast'), pd.DataFrame) and not out['mu_forecast'].empty:
+        out['mu_forecast'] = out['mu_forecast'].loc[s_ts:e_ts]
+    return out
+
+
+results = {k: _slice_result(v, metric_start, metric_end)
+           for k, v in _results_full.items()}
+_rf_view = panel.rf_daily.loc[pd.Timestamp(metric_start):pd.Timestamp(metric_end)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Table 6 — performance metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -620,7 +728,7 @@ for label in portfolio.STRATEGY_LABELS:
     if label not in results:
         continue
     res = results[label]
-    rows[label] = portfolio.portfolio_metrics(res['returns'], panel.rf_daily,
+    rows[label] = portfolio.portfolio_metrics(res['returns'], _rf_view,
                                               res['weights'], res['turnover_daily'])
 
 ours = pd.DataFrame(rows)
@@ -692,7 +800,7 @@ for label in portfolio.STRATEGY_LABELS:
         line_style = dict(width=0.8, color='rgba(180, 180, 180, 0.25)')
     fig.add_trace(go.Scatter(x=wealth.index, y=wealth.values, name=label, line=line_style))
 
-fig.update_layout(title=f"Cumulative wealth (1 = ${oos_start}), rebalanced {rebal_freq}",
+fig.update_layout(title=f"Cumulative wealth (1 = ${metric_start}), rebalanced {rebal_freq}",
                   xaxis_title="Date", yaxis_title="Wealth multiplier (log scale)",
                   yaxis_type="log", height=520, hovermode="x unified",
                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -985,13 +1093,15 @@ with st.expander("8. Diagnostics — weights, turnover, regime calls", expanded=
                  use_container_width=True)
 
     st.markdown("**Bullish-asset count (JM-XGB strategies)**")
-    bull_count = (panel.forecast == 0).sum(axis=1)
+    _fc_view = panel.forecast.loc[pd.Timestamp(metric_start):pd.Timestamp(metric_end)]
+    bull_count = (_fc_view == 0).sum(axis=1)
     st.line_chart(bull_count)
 
 
 with st.expander("9. Regime call panel — bear-state percentage per asset", expanded=False):
+    _fc_view = panel.forecast.loc[pd.Timestamp(metric_start):pd.Timestamp(metric_end)]
     bear_pct = pd.DataFrame({
-        a: [(panel.forecast[a] == 1).mean() * 100] for a in panel.asset_order
+        a: [(_fc_view[a] == 1).mean() * 100] for a in panel.asset_order
     }, index=['% bear days']).T
     st.bar_chart(bear_pct)
 
